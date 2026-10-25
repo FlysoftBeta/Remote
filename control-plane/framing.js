@@ -40,8 +40,8 @@ export class Decoder {
         const message = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(this.body));
         this.body = null;
         this.used = 0;
-        if (!message || Array.isArray(message) || typeof message !== 'object' || message.v !== 1) {
-          throw new Error('Invalid protocol object/version');
+        if (!message || Array.isArray(message) || typeof message !== 'object') {
+          throw new Error('Invalid protocol object');
         }
         this.onMessage(message);
       }

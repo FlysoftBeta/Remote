@@ -5,12 +5,12 @@ import { encode, Decoder } from '../framing.js';
 test('framing roundtrip with fragmentation', () => {
   const got = [];
   const d = new Decoder(m => got.push(m));
-  const buf = Buffer.concat([encode({ v: 1, a: 1 }), encode({ v: 1, b: 'x' })]);
+  const buf = Buffer.concat([encode({ t: 'hello', v: 1 }), encode({ t: 'ice', sid: 'x' })]);
   for (const byte of buf) d.push(Buffer.from([byte]));
   d.end();
-  assert.deepEqual(got, [{ v: 1, a: 1 }, { v: 1, b: 'x' }]);
+  assert.deepEqual(got, [{ t: 'hello', v: 1 }, { t: 'ice', sid: 'x' }]);
 });
 
-test('rejects wrong version', () => {
-  assert.throws(() => new Decoder(() => {}).push(encode({ v: 2 })));
+test('rejects non-object records', () => {
+  assert.throws(() => new Decoder(() => {}).push(encode([1])));
 });

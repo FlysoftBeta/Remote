@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>remotekit viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  #stage { position: fixed; inset: 0; top: 0; left: 0; right: 0; bottom: 0; touch-action: none; user-select: none;
+           -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; outline: none; }
+  #video { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; background: #000; }
+  #overlay { position: fixed; top: 6px; left: 6px; padding: 6px 8px; background: rgba(0,0,0,.65); color: #8f8;
+             font: 12px/1.35 monospace; white-space: pre; pointer-events: none; z-index: 3; border-radius: 4px; }
+  #status { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); color: #ccc; font: 13px sans-serif;
+            background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 4px; pointer-events: none; z-index: 3; }
+  #ime { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0;
+         resize: none; overflow: hidden; color: transparent; background: transparent; caret-color: transparent; z-index: 1; font-size: 16px; }
+  #kbd { position: fixed; right: 12px; bottom: 12px; z-index: 4; display: none; font: 22px sans-serif; padding: 10px 14px;
+         border-radius: 8px; border: 0; background: rgba(255,255,255,.85); }
+</style>
+<div id="stage" tabindex="0"><video id="video" autoplay playsinline muted></video></div>
+<textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
+<button id="kbd" type="button" aria-label="Show keyboard">&#9000;</button>
+<div id="overlay"></div>
+<div id="status">connecting</div>
+<script src="protocol.js"></script>
+<script src="/tools/latency/marker.js"></script>
+<script src="/tools/latency/clock.js"></script>
+<script src="/tools/latency/measure.js"></script>
+<script src="input.js"></script>
+<script src="ime.js"></script>
+<script src="viewer.js"></script>
+</html>

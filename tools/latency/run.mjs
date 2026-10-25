@@ -1,0 +1,72 @@
+// Glass-to-glass harness runner: control-plane + mock endpoint (headless Edge/Chrome) + viewer (headless, any Chromium
+// incl. Chrome 89) on this machine; prints P50/P80/P95/P99 and writes the per-frame CSV.
+//   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off]
+//        [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
+// Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const argv = process.argv.slice(2);
+const arg = (k, d) => { const i = argv.indexOf('--' + k); return i < 0 ? d : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true); };
+const repo = fileURLToPath(new URL('../../', import.meta.url));
+const TMP = process.env.PTRACK_TMP || 'C:/src/tmp/ptrack';
+const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
+const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', 30), w = +arg('w', 1920), h = +arg('h', 1080);
+const kbps = +arg('kbps', 12000), delay = arg('delay', '0');
+const viewerExe = arg('viewer-browser', EDGE), mockExe = arg('mock-browser', EDGE);
+const base = `http://127.0.0.1:${port}`;
+fs.mkdirSync(TMP, { recursive: true });
+const kids = [];
+const cleanup = () => { for (const k of kids) { try { spawnSync('taskkill', ['/PID', String(k.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} } };
+process.on('exit', cleanup); process.on('SIGINT', () => process.exit(130));
+
+async function up() { try { return (await fetch(base + '/api/health')).ok; } catch { return false; } }
+function browser(exe, name, url, oldHeadless) {
+  const dir = path.join(TMP, 'profile-' + name);
+  const args = [
+    oldHeadless ? '--headless' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
+    '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion',
+    '--enable-logging=stderr', '--v=0', '--window-size=1920,1080', url
+  ].filter(Boolean);
+  const p = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  p.stderr.on('data', d => { for (const line of d.toString().split(/\r?\n/)) if (/\[(mock|viewer)\]|Uncaught|ERROR:.*(rtc|webrtc)/i.test(line)) console.log(`  ${name}| ${line.replace(/^.*?CONSOLE\(\d+\)\] /, '')}`); });
+  kids.push(p);
+  return p;
+}
+
+if (!(await up())) {
+  const cp = spawn(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(port)], { stdio: ['ignore', 'inherit', 'inherit'] });
+  kids.push(cp);
+  for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
+}
+const before = (await (await fetch(base + '/api/report')).json()).length;
+browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}`);
+if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
+browser(viewerExe, 'viewer', `${base}/?measure=1&report=${secs}&delay=${delay}`, !!arg('old-headless'));
+console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
+
+const deadline = Date.now() + (secs + 60) * 1000;
+let report = null;
+while (Date.now() < deadline) {
+  await new Promise(r => setTimeout(r, 1000));
+  const all = await (await fetch(base + '/api/report')).json();
+  if (all.length > before) { report = all[all.length - 1]; break; }
+}
+if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
+const s = report.summary, f = v => v == null ? '-' : v.toFixed(1);
+const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+const csv = path.join(TMP, `latency-${stamp}.csv`);
+fs.writeFileSync(csv, report.csv);
+delete report.csv;
+fs.writeFileSync(csv.replace(/\.csv$/, '.json'), JSON.stringify(report, null, 2));
+console.log(`viewer UA: ${report.ua}`);
+console.log(`hint: ${report.hint}; codec ${report.stats?.codec} ${report.stats?.decoder} ${report.stats?.frameWidth}x${report.stats?.frameHeight}; sender ${report.sender?.backend}`);
+console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}, dupes ${s.dupes}, skipped ${s.skipped}; clock offset ${f(s.offset)} ms, min RTT ${s.minRtt?.toFixed(2)} ms`);
+console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
+if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n})`);
+console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
+console.log(`csv: ${csv}`);
+process.exit(0);
