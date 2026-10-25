@@ -337,17 +337,26 @@ int main(int argc,char** argv) {
         GPU gpu;Loader loader(gpu);
         {Session session(loader,gpu);mfxVersion v{};check(MFXQueryVersion(session.s,&v),"MFXQueryVersion");std::cout<<"SESSION_API "<<v.Major<<"."<<v.Minor<<"\n";}
         if(argc>1 && std::string(argv[1])=="--enumerate")return 0;
-        int frames=600;if(argc>2 && std::string(argv[1])=="--frames")frames=std::stoi(argv[2]);
-        std::ofstream matrix(root+"matrix.csv");matrix<<"row,input,query,init,get,query_diffs,readback_diffs,requested,query_result,readback\n";
+        int frames=600;std::string only;
+        for(int i=1;i<argc;++i) {
+            std::string arg=argv[i];
+            if(arg=="--row" && i+1<argc)only=argv[++i];
+            else if(arg=="--frames" && i+1<argc)frames=std::stoi(argv[++i]);
+            else if(arg!="--matrix")throw std::runtime_error("Usage: s7probe [--enumerate | --matrix | --row NAME] [--frames N]");
+        }
+        if(frames<=0)throw std::runtime_error("frames must be positive");
+        std::ofstream matrix(root+(only.empty()?"matrix.csv":only+"-matrix.csv"));matrix<<"row,input,query,init,get,query_diffs,readback_diffs,requested,query_result,readback\n";
         std::vector<Result> accepted;
         for(auto& row:rows()) {
+            if(!only.empty() && row.name!=only)continue;
             auto r=probe(row,loader,gpu,false,matrix);
             if(r.init<0) {auto fallback=probe(row,loader,gpu,true,matrix);if(fallback.init>=0 && fallback.get>=0)accepted.push_back(fallback);}
             else if(r.get>=0)accepted.push_back(r);
         }
         if(argc>1 && std::string(argv[1])=="--matrix")return 0;
-        std::ofstream summary(root+"latency.csv");summary<<"row,input,init,submitted,outputs,p50_ms,p95_ms,p99_ms,max_ms,avg_bytes,p99_bytes,max_bytes,idr_max_bytes,mbps,access_units,idr,sps,pps,invalid,busy,more_data,structural_valid\n";
+        std::ofstream summary(root+(only.empty()?"latency.csv":only+"-latency.csv"));summary<<"row,input,init,submitted,outputs,p50_ms,p95_ms,p99_ms,max_ms,avg_bytes,p99_bytes,max_bytes,idr_max_bytes,mbps,access_units,idr,sps,pps,invalid,busy,more_data,structural_valid\n";
         std::vector<std::string> desired={"60_cbr12_ldb","30_vbr12_ldb_maxframe","60_intra_vertical","60_vme_cbr12","30_intra_vertical","60_vme_intra_vertical","60_base_lp_cbr12","30_base_lp_cbr12"};
+        if(!only.empty())desired={only};
         int done=0;
         for(auto& name:desired) {
             auto it=std::find_if(accepted.begin(),accepted.end(),[&](const Result& r){return r.row.name==name;});
@@ -355,6 +364,6 @@ int main(int argc,char** argv) {
             if(done>=4 && name!="60_vme_cbr12")continue;
             try {if(latency(*it,loader,gpu,frames,summary))++done;}catch(const std::exception& e){std::cout<<"LATENCY_FAILED "<<name<<" "<<e.what()<<"\n";}
         }
-        std::cout<<"COMPLETE validated_combinations="<<done<<"\n";return done>=4?0:2;
+        std::cout<<"COMPLETE validated_combinations="<<done<<"\n";return done>=(only.empty()?4:1)?0:2;
     } catch(const std::exception& e) {std::cerr<<"FATAL "<<e.what()<<"\n";return 1;}
 }

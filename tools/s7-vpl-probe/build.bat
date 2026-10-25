@@ -5,6 +5,7 @@ set "VPL=C:\src\tmp\s7\vendor\prtsd\vendor\libvpl"
 if not "%~1"=="" set "VPL=%~1"
 set "OUT=C:\src\tmp\s7\build"
 if not exist "%OUT%" mkdir "%OUT%"
+set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
 if errorlevel 1 exit /b 1
 pushd "%OUT%"
