@@ -172,7 +172,7 @@
       ];
       if (clock) lines.push('clock  offset ' + fmt(clock.offset, 2) + ' ms  minRtt ' + fmt(clock.minRtt, 2) + ' ms');
       if (lat) lines.push('g2g    p50 ' + fmt(lat.lat.p50) + '  p80 ' + fmt(lat.lat.p80) + '  p99 ' + fmt(lat.lat.p99) + ' ms  n=' + lat.lat.n + (lat.precise ? '' : ' (rAF, imprecise)'),
-        'i2p    p50 ' + fmt(lat.i2p.p50) + '  p80 ' + fmt(lat.i2p.p80) + '  p99 ' + fmt(lat.i2p.p99) + ' ms  n=' + lat.i2p.n + '  marker ok ' + lat.decoded + '/' + lat.frames);
+        'i2p    p50 ' + fmt(lat.i2p.p50) + '  p80 ' + fmt(lat.i2p.p80) + '  p99 ' + fmt(lat.i2p.p99) + ' ms  n=' + lat.i2p.n + '  marker ok ' + lat.decoded + '/' + lat.frames + '  fid ' + measure.lastFrameId);
       if (epStats) lines.push('sender ' + fmt(epStats.fps) + ' fps ' + fmt(epStats.kbps / 1000, 2) + ' Mbps enc ' + fmt(epStats.encMs && epStats.encMs.p50, 2) + ' ms qp ' + fmt(epStats.qp) + ' ' + (epStats.backend || '') + (epStats.limit && epStats.limit !== 'none' ? ' limit:' + epStats.limit : ''));
       overlay.textContent = lines.join('\n');
       sendCtl({ t: 'vstats', fps: v.fps, kbps: v.kbps, jbMs: v.jbMs, decMs: v.decMs, rtt: v.rtt, lost: inb.packetsLost, nack: inb.nackCount, pli: inb.pliCount,

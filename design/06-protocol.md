@@ -94,7 +94,7 @@ endpoint 乘以当前根的 DIP 尺寸得到 `gfx::PointF`（D7：`EventInjector
 | 8 | u16 | x |
 | 10 | u16 | y |
 | 12 | u8 | `ptype`：0 mouse，1 touch，2 pen |
-| 13 | u8 | `pid`：指针槽位 0-15（viewer 把 `pointerId` 映射为小整数槽位，鼠标恒为 0） |
+| 13 | u8 | `pid`：指针槽位 0-15（鼠标恒为 0；触摸/笔由 viewer 把 `pointerId` 映射到 1-15 中最小的空闲槽位，最多 15 个同时触点） |
 | 14 | u8 | `buttons`：DOM `buttons` 位掩码（1 左，2 右，4 中，8 后退，16 前进） |
 | 15 | i8 | `button`：本次变化的键钮（DOM `button`，move 时为 -1） |
 | 16 | u8 | mods |
@@ -102,6 +102,8 @@ endpoint 乘以当前根的 DIP 尺寸得到 `gfx::PointF`（D7：`EventInjector
 | 18 | u8 | `rx`：触点半径，视频帧像素（夹到 255） |
 | 19 | u8 | `ry` |
 
+- 键钮变化（含按住一个键时再按另一个的 chord）一律作为 down/up 发送（每个变化的键钮一条，带新的 `buttons`），不作为 move。
+- `seq` 在**实际发送时**分配（合并后的 move 取发送时的 seq），保证线上 seq 单调。
 - 多点触摸 = 每个指针一条消息，用 `pid` 区分；这正好对应 Aura 的 `ui::TouchEvent`（每个事件一个 pointer id），endpoint 不需要聚合。
 - endpoint 侧按 `pid` 跟踪活动触点；收到 RESET 或会话结束时为所有活动触点合成 cancel、为按住的键钮合成 up（D8）。
 
@@ -202,7 +204,7 @@ viewer 行为（Chrome 89 约束）：
   因此只需要一次 viewer↔endpoint 的时钟映射。
 
 ### 4.2 帧标记（像素编码，`tools/latency/marker.js`）
-- 位置：视频帧左上角，一行 **2 个同步格 + 72 个数据格**，每格 `cell` 像素（默认 12，1080p 下 888×12 px），黑=0 白=1（亮度阈值 50%）。
+- 位置：视频帧左上角，一行 **2 个同步格 + 72 个数据格**，每格 `cell = max(4, round(frameW/160))` 像素（1080p 下 12，888×12 px；接收端按 `cell × videoWidth / frame.w` 缩放，`frame.w` 来自 ctl hello/frame，未知时用同一公式），黑=0 白=1（亮度阈值 50%）。
 - 数据（大端比特序）：`frameId:u16 | t:u32（发送端墙钟毫秒低 32 位） | inputSeq:u16（最近一次已应用的输入 seq） | crc8`（多项式 0x07，覆盖前 8 字节）……共 9 字节 = 72 比特。
   同步格：白、黑，用于定位与阈值自检；CRC 不符的帧丢弃（被编码器糊掉或过渡帧）。
 - 发送端（mock endpoint 的 canvas、真实链路中远端浏览器里的测试页）在**每帧绘制时**写入当前时间；接收端在 `requestVideoFrameCallback` 中把视频帧左上区域
@@ -236,4 +238,4 @@ viewer 的 `jbMs` = Δ`jitterBufferDelay`/Δ`jitterBufferEmittedCount`，`decMs`
 ## 6. 安全与健壮性
 - endpoint 对所有 DataChannel 输入做长度/范围校验；坐标夹到 [0,65535]；`pid` ≥ 16 丢弃；KEY 字符串 ≤ 32 字节；IME 文本 ≤ 4096 UTF-16 单位。
 - CP 对每条 WS 消息 ≤ 64 KiB，非 JSON 关闭连接；只转发白名单类型。
-- 输入只在 `ctl hello` 完成后接受；会话结束、`focus:false`、`bye` → endpoint 执行 RESET 语义。
+- 输入只在双方 `ctl hello` 交换完成后发送/接受（viewer 收到 endpoint 的 hello 才启用输入；版本不符则关闭会话）；会话结束、`focus:false`、`bye` → endpoint 执行 RESET 语义。
