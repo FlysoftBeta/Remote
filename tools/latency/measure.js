@@ -5,10 +5,11 @@
 (function (root) {
   'use strict';
   function RKMeasure(video, clock) {
-    this.video = video; this.clock = clock;
+    this.video = video; this.clock = clock; this.senderWidth = null; // Unknown sender width defaults to videoWidth.
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
     this.inputSent = {}; this.lastInputSeq = -1; this.lastFrameId = -1; this.dupes = 0; this.skipped = 0;
     this.canvas = document.createElement('canvas');
+    // Chrome 89 ignores this newer dictionary hint; ordinary 2D readback remains the fallback.
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.precise = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
     var self = this;
@@ -21,12 +22,22 @@
     }
   }
   // Called by the viewer for every input message it sends.
-  RKMeasure.prototype.noteInput = function (seq) { this.inputSent[seq & 0xffff] = RKClock.wall(); };
+  RKMeasure.prototype.expireInputs = function (now) {
+    var pending = this.inputSent;
+    Object.keys(pending).forEach(function (seq) { if (now - pending[seq] > 5000) delete pending[seq]; });
+  };
+  RKMeasure.prototype.noteInput = function (seq) {
+    var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
+  };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
+    this.expireInputs(RKClock.wall());
     var v = this.video, w = v.videoWidth;
     if (!w || this.clock.offset == null) return;
     this.frames++;
-    var cell = RKMarker.cellFor(w), cw = Math.ceil(RKMarker.CELLS * cell) + 2, ch = Math.ceil(cell) + 1;
+    var senderWidth = this.senderWidth == null ? w : this.senderWidth;
+    if (!Number.isFinite(senderWidth) || senderWidth <= 0) return;
+    var cell = RKMarker.cellFor(senderWidth) * w / senderWidth, cw = Math.ceil(RKMarker.CELLS * cell) + 2, ch = Math.ceil(cell) + 1;
+    if (cw > w || ch > v.videoHeight) { this.failed++; return; }
     if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
     this.ctx.drawImage(v, 0, 0, cw, ch, 0, 0, cw, ch);
     var m = RKMarker.decode(this.ctx.getImageData(0, 0, cw, ch).data, cw, cell);
@@ -42,11 +53,14 @@
     // rVFC receiveTime (WebRTC sources): sender draw -> last packet received, i.e. without decode/render/display.
     if (meta && meta.receiveTime) this.rx.push(performance.timeOrigin + meta.receiveTime - this.clock.toLocal(sentRemote));
     var row = { fid: m.frameId, lat: +lat.toFixed(2), rtt: this.clock.minRtt != null ? +this.clock.minRtt.toFixed(2) : '' , i2p: '' };
-    if (m.inputSeq !== this.lastInputSeq) {
-      var sent = this.inputSent[m.inputSeq];
-      if (sent != null) { row.i2p = +(display - sent).toFixed(2); this.i2p.push(display - sent); delete this.inputSent[m.inputSeq]; }
-      this.lastInputSeq = m.inputSeq;
-    }
+    var self = this;
+    Object.keys(this.inputSent).forEach(function (seq) {
+      // Half-range comparison orders 16-bit seqs across wrap; pending entries expire after five seconds.
+      if (((m.inputSeq - (+seq)) & 0xffff) >= 0x8000) return;
+      var sample = display - self.inputSent[seq];
+      self.i2p.push(sample); row.i2p = +sample.toFixed(2); delete self.inputSent[seq];
+    });
+    this.lastInputSeq = m.inputSeq;
     if (this.rows.length < 100000) this.rows.push(row);
     if (this.lat.length > 20000) this.lat.shift();
   };
@@ -57,7 +71,11 @@
       lat: RKMarker.percentiles(this.lat, [50, 80, 95, 99]), rx: RKMarker.percentiles(this.rx, [50, 80, 95, 99]), i2p: RKMarker.percentiles(this.i2p, [50, 80, 95, 99])
     };
   };
-  RKMeasure.prototype.reset = function () { this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0; };
+  RKMeasure.prototype.reset = function () {
+    this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {};
+    this.lastInputSeq = this.lastFrameId = -1;
+    this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0;
+  };
   RKMeasure.prototype.csv = function () {
     return 'fid,lat_ms,min_rtt_ms,i2p_ms\n' + this.rows.map(function (r) { return [r.fid, r.lat, r.rtt, r.i2p].join(','); }).join('\n') + '\n';
   };

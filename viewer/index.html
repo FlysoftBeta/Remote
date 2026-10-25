@@ -12,13 +12,14 @@
              font: 12px/1.35 monospace; white-space: pre; pointer-events: none; z-index: 3; border-radius: 4px; }
   #status { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); color: #ccc; font: 13px sans-serif;
             background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 4px; pointer-events: none; z-index: 3; }
-  #ime { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0;
+  #ime, #ime-password { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0;
          resize: none; overflow: hidden; color: transparent; background: transparent; caret-color: transparent; z-index: 1; font-size: 16px; }
   #kbd { position: fixed; right: 12px; bottom: 12px; z-index: 4; display: none; font: 22px sans-serif; padding: 10px 14px;
          border-radius: 8px; border: 0; background: rgba(255,255,255,.85); }
 </style>
 <div id="stage" tabindex="0"><video id="video" autoplay playsinline muted></video></div>
 <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
+<input id="ime-password" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" disabled>
 <button id="kbd" type="button" aria-label="Show keyboard">&#9000;</button>
 <div id="overlay"></div>
 <div id="status">connecting</div>

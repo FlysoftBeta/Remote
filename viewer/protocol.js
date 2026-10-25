@@ -74,6 +74,7 @@
     var m = { kind: kind, action: dv.getUint8(1), seq: dv.getUint16(2, true), ts: dv.getUint32(4, true) };
     if (kind === KIND.POINTER) {
       m.x = dv.getUint16(8, true); m.y = dv.getUint16(10, true); m.ptype = dv.getUint8(12); m.pid = dv.getUint8(13);
+      if (m.pid > 15) return null;
       m.buttons = dv.getUint8(14); m.button = dv.getInt8(15); m.mods = dv.getUint8(16);
       m.pressure = dv.getUint8(17) / 255; m.rx = dv.getUint8(18); m.ry = dv.getUint8(19);
     } else if (kind === KIND.WHEEL) {
@@ -82,7 +83,7 @@
     } else if (kind === KIND.KEY) {
       m.mods = dv.getUint8(8); m.flags = dv.getUint8(9); m.keyCode = dv.getUint16(10, true);
       var cl = dv.getUint8(12), kl = dv.getUint8(13);
-      if (u8.length < 14 + cl + kl) return null;
+      if (cl > 32 || kl > 32 || u8.length < 14 + cl + kl) return null;
       m.code = dec.decode(u8.subarray(14, 14 + cl)); m.key = dec.decode(u8.subarray(14 + cl, 14 + cl + kl));
     }
     return m;

@@ -65,6 +65,7 @@ export class Writer {
     // Wait for each write callback (which occurs after the chunk is flushed)
     // before submitting another chunk, including when write() returns false.
     const write = this.tail.then(() => new Promise((resolve, reject) => {
+      if (this.stream.destroyed || this.stream.writableEnded) return reject(new Error('Pipe closed'));
       this.stream.write(frame, error => error ? reject(error) : resolve());
     }));
     this.tail = write.catch(() => {});

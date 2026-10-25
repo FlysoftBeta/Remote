@@ -29,10 +29,12 @@ function startSession(id) {
   const I = inst(id);
   if (!I.endpoint || !I.viewer || I.sid) return;
   I.sid = crypto.randomBytes(16).toString('hex');
-  I.viewer.sid = I.sid;
-  I.viewer.send({ t: 'welcome', v: V, sid: I.sid, instance: id, iceServers: [] });
-  I.endpoint.send({ t: 'session.open', sid: I.sid, viewer: { caps: I.viewer.caps, ua: I.viewer.ua }, iceServers: [] });
-  log(`session ${I.sid.slice(0, 8)} open on ${id}`);
+  const sid = I.sid, viewer = I.viewer, endpoint = I.endpoint;
+  viewer.sid = sid;
+  viewer.send({ t: 'welcome', v: V, sid, instance: id, iceServers: [] });
+  if (I.sid !== sid) return;
+  endpoint.send({ t: 'session.open', sid, viewer: { caps: viewer.caps, ua: viewer.ua }, iceServers: [] });
+  if (I.sid === sid) log(`session ${sid.slice(0, 8)} open on ${id}`);
 }
 function endSession(id, reason, notify) {
   const I = inst(id);
@@ -40,7 +42,7 @@ function endSession(id, reason, notify) {
   const sid = I.sid;
   I.sid = null;
   if (notify !== 'endpoint') I.endpoint?.send({ t: 'bye', sid, reason });
-  if (notify !== 'viewer' && I.viewer) { I.viewer.send({ t: 'bye', sid, reason }); I.viewer.sid = null; }
+  if (notify !== 'viewer' && I.viewer) { const viewer = I.viewer; viewer.sid = null; viewer.send({ t: 'bye', sid, reason }); }
   log(`session ${sid.slice(0, 8)} closed on ${id}: ${reason}`);
 }
 
@@ -48,7 +50,7 @@ function onHello(conn, m) {
   if (m.v !== V) { conn.send({ t: 'error', code: 'version', message: `need v${V}` }); return conn.close(4400); }
   const I = inst(conn.instance);
   if (conn.role === 'endpoint') {
-    if (I.endpoint && I.endpoint !== conn) { endSession(conn.instance, 'endpoint-replaced', 'viewer'); I.endpoint.close(4409); }
+    if (I.endpoint && I.endpoint !== conn) { const old = I.endpoint; endSession(conn.instance, 'endpoint-replaced'); old.close(4409); }
     I.endpoint = conn;
     conn.name = m.name;
     log(`endpoint ${m.name || '?'} registered for ${conn.instance}`);
@@ -73,14 +75,13 @@ function onMessage(conn, m) {
   if (m.t === 'hello') return onHello(conn, m);
   const I = inst(conn.instance);
   if (conn.role === 'viewer') {
-    if (I.viewer !== conn || !I.sid || !FROM_VIEWER.has(m.t)) return;
-    m.sid = I.sid;
+    if (I.viewer !== conn || !I.sid || m.sid !== I.sid || !FROM_VIEWER.has(m.t)) return;
     I.endpoint?.send(m);
     if (m.t === 'bye') { I.sid = null; conn.sid = null; log(`session closed by viewer: ${m.reason}`); }
   } else {
     if (I.endpoint !== conn || !FROM_ENDPOINT.has(m.t) || m.sid !== I.sid || !I.viewer) return;
     I.viewer.send(m);
-    if (m.t === 'bye') { I.sid = null; I.viewer.sid = null; log(`session closed by endpoint: ${m.reason}`); }
+    if (m.t === 'bye') { I.sid = null; if (I.viewer) I.viewer.sid = null; log(`session closed by endpoint: ${m.reason}`); }
   }
 }
 
@@ -105,6 +106,7 @@ function readBody(req, limit = 1 << 20) {
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
 const server = http.createServer(async (req, res) => {
+  try {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/health') {
     return json(res, 200, { ok: true, v: V, instances: [...instances].map(([id, I]) => ({ id, endpoint: I.endpoint?.name ?? null, viewer: !!I.viewer, session: !!I.sid })) });
@@ -128,16 +130,24 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': types[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
     res.end(data);
   });
+  } catch (e) { json(res, 400, { error: 'invalid request path' }); }
 });
 
 const wss = new WebSocketServer({ server, path: '/signal', maxPayload: 64 * 1024 });
 wss.on('connection', (ws, req) => {
+  let conn = null;
+  const failed = () => { ws.terminate(); if (conn) onClose(conn); };
+  ws.on('error', failed);
+  const send = m => {
+    try { if (ws.readyState === 1) ws.send(JSON.stringify(m), error => { if (error) failed(); }); }
+    catch (e) { failed(); }
+  };
   const q = new URL(req.url, 'http://x').searchParams;
   const role = q.get('role') === 'endpoint' ? 'endpoint' : 'viewer';
-  if (TOKEN && q.get('token') !== TOKEN) { ws.send(JSON.stringify({ t: 'error', code: 'auth' })); return ws.close(4401); }
-  const conn = {
+  if (TOKEN && q.get('token') !== TOKEN) { send({ t: 'error', code: 'auth' }); return ws.close(4401); }
+  conn = {
     role, instance: (q.get('instance') || 'default').slice(0, 64), alive: true,
-    send: m => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); },
+    send,
     close: code => ws.close(code)
   };
   ws.on('pong', () => { conn.alive = true; });

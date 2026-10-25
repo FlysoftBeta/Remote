@@ -8,13 +8,14 @@
   var overlay = document.getElementById('overlay'), statusEl = document.getElementById('status');
   var isTouch = (navigator.maxTouchPoints || 0) > 0 && matchMedia('(pointer: coarse)').matches;
   var pc = null, ch = null, sid = null, ws = null, clock = null, measure = null, epHello = null, epStats = null, hintInfo = 'n/a';
+  var session = null, generation = 0, retryTimer = null, retryDelay = 1000, terminal = false;
   var input = new RKInput(stage, video, sendInput);
   var ime = new RKIme(document.getElementById('ime'), document.getElementById('kbd'), input, sendCtl, isTouch);
   window.rk = { input: input, ime: ime, get pc() { return pc; }, get measure() { return measure; }, get clock() { return clock; } };
 
   function status(s) { statusEl.textContent = s; statusEl.style.display = s ? 'block' : 'none'; console.log('[viewer] ' + s); }
   function sendInput(buf, seq) {
-    if (!ch || ch.input.readyState !== 'open') return;
+    if (!input.enabled || !ch || ch.input.readyState !== 'open') return;
     ch.input.send(buf);
     if (measure) measure.noteInput(seq);
   }
@@ -24,22 +25,50 @@
   // ---- signalling ----
   function sendSig(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
   function connect() {
+    clearTimeout(retryTimer); retryTimer = null; terminal = false;
+    statusEl.style.cursor = '';
+    statusEl.style.pointerEvents = 'none';
     var host = q.get('cp') || location.host;
     ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/signal?role=viewer&instance=' +
       encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : ''));
+    var socket = ws;
     ws.onopen = function () {
+      if (ws !== socket) return;
       sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent,
         caps: { touch: navigator.maxTouchPoints || 0, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
       status('waiting for endpoint');
     };
-    ws.onmessage = function (e) { onSignal(JSON.parse(e.data)); };
-    ws.onclose = function (e) { status('signalling closed (' + e.code + '); reconnecting'); closePc(); setTimeout(connect, 2000); };
+    ws.onmessage = function (e) { if (ws === socket) { try { onSignal(JSON.parse(e.data)); } catch (err) { console.warn('signalling', err); } } };
+    ws.onerror = function () { if (ws === socket) socket.close(); };
+    ws.onclose = function (e) {
+      if (ws !== socket) return;
+      ws = null; closePc();
+      terminal = e.code === 4000 || e.code === 4400 || e.code === 4401;
+      if (terminal) {
+        status((e.code === 4000 ? 'viewer replaced' : e.code === 4400 ? 'protocol version mismatch' : 'authentication failed') + '; click to reconnect');
+        statusEl.style.cursor = 'pointer';
+        statusEl.style.pointerEvents = 'auto';
+      } else {
+        status('signalling closed (' + e.code + '); reconnecting in ' + retryDelay / 1000 + ' s');
+        retryTimer = setTimeout(connect, retryDelay); retryDelay = Math.min(10000, retryDelay * 2);
+      }
+    };
   }
+  statusEl.addEventListener('click', function () { if (terminal) { retryDelay = 1000; connect(); } });
   function closePc() {
-    if (pc) { pc.close(); pc = null; }
+    generation++;
+    if (session) clearTimeout(session.failedTimer);
+    session = null; sid = null;
+    input.enabled = false;
+    if (typeof input.clearSession === 'function') input.clearSession();
+    if (typeof ime.clearSession === 'function') ime.clearSession();
+    if (ch) { ch.input.close(); ch.ctl.close(); ch.probe.close(); }
+    if (pc) { var old = pc; pc = null; old.close(); }
     if (clock) { clock.close(); clock = null; }
-    input.enabled = false; ch = null;
+    if (measure) { measure.reset(); measure.clock = { offset: null }; measure.inputSent = {}; measure.lastInputSeq = measure.lastFrameId = -1; }
+    ch = null; epHello = null; epStats = null; prev = null; window.rk.last = null; video.srcObject = null; stage.style.cursor = 'default';
   }
+  function current(s, p) { return session === s && generation === s.generation && pc === p; }
   function h264Caps() {
     if (!window.RTCRtpReceiver || !RTCRtpReceiver.getCapabilities) return [];
     return RTCRtpReceiver.getCapabilities('video').codecs.filter(function (c) { return /h264/i.test(c.mimeType); });
@@ -65,56 +94,95 @@
   }
 
   function onSignal(m) {
-    if (m.t === 'welcome') { sid = m.sid; status('session ' + sid.slice(0, 8) + ': negotiating'); }
+    if (m.t === 'welcome') {
+      if (m.sid !== sid) {
+        closePc(); sid = m.sid;
+        session = { sid: sid, generation: generation, iceServers: m.iceServers || [], candidates: [], remoteReady: false,
+          negotiation: Promise.resolve(), ice: Promise.resolve(), restarted: false, failedTimer: null };
+      }
+      status('session ' + sid.slice(0, 8) + ': negotiating');
+    } else if (m.t === 'error') status(m.code === 'no-endpoint' ? 'waiting for endpoint' : 'error: ' + m.code);
+    else if (!session || m.sid !== sid) return;
     else if (m.t === 'offer') onOffer(m);
-    else if (m.t === 'ice' && pc && m.candidate) pc.addIceCandidate(m.candidate).catch(function (e) { console.warn('ice', e); });
+    else if (m.t === 'ice') { session.candidates.push(m.candidate); drainIce(session, pc); }
     else if (m.t === 'bye') { status('session ended: ' + m.reason); closePc(); }
-    else if (m.t === 'error') status(m.code === 'no-endpoint' ? 'waiting for endpoint' : 'error: ' + m.code);
   }
-  function onOffer(m) {
-    if (pc && pc.signalingState !== 'closed' && pc.remoteDescription) { // renegotiation / ICE restart
-      return pc.setRemoteDescription({ type: 'offer', sdp: m.sdp }).then(function () { return pc.createAnswer(); })
-        .then(function (a) { return pc.setLocalDescription(a); })
-        .then(function () { sendSig({ t: 'answer', sid: sid, sdp: pc.localDescription.sdp }); });
-    }
-    closePc();
-    pc = new RTCPeerConnection({ iceServers: m.iceServers || [], bundlePolicy: 'max-bundle' });
+  function drainIce(s, p) {
+    if (!p || !current(s, p) || !s.remoteReady) return s.ice;
+    s.ice = s.ice.then(async function () {
+      while (current(s, p) && s.remoteReady && s.candidates.length) {
+        var c = s.candidates.shift();
+        try { await p.addIceCandidate(c === null ? { candidate: '' } : c); }
+        catch (e) { if (c !== null && current(s, p)) console.warn('ice', e); }
+      }
+    }).catch(function (e) { if (current(s, p)) console.warn('ice', e); });
+    return s.ice;
+  }
+  function createPc(s) {
+    pc = new RTCPeerConnection({ iceServers: s.iceServers, bundlePolicy: 'max-bundle' });
+    var p = pc;
     ch = RK.createChannels(pc);
+    var channels = ch;
     ch.ctl.onopen = function () {
+      if (!current(s, p)) return;
       sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, osk: isTouch, dpr: devicePixelRatio },
         view: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio } });
       sendCtl({ t: 'focus', focused: document.hasFocus() && !document.hidden });
     };
-    ch.ctl.onmessage = function (e) { onCtl(JSON.parse(e.data)); };
-    ch.probe.onopen = function () { clock = new RKClock(ch.probe); if (q.get('measure') === '1' && !measure) measure = new RKMeasure(video, clock); else if (measure) measure.clock = clock; };
-    ch.probe.onmessage = function (e) { if (clock) clock.onMessage(JSON.parse(e.data)); };
+    ch.ctl.onmessage = function (e) { if (current(s, p)) { try { onCtl(JSON.parse(e.data)); } catch (err) { console.warn('ctl', err); } } };
+    ch.probe.onopen = function () { if (!current(s, p)) return; clock = new RKClock(channels.probe); if (q.get('measure') === '1' && !measure) measure = new RKMeasure(video, clock); else if (measure) measure.clock = clock; };
+    ch.probe.onmessage = function (e) { if (current(s, p) && clock) { try { clock.onMessage(JSON.parse(e.data)); } catch (err) { console.warn('probe', err); } } };
+    ch.input.onopen = function () { if (current(s, p)) input.enabled = !!epHello; };
     ch.input.bufferedAmountLowThreshold = 1024;
-    ch.input.onbufferedamountlow = function () { input.flush(); };
+    ch.input.onbufferedamountlow = function () { if (current(s, p) && input.enabled) input.flush(); };
     pc.ontrack = function (e) {
+      if (!current(s, p)) return;
       applyHints(e.receiver);
       video.srcObject = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
-      var p = video.play(); if (p && p.catch) p.catch(function () { status('tap to start video'); });
+      var play = video.play(); if (play && play.catch) play.catch(function () { if (current(s, p)) status('tap to start video'); });
     };
-    pc.onicecandidate = function (e) { sendSig({ t: 'ice', sid: sid, candidate: e.candidate ? e.candidate.toJSON() : null }); };
-    pc.onconnectionstatechange = function () {
-      var s = pc && pc.connectionState;
-      if (s === 'connected') status('');
-      else if (s === 'failed') { status('connection failed; restarting ICE'); sendSig({ t: 'restart', sid: sid }); }
-      else if (s) status('connection ' + s);
+    pc.onicecandidate = function (e) { if (current(s, p)) sendSig({ t: 'ice', sid: s.sid, candidate: e.candidate ? e.candidate.toJSON() : null }); };
+    pc.onconnectionstatechange = pc.oniceconnectionstatechange = function () {
+      if (!current(s, p)) return;
+      if (p.connectionState === 'failed' || p.iceConnectionState === 'failed') {
+        status(s.restarted ? 'connection failed; waiting for recovery' : 'connection failed; restarting ICE');
+        if (!s.restarted) { s.restarted = true; sendSig({ t: 'restart', sid: s.sid }); }
+        if (!s.failedTimer) s.failedTimer = setTimeout(function () {
+          if (!current(s, p)) return;
+          sendSig({ t: 'bye', sid: s.sid, reason: 'ice-failed' }); closePc(); status('session ended: ice-failed');
+        }, 10000);
+      } else if (p.connectionState === 'connected' || p.iceConnectionState === 'connected' || p.iceConnectionState === 'completed') {
+        clearTimeout(s.failedTimer); s.failedTimer = null; retryDelay = 1000; status('');
+      } else status('connection ' + (p.connectionState || p.iceConnectionState));
     };
-    pc.setRemoteDescription({ type: 'offer', sdp: m.sdp }).then(function () {
-      pc.getTransceivers().forEach(function (t) {
+  }
+  function onOffer(m) {
+    var s = session;
+    if (!pc) createPc(s);
+    var p = pc;
+    s.negotiation = s.negotiation.then(async function () {
+      if (!current(s, p)) return;
+      s.remoteReady = false;
+      await p.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+      if (!current(s, p)) return;
+      s.remoteReady = true; await drainIce(s, p);
+      if (!current(s, p)) return;
+      p.getTransceivers().forEach(function (t) {
         if (t.receiver.track && t.receiver.track.kind === 'video') { t.direction = 'recvonly'; console.log('[viewer] setCodecPreferences: ' + preferH264(t)); applyHints(t.receiver); }
       });
-      return pc.createAnswer();
-    }).then(function (a) { return pc.setLocalDescription(a); }).then(function () {
-      sendSig({ t: 'answer', sid: sid, sdp: pc.localDescription.sdp });
-      input.enabled = true;
-    }).catch(function (e) { status('negotiation failed: ' + e.message); });
+      var a = await p.createAnswer();
+      if (!current(s, p)) return;
+      await p.setLocalDescription(a);
+      if (current(s, p)) sendSig({ t: 'answer', sid: s.sid, sdp: p.localDescription.sdp });
+    }).catch(function (e) { if (current(s, p)) status('negotiation failed: ' + e.message); });
   }
   function onCtl(m) {
-    if (ime.onCtl(m)) return;
-    if (m.t === 'hello') epHello = m;
+    if (m.t === 'hello') {
+      if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); closePc(); status('session ended: protocol version mismatch'); return; }
+      epHello = m; input.enabled = ch.input.readyState === 'open';
+    }
+    else if (!epHello) return;
+    else if (ime.onCtl(m)) return;
     else if (m.t === 'stats') epStats = m;
     else if (m.t === 'cursor') stage.style.cursor = /^[a-z-]+$/.test(m.css) ? m.css : 'default';
     else if (m.t === 'frame') epHello = Object.assign({}, epHello, { frame: { w: m.w, h: m.h }, dsf: m.dsf });
@@ -134,7 +202,7 @@
     clearTimeout(rzTimer);
     rzTimer = setTimeout(function () { sendCtl({ t: 'resize', w: innerWidth, h: innerHeight, dpr: devicePixelRatio }); }, 200);
   });
-  stage.addEventListener('pointerdown', function () { if (video.paused) video.play(); });
+  stage.addEventListener('pointerdown', function () { if (video.paused) { var play = video.play(); if (play && play.catch) play.catch(function () {}); } });
 
   // ---- stats overlay (1 Hz) ----
   var prev = null, showStats = q.get('stats') !== '0';
@@ -143,7 +211,9 @@
   function fmt(v, d) { return v == null || isNaN(v) ? '-' : (+v).toFixed(d == null ? 1 : d); }
   setInterval(function () {
     if (!pc) { overlay.textContent = 'no session'; return; }
-    pc.getStats().then(function (r) {
+    var s = session, p = pc;
+    p.getStats().then(function (r) {
+      if (!current(s, p)) return;
       var inb = null, trk = null, pair = null, codec = {};
       r.forEach(function (s) {
         if (s.type === 'inbound-rtp' && (s.kind || s.mediaType) === 'video') inb = s;
@@ -178,20 +248,22 @@
       sendCtl({ t: 'vstats', fps: v.fps, kbps: v.kbps, jbMs: v.jbMs, decMs: v.decMs, rtt: v.rtt, lost: inb.packetsLost, nack: inb.nackCount, pli: inb.pliCount,
         freeze: inb.freezeCount, lat: lat ? { p50: lat.lat.p50, p80: lat.lat.p80, p99: lat.lat.p99 } : null });
       window.rk.last = { inbound: inb, derived: v, codec: c.mimeType, hint: hintInfo, decoder: inb.decoderImplementation };
-    });
+    }).catch(function (e) { if (current(s, p)) console.warn('stats', e); });
   }, 1000);
 
   // ---- automated report for tools/latency/run.mjs ----
   if (q.get('report')) {
     var secs = +q.get('report'), warm = +(q.get('warmup') || 3);
-    var started = false;
+    var started = null;
     // Synthetic input for input-to-photon: a mouse move every ~97 ms (the mock echoes the applied seq in the marker).
     if (q.get('autoinput') === '1') setInterval(function () { if (input.enabled) input.synthMove(0.2 + 0.6 * Math.random(), 0.6 + 0.3 * Math.random()); }, 97);
     setInterval(function () {
-      if (!started && measure && clock && clock.offset != null && video.videoWidth) {
-        started = true;
-        setTimeout(function () { measure.reset(); }, warm * 1000);
+      if (session && started !== session && measure && clock && clock.offset != null && video.videoWidth) {
+        var s = session, p = pc;
+        started = s;
+        setTimeout(function () { if (current(s, p)) measure.reset(); }, warm * 1000);
         setTimeout(function () {
+          if (!current(s, p)) return;
           var body = { kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
             stats: window.rk.last ? { codec: window.rk.last.codec, decoder: window.rk.last.decoder, derived: window.rk.last.derived,
               jitterBufferDelay: window.rk.last.inbound.jitterBufferDelay, emitted: window.rk.last.inbound.jitterBufferEmittedCount,

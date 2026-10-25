@@ -73,16 +73,27 @@
 
   // ---- signalling ----
   var pc = null, ch = null, sid = null, ws = null;
+  var session = null, generation = 0;
+  function current(s, p) { return session === s && generation === s.generation && pc === p; }
   function sendSig(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
   function connect() {
     var u = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/signal?role=endpoint&instance=' +
       encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : '');
     ws = new WebSocket(u);
     ws.onopen = function () { sendSig({ t: 'hello', v: RK.V, role: 'endpoint', instance: q.get('instance') || 'default', name: 'mock-endpoint', caps: { codecs: ['H264'], maxFps: FPS } }); log('signalling connected'); };
-    ws.onmessage = function (e) { onSignal(JSON.parse(e.data)); };
+    ws.onmessage = function (e) { try { onSignal(JSON.parse(e.data)); } catch (err) { log('signalling: ' + err.message); } };
+    ws.onerror = function () { ws.close(); };
     ws.onclose = function () { log('signalling closed; retry in 2 s'); closePc(); setTimeout(connect, 2000); };
   }
-  function closePc() { if (pc) { pc.close(); pc = null; } if (statsTimer) { clearInterval(statsTimer); statsTimer = null; } S.pointers = {}; S.mouse = null; }
+  function closePc() {
+    generation++; session = null; sid = null;
+    if (ch) { ch.input.close(); ch.ctl.close(); ch.probe.close(); ch = null; }
+    if (pc) { var old = pc; pc = null; old.close(); }
+    if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+    S.field.focused = false; S.field.comp = ''; S.inputSeq = 0; S.imeSeq = 0;
+    S.pointers = {}; S.mouse = null; S.lastKey = ''; S.cursor = 'default'; S.vstats = null;
+    S.counts = { pointer: 0, wheel: 0, key: 0, reset: 0, ime: 0, ctl: 0 }; prev = null;
+  }
 
   function preferH264(transceiver) {
     if (!transceiver.setCodecPreferences || !RTCRtpSender.getCapabilities) return false;
@@ -100,34 +111,81 @@
   function onSignal(m) {
     if (m.t === 'session.open') {
       closePc(); sid = m.sid; log('session.open ' + sid.slice(0, 8));
+      var s = session = { sid: sid, generation: generation, handshaken: false, candidates: [], outgoing: [], offerSent: false,
+        remoteReady: false, negotiation: Promise.resolve(), ice: Promise.resolve() };
       pc = new RTCPeerConnection({ iceServers: m.iceServers || [] });
+      var p = pc;
       var tr = pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
       log('H.264 preferred: ' + preferH264(tr));
       ch = RK.createChannels(pc);
-      ch.input.onmessage = function (e) { onInput(e.data); };
-      ch.ctl.onmessage = function (e) { onCtl(JSON.parse(e.data)); };
-      ch.probe.onmessage = function (e) { RKClock.answer(ch.probe, JSON.parse(e.data)); };
-      ch.ctl.onopen = function () { log('datachannels open'); };
-      pc.onicecandidate = function (e) { sendSig({ t: 'ice', sid: sid, candidate: e.candidate ? e.candidate.toJSON() : null }); };
-      pc.onconnectionstatechange = function () { log('pc ' + pc.connectionState); };
-      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () {
-        var p = tr.sender.getParameters();
-        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-        p.encodings[0].maxBitrate = KBPS * 1000; p.encodings[0].maxFramerate = FPS;
-        p.degradationPreference = 'maintain-resolution';
-        return tr.sender.setParameters(p).catch(function (e) { log('setParameters: ' + e.message); });
-      }).then(function () { sendSig({ t: 'offer', sid: sid, sdp: pc.localDescription.sdp }); });
-      statsTimer = setInterval(sendStats, 1000);
-    } else if (m.t === 'answer' && pc && m.sid === sid) {
-      pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).then(function () {
-        var h = /a=rtpmap:\d+ (\w+)\/90000/.exec(pc.remoteDescription.sdp); log('answer applied; first codec ' + (h && h[1]));
-      });
-    } else if (m.t === 'ice' && pc && m.sid === sid) {
-      if (m.candidate) pc.addIceCandidate(m.candidate).catch(function (e) { log('ice: ' + e.message); });
-    } else if (m.t === 'restart' && pc) {
-      pc.createOffer({ iceRestart: true }).then(function (o) { return pc.setLocalDescription(o); })
-        .then(function () { sendSig({ t: 'offer', sid: sid, sdp: pc.localDescription.sdp }); });
-    } else if (m.t === 'bye') { log('bye ' + m.reason); closePc(); }
+      var channels = ch;
+      ch.input.onmessage = function (e) { if (current(s, p) && s.handshaken) onInput(e.data); };
+      ch.ctl.onmessage = function (e) { if (current(s, p)) { try { onCtl(JSON.parse(e.data)); } catch (err) { log('ctl: ' + err.message); } } };
+      ch.probe.onmessage = function (e) { if (current(s, p)) { try { RKClock.answer(channels.probe, JSON.parse(e.data)); } catch (err) { log('probe: ' + err.message); } } };
+      ch.ctl.onopen = function () { if (current(s, p)) log('datachannels open'); };
+      pc.onicecandidate = function (e) {
+        if (!current(s, p)) return;
+        var ice = { t: 'ice', sid: s.sid, candidate: e.candidate ? e.candidate.toJSON() : null };
+        if (s.offerSent) sendSig(ice); else s.outgoing.push(ice);
+      };
+      pc.onconnectionstatechange = function () { if (current(s, p)) log('pc ' + p.connectionState); };
+      makeOffer(s, p, tr.sender, false);
+      statsTimer = setInterval(function () { if (current(s, p)) sendStats(); }, 1000);
+    } else if (!session || !pc || m.sid !== sid) return;
+    else if (m.t === 'answer') {
+      var active = session, peer = pc;
+      active.negotiation = active.negotiation.then(async function () {
+        if (!current(active, peer)) return;
+        active.remoteReady = false;
+        await peer.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+        if (!current(active, peer)) return;
+        active.remoteReady = true; await drainIce(active, peer);
+        if (!current(active, peer)) return;
+        var h = /a=rtpmap:\d+ (\w+)\/90000/.exec(peer.remoteDescription.sdp); log('answer applied; first codec ' + (h && h[1]));
+      }).catch(function (e) { if (current(active, peer)) log('answer: ' + e.message); });
+    } else if (m.t === 'ice') {
+      session.candidates.push(m.candidate); drainIce(session, pc);
+    } else if (m.t === 'restart') makeOffer(session, pc, null, true);
+    else if (m.t === 'bye') { log('bye ' + m.reason); closePc(); }
+  }
+  async function setSenderParameters(s, p, sender) {
+    if (!current(s, p)) return false;
+    try {
+      var params = sender.getParameters();
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = KBPS * 1000; params.encodings[0].maxFramerate = FPS;
+      params.degradationPreference = 'maintain-resolution';
+      await sender.setParameters(params); return true;
+    } catch (e) { if (current(s, p)) log('setParameters: ' + e.message); return false; }
+  }
+  function makeOffer(s, p, sender, restart) {
+    s.negotiation = s.negotiation.then(async function () {
+      if (!current(s, p)) return;
+      s.offerSent = false; s.remoteReady = false;
+      var configured = sender ? await setSenderParameters(s, p, sender) : true;
+      if (!current(s, p)) return;
+      var offer = await p.createOffer(restart ? { iceRestart: true } : {});
+      if (!current(s, p)) return;
+      await p.setLocalDescription(offer);
+      if (!current(s, p)) return;
+      // Some older senders expose encodings only after local SDP; ICE stays queued through the fallback.
+      if (!configured) await setSenderParameters(s, p, sender);
+      if (!current(s, p)) return;
+      sendSig({ t: 'offer', sid: s.sid, sdp: p.localDescription.sdp });
+      s.offerSent = true;
+      s.outgoing.splice(0).forEach(sendSig);
+    }).catch(function (e) { if (current(s, p)) log('offer: ' + e.message); });
+  }
+  function drainIce(s, p) {
+    if (!current(s, p) || !s.remoteReady) return s.ice;
+    s.ice = s.ice.then(async function () {
+      while (current(s, p) && s.remoteReady && s.candidates.length) {
+        var c = s.candidates.shift();
+        try { await p.addIceCandidate(c === null ? { candidate: '' } : c); }
+        catch (e) { if (c !== null && current(s, p)) log('ice: ' + e.message); }
+      }
+    }).catch(function (e) { if (current(s, p)) log('ice: ' + e.message); });
+    return s.ice;
   }
 
   // ---- input (binary) ----
@@ -180,6 +238,10 @@
   }
   function sendCtl(m) { if (ch && ch.ctl.readyState === 'open') ch.ctl.send(JSON.stringify(m)); }
   function onCtl(m) {
+    if (m.t === 'hello') {
+      if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); closePc(); return; }
+      session.handshaken = true;
+    } else if (!session.handshaken) return;
     S.counts.ctl++;
     var f = S.field;
     switch (m.t) {
@@ -201,7 +263,9 @@
   var statsTimer = null, prev = null;
   function sendStats() {
     if (!pc) return;
-    pc.getStats().then(function (r) {
+    var s = session, p = pc;
+    p.getStats().then(function (r) {
+      if (!current(s, p)) return;
       var o = null;
       r.forEach(function (s) { if (s.type === 'outbound-rtp' && s.kind === 'video') o = s; });
       if (!o) return;
@@ -215,7 +279,7 @@
           limit: o.qualityLimitationReason, inputs: S.counts });
       }
       prev = { now: now, f: o.framesEncoded, b: o.bytesSent, e: o.totalEncodeTime || 0, qp: o.qpSum || 0 };
-    });
+    }).catch(function (e) { if (current(s, p)) log('stats: ' + e.message); });
   }
   connect();
 })();

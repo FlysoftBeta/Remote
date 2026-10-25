@@ -6,14 +6,22 @@ import { Decoder, Writer } from './framing.js';
 export function spawnEndpoint(exe, instance, onMessage, onClose, log = console.log) {
   const child = spawn(exe, [`--instance=${instance}`], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
   const writer = new Writer(child.stdin);
+  let closed = false;
+  const finish = () => { if (!closed) { closed = true; onClose(conn); } };
+  const fail = e => { if (closed) return; log(`endpoint transport failed: ${e.message}`); finish(); child.kill(); };
   const conn = {
     role: 'endpoint', instance,
-    send: m => { writer.write(m).catch(e => log(`endpoint write failed: ${e.message}`)); },
+    send: m => {
+      if (closed) return;
+      try { writer.write(m).catch(fail); } catch (e) { fail(e); }
+    },
     close: () => child.kill()
   };
   const decoder = new Decoder(m => onMessage(conn, m));
-  child.stdout.on('data', c => { try { decoder.push(c); } catch (e) { log(`endpoint protocol error: ${e.message}`); child.kill(); } });
-  child.on('error', e => log(`endpoint spawn failed: ${e.message}`));
-  child.on('exit', code => { log(`endpoint exited (${code})`); onClose(conn); });
+  child.stdin.on('error', fail);
+  child.stdout.on('error', fail);
+  child.stdout.on('data', c => { if (!closed) { try { decoder.push(c); } catch (e) { fail(e); } } });
+  child.on('error', fail);
+  child.on('exit', code => { log(`endpoint exited (${code})`); finish(); });
   return conn;
 }
