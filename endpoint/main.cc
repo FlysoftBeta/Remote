@@ -121,8 +121,24 @@ int main(int argc, char** argv) {
         chrome.AppendSwitch("no-default-browser-check");
         chrome.AppendSwitch("disable-legacy-window");
         chrome.AppendSwitchPath("user-data-dir", profile);
+        chrome.AppendSwitchASCII("window-size", "1920,1080");
+        // Forward --cr-<switch>[=value] to chrome as --<switch>[=value].
+        for (const auto& [name, value] : command.GetSwitches()) {
+          if (name.starts_with("cr-") && name.size() > 3) {
+            chrome.AppendSwitchNative(name.substr(3), value);
+          }
+        }
         auto url = command.GetSwitchValueNative("url");
-        chrome.AppendArgNative(url.empty() ? L"about:blank" : url);
+        if (url.empty()) {
+          url = L"about:blank";
+        }
+        // --app: open the URL as an app window (no tab strip/omnibox), used
+        // by the latency harness so the page marker sits at the frame origin.
+        if (command.HasSwitch("app")) {
+          chrome.AppendSwitchNative("app", url);
+        } else {
+          chrome.AppendArgNative(url);
+        }
         ready = browser->Launch(std::move(chrome));
       }
       if (ready) {

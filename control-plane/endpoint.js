@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { Decoder, Writer } from './framing.js';
 
 export function spawnEndpoint(exe, instance, onMessage, onClose, log = console.log) {
-  const child = spawn(exe, [`--instance=${instance}`], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+  const extra = (process.env.ENDPOINT_ARGS || '').split(' ').filter(Boolean);
+  const child = spawn(exe, [`--instance=${instance}`, ...extra], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
   const writer = new Writer(child.stdin);
   let closed = false;
   const finish = () => { if (!closed) { closed = true; onClose(conn); } };

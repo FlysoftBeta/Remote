@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Latency test page rendered INSIDE the remote PRTS browser (real chain). Draws the 06 4.2 marker at the
+     top-left of the page every animation frame with the sender wall clock (same machine as the endpoint).
+     Use with prts_endpoint --app so the page origin is the video frame origin. -->
+<meta charset="utf-8"><title>PRTS latency page</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#246}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script src="marker.js"></script>
+<script>
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+let frameId = 0, inputs = 0, x = 0;
+addEventListener('pointerdown', () => inputs++); addEventListener('keydown', () => inputs++);
+function resize() { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; }
+addEventListener('resize', resize); resize();
+function tick() {
+  frameId++; x = (x + 8) % c.width;
+  ctx.fillStyle = '#246'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#fc0'; ctx.fillRect(x, c.height / 3, 60, c.height / 3);
+  ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
+  ctx.fillText('PRTS remote latency page  frame ' + frameId + '  inputs ' + inputs, 20, c.height - 40);
+  RKMarker.draw(ctx, c.width, { frameId, t: performance.timeOrigin + performance.now(), inputSeq: inputs });
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>

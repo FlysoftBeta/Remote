@@ -179,6 +179,10 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     // The owning PlatformHandle closes here; the opened COM resource persists.
   }
   void OnFrame(mojom::FrameInfoPtr info, OnFrameCallback reply) override {
+    static int frames_in = 0;
+    if (frames_in++ % 300 == 0) {
+      LOG(INFO) << "PRTS OnFrame #" << frames_in;
+    }
     auto it = buffers_.find(info->buffer_id);
     FrameGeometry g;
     auto job = std::make_unique<Job>();
@@ -197,6 +201,14 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         !gfx::Rect(info->coded_size).Contains(visible) ||
         visible.width() != g.width || visible.height() != g.height ||
         info->capture_end.is_null()) {
+      static int drops = 0;
+      if (drops++ % 100 == 0) {
+        LOG(WARNING) << "PRTS drop frame: known=" << (it != buffers_.end())
+                     << " visible=" << visible.ToString()
+                     << " coded=" << info->coded_size.ToString()
+                     << " geometry=" << g.width << "x" << g.height
+                     << " drops=" << drops;
+      }
       std::move(reply).Run();
       return;
     }
@@ -217,7 +229,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       return;
     }
     // WAIT_TIMEOUT and WAIT_ABANDONED are nonnegative: SUCCEEDED is wrong.
-    if (buffer.mutex->AcquireSync(0, 20) != S_OK) {
+    if (HRESULT hr = buffer.mutex->AcquireSync(0, 20); hr != S_OK) {
+      LOG(WARNING) << "PRTS AcquireSync failed: " << hr;
       std::move(reply).Run();
       return;
     }

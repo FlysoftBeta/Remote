@@ -1,7 +1,7 @@
 // Glass-to-glass harness runner: control-plane + mock endpoint (headless Edge/Chrome) + viewer (headless, any Chromium
 // incl. Chrome 89) on this machine; prints P50/P80/P95/P99 and writes the per-frame CSV.
 //   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off]
-//        [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
+//        [--no-mock: use the real endpoint started by the CP via ENDPOINT_PATH/ENDPOINT_ARGS] [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
 // Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -43,7 +43,7 @@ if (!(await up())) {
   for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
 }
 const before = (await (await fetch(base + '/api/report')).json()).length;
-browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}`);
+if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
 browser(viewerExe, 'viewer', `${base}/?measure=1&autoinput=1&report=${secs}&delay=${delay}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
