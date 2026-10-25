@@ -66,6 +66,7 @@ console.log(`viewer UA: ${report.ua}`);
 console.log(`hint: ${report.hint}; codec ${report.stats?.codec} ${report.stats?.decoder} ${report.stats?.frameWidth}x${report.stats?.frameHeight}; sender ${report.sender?.backend}`);
 console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}, dupes ${s.dupes}, skipped ${s.skipped}; clock offset ${f(s.offset)} ms, min RTT ${s.minRtt?.toFixed(2)} ms`);
 console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
+if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
 if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
 console.log(`csv: ${csv}`);

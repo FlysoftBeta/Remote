@@ -22,6 +22,7 @@
     field: { x: 0.3, y: 0.42, w: 0.4, h: 0.07, focused: false, text: '', comp: '' }, scroll: 0, imeSeq: 0, cursor: 'default'
   };
   window.mockState = S;
+  window.mockStream = stream;
 
   function inField(nx, ny) { var f = S.field; return nx >= f.x && nx <= f.x + f.w && ny >= f.y && ny <= f.y + f.h; }
 
@@ -217,4 +218,17 @@
     });
   }
   connect();
+})();
+
+// Calibration (?loop=1): display the captured canvas stream locally (no encoder, no network) and measure
+// draw -> captureStream -> local display with the same marker decoder. Subtract from harness numbers to isolate encode+transport+decode.
+(function () {
+  if (new URLSearchParams(location.search).get('loop') !== '1' || !window.RKMeasure) return;
+  var v = document.createElement('video'); v.muted = true; v.autoplay = true; v.playsInline = true; v.style.width = '320px';
+  document.body.appendChild(v);
+  v.srcObject = window.mockStream;
+  setTimeout(function () {
+    var m = new RKMeasure(v, { offset: 0, minRtt: 0, toLocal: function (t) { return t; } });
+    setInterval(function () { var s = m.summary().lat; console.log('[mock] loop calibration P50 ' + (s.p50 || 0).toFixed(1) + ' P99 ' + (s.p99 || 0).toFixed(1) + ' n=' + s.n); }, 5000);
+  }, 1000);
 })();

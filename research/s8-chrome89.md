@@ -62,3 +62,11 @@ node tools/latency/run.mjs --secs 20 --port 8099 --delay off            # Edge 1
 ## 5. Open
 - H.264 1080p decode on branded Chrome 89 (hardware vs software decoder, `decoderImplementation`) — needs a real Chrome 89 install.
 - M89 with the sender playout-delay extension (0,0) — needs the libwebrtc endpoint (or a native test sender).
+
+## 6. Harness calibration (added) [V]
+- `/mock?loop=1` shows the mock's own captured canvas stream in a local `<video>` (no encoder, no network) and decodes the marker:
+  headless Edge draw → captureStream → local display = **P50 80 ms, P99 121 ms**. Most of the ~95-105 ms end-to-end baseline is therefore
+  canvas capture plus headless display pacing, not WebRTC.
+- The viewer now also records `requestVideoFrameCallback` `receiveTime` (Edge 156, H.264, hint 0): draw → frame received **P50 38.5 / P80 51.8 /
+  P99 72.3 ms** (includes ~21 ms software encode); received → displayed ≈ 62 ms in headless (decode 3.4 ms, jitter buffer 7.7 ms, the rest is render/display).
+- Consequence: mock-based numbers are upper bounds; compare configurations, and re-measure with a headed viewer on the real client device.
