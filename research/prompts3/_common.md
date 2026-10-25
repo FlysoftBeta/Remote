@@ -11,5 +11,8 @@ Rules:
   do not touch C:\src\chromium (a Chromium build may be running: keep CPU use modest, e.g. cargo -j 8).
 - Create your report file within the first 5 minutes with headings, fill it incrementally (a hard timeout kills you).
 - Reports: concise, tables over prose, 60-200 lines; mark [V] measured/verified vs [I] inference.
+- Prior art may be referenced only PARTIALLY (the user disagrees with parts of it): never copy wholesale; port only pieces
+  you evaluated against our design docs, and say in the report what you took and why.
+- Temporary files go ONLY under C:\src\tmp\<task>\ (never C:\src.old).
 - No downloads except crates/npm packages strictly required by the task.
 - Final message: 5-8 lines summary.

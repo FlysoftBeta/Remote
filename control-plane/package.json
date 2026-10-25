@@ -1,22 +1,10 @@
 {
-  "name": "prts-sample-server",
-  "version": "0.1.0",
+  "name": "remotekit-control-plane",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "index.js",
-  "scripts": {
-    "start": "node .",
-    "test": "node --test test/*.test.js",
-    "e2e": "node --test test/e2e.js",
-    "e2e:browser": "node --test test/e2e-browser.js"
-  },
-  "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "puppeteer-core": "^25.14.0"
-  }
+  "scripts": { "start": "node .", "test": "node --test test/*.test.js" },
+  "engines": { "node": ">=22" },
+  "dependencies": { "ws": "^8.18.0" }
 }

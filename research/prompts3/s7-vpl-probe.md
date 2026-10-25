@@ -16,7 +16,7 @@ that:
    - AsyncDepth=1, GopRefDist=1, NumRefFrame=1, TargetUsage=7 (best speed), Baseline vs Main vs High profile.
    Use system or video memory as simplest works; note which IOPattern was used.
 3. For up to 4 promising combos (at least: LowPower+CBR+LowDelayBRC NV12 1080p60 L4.2), encode 300 synthetic frames (moving gradient + frame
-   counter block), write .h264 files to %TEMP%\s7, measure per-frame submit->output latency (P50/P99 ms) and bitrate accuracy at 12 Mbps,
+   counter block), write .h264 files to C:\src\tmp\s7, measure per-frame submit->output latency (P50/P99 ms) and bitrate accuracy at 12 Mbps,
    and verify decodability (MFT decoder or ffprobe if already installed; otherwise parse SPS/PPS and check the frame count of NAL units).
 Report: the matrix table, the recommended combination for 03 section 3.2, surprises (silently overridden fields), build/run commands.
 Time limit is hard; prioritize: build+enumerate (1), then the 1080p matrix (2), then (3).
