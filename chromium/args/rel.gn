@@ -1,0 +1,11 @@
+# out\rel: measurement / packaging build (design/05-plan.md 3.3). Latency is measured only on rel.
+is_debug = false
+is_component_build = false
+is_official_build = false
+dcheck_always_on = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+is_chrome_branded = false
+proprietary_codecs = false
+use_siso = true
