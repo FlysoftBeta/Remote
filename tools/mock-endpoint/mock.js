@@ -87,11 +87,11 @@
     if (!transceiver.setCodecPreferences || !RTCRtpSender.getCapabilities) return false;
     var codecs = RTCRtpSender.getCapabilities('video').codecs;
     function rank(c) {
-      if (c.mimeType.toLowerCase() !== 'video/h264') return /rtx|red|ulpfec/i.test(c.mimeType) ? 5 : 9;
+      if (c.mimeType.toLowerCase() !== 'video/h264') return /rtx|red|ulpfec/i.test(c.mimeType) ? 5 : 7;
       var f = c.sdpFmtpLine || '';
       return (f.indexOf('packetization-mode=1') >= 0 ? 0 : 2) + (f.indexOf('42e01f') >= 0 ? 0 : 1);
     }
-    codecs = codecs.slice().sort(function (a, b) { return rank(a) - rank(b); }).filter(function (c) { return rank(c) < 9; });
+    codecs = codecs.slice().sort(function (a, b) { return rank(a) - rank(b); }); // H.264 first, others kept as fallback (e.g. Chromium builds without H.264)
     transceiver.setCodecPreferences(codecs);
     return true;
   }

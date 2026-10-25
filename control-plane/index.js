@@ -62,6 +62,7 @@ function onHello(conn, m) {
       old.close(4000);
     }
     I.viewer = conn;
+    log(`viewer joined ${conn.instance}: touch=${conn.caps.touch} osk=${conn.caps.osk} h264=${(conn.caps.codecs || []).length} ${(conn.ua.match(/(HeadlessChrome|Chrome|Edg)\/[\d.]+/g) || []).join(' ')}`);
     if (!I.endpoint) conn.send({ t: 'error', code: 'no-endpoint', message: 'waiting for endpoint' });
     startSession(conn.instance);
   }

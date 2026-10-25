@@ -24,13 +24,13 @@ process.on('exit', cleanup); process.on('SIGINT', () => process.exit(130));
 
 async function up() { try { return (await fetch(base + '/api/health')).ok; } catch { return false; } }
 function browser(exe, name, url, oldHeadless) {
-  const dir = path.join(TMP, 'profile-' + name);
+  const dir = path.join(TMP, `profile-${name}-${port}-${Date.now()}`);
   const args = [
-    oldHeadless ? '--headless' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
+    oldHeadless ? '--headless --no-sandbox --enable-features=NetworkServiceInProcess --remote-debugging-port=0' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion',
     '--enable-logging=stderr', '--v=0', '--window-size=1920,1080', url
-  ].filter(Boolean);
+  ].filter(Boolean).flatMap(a => a.startsWith('--headless --') ? a.split(' ') : [a]);
   const p = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   p.stderr.on('data', d => { for (const line of d.toString().split(/\r?\n/)) if (/\[(mock|viewer)\]|Uncaught|ERROR:.*(rtc|webrtc)/i.test(line)) console.log(`  ${name}| ${line.replace(/^.*?CONSOLE\(\d+\)\] /, '')}`); });
   kids.push(p);
@@ -45,7 +45,7 @@ if (!(await up())) {
 const before = (await (await fetch(base + '/api/report')).json()).length;
 browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
-browser(viewerExe, 'viewer', `${base}/?measure=1&report=${secs}&delay=${delay}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&autoinput=1&report=${secs}&delay=${delay}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;

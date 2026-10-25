@@ -144,22 +144,24 @@
   setInterval(function () {
     if (!pc) { overlay.textContent = 'no session'; return; }
     pc.getStats().then(function (r) {
-      var inb = null, pair = null, codec = {};
+      var inb = null, trk = null, pair = null, codec = {};
       r.forEach(function (s) {
         if (s.type === 'inbound-rtp' && (s.kind || s.mediaType) === 'video') inb = s;
         if (s.type === 'candidate-pair' && s.nominated && s.state === 'succeeded') pair = s;
         if (s.type === 'codec') codec[s.id] = s;
+        if (s.type === 'track' && s.kind === 'video' && s.remoteSource) trk = s; // Chrome 89: jitter buffer stats live here
       });
       if (!inb) return;
+      var jbSrc = inb.jitterBufferEmittedCount != null ? inb : trk || {};
       var now = performance.now(), v = { rtt: pair && pair.currentRoundTripTime != null ? pair.currentRoundTripTime * 1000 : null };
       if (prev) {
-        var dt = (now - prev.now) / 1000, df = inb.framesDecoded - prev.fd, de = (inb.jitterBufferEmittedCount || 0) - prev.je;
+        var dt = (now - prev.now) / 1000, df = inb.framesDecoded - prev.fd, de = (jbSrc.jitterBufferEmittedCount || 0) - prev.je;
         v.fps = (inb.framesDecoded - prev.fd) / dt;
         v.kbps = (inb.bytesReceived - prev.b) * 8 / dt / 1000;
-        v.jbMs = de > 0 ? ((inb.jitterBufferDelay - prev.jb) / de) * 1000 : null;
+        v.jbMs = de > 0 ? ((jbSrc.jitterBufferDelay - prev.jb) / de) * 1000 : null;
         v.decMs = df > 0 && inb.totalDecodeTime != null ? ((inb.totalDecodeTime - prev.td) / df) * 1000 : null;
       }
-      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: inb.jitterBufferEmittedCount || 0, jb: inb.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0 };
+      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0 };
       var c = codec[inb.codecId] || {}, lat = measure ? measure.summary() : null;
       var lines = [
         'video  ' + (inb.frameWidth || video.videoWidth) + 'x' + (inb.frameHeight || video.videoHeight) + '  ' + (c.mimeType || '?') + ' ' + (inb.decoderImplementation || ''),
@@ -183,6 +185,8 @@
   if (q.get('report')) {
     var secs = +q.get('report'), warm = +(q.get('warmup') || 3);
     var started = false;
+    // Synthetic input for input-to-photon: a mouse move every ~97 ms (the mock echoes the applied seq in the marker).
+    if (q.get('autoinput') === '1') setInterval(function () { if (input.enabled) input.synthMove(0.2 + 0.6 * Math.random(), 0.6 + 0.3 * Math.random()); }, 97);
     setInterval(function () {
       if (!started && measure && clock && clock.offset != null && video.videoWidth) {
         started = true;

@@ -229,6 +229,9 @@ viewer 的 `jbMs` = Δ`jitterBufferDelay`/Δ`jitterBufferEmittedCount`，`decMs`
 | `requestVideoFrameCallback` | 有（M83+） | 有 | 测量用；无则退回 `timeupdate` 粗估并标记“不精确” |
 
 注意（e-video §M89）：接收端的 `UpdatePlayoutDelays` 取 frame/base/sync 最小值中的最大者——**JS 侧设非零 hint 会抵消 RTP (0,0) 的立即渲染**，所以只设 0 或不设。
+实测（`research/s8-chrome89.md`，Chromium 89.0.4389.0）：`playoutDelayHint` 在 89 上作为**下限**生效（0.1 s → 抖动缓冲恰为 100 ms），
+但设 0 **不会**把缓冲压到 89 自己的估计以下（本机回环 35-42 ms，而 156 为 7-9 ms）→ Chrome 89 的低延迟必须依赖 endpoint 发送 RTP playout-delay (0,0)。
+89 的 `jitterBufferDelay/EmittedCount` 在旧式 `track` 统计对象上，不在 `inbound-rtp` 上（viewer 已回退）。
 
 ## 6. 安全与健壮性
 - endpoint 对所有 DataChannel 输入做长度/范围校验；坐标夹到 [0,65535]；`pid` ≥ 16 丢弃；KEY 字符串 ≤ 32 字节；IME 文本 ≤ 4096 UTF-16 单位。

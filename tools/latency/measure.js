@@ -9,7 +9,7 @@
     this.lat = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
     this.inputSent = {}; this.lastInputSeq = -1; this.lastFrameId = -1; this.dupes = 0; this.skipped = 0;
     this.canvas = document.createElement('canvas');
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.precise = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
     var self = this;
     if (this.precise) {

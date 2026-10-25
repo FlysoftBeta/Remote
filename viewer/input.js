@@ -108,6 +108,10 @@
     window.addEventListener('keydown', function (e) { onKey(e, 0); });
     window.addEventListener('keyup', function (e) { onKey(e, 1); });
 
+    this.synthMove = function (nx, ny) {
+      var seq = nextSeq();
+      send(RK.encodePointer({ action: RK.PA.MOVE, seq: seq, ts: RK.ts32(), x: nx * 65535, y: ny * 65535, ptype: 0, pid: 0, buttons: 0, button: -1, mods: 0 }), seq);
+    };
     this.reset = function () {
       pending = {}; slots = {}; used = {};
       var seq = nextSeq(); send(RK.encodeReset(seq, RK.ts32()), seq);
