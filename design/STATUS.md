@@ -80,3 +80,9 @@
   NT 句柄经 ipcz driver 由 endpoint 从浏览器进程拉取（`research/` 待补；草稿说明在 `C:\src\tmp\m1\s10-link\NOTES.md`）。
 - endpoint（`endpoint/`，树内 C++）：stdio 信令、libwebrtc PeerConnection、OpenH264（M1 编码器）、3 条 negotiated DC、D3D11 帧源（keyed mutex → 私有拷贝 → staging → I420）。
 - Codex 草稿与提示词：`C:\src\tmp\m1\*`、`research/prompts5/`。
+- 05:20 状态（pacing 暂停到 07:30）：真实链路已通（Hello、StartCapture、viz 出帧、D3D11 导入、OpenH264、WebRTC 到 viewer 解码 1898x1068），
+  但只出 1 帧：Codex `m1-debug-frames` 定位为启动时 Network Service 崩溃导致首个导航失败（空文档，无损伤）→ 它在做启动导航恢复的 P0 修复
+  （笔记 `C:\src\tmp\m1\debug-frames\NOTES.md`，改动未提交，在 src 工作区）。下一步：审查其改动 → 提交/导出补丁 → 测延迟（`/c/src/tmp/m1/test.sh`）。
+- Widevine：Codex 已从 Google 组件更新服务取得 Win x64 CDM 4.10.3112.0（`C:\src\tmp\m1\widevine\`，`STEPS.md`：复制到 `third_party/widevine/cdm/win/x64/`，
+  args 加 `enable_widevine/enable_library_cdms/bundle_widevine_cdm=true`、`enable_cdm_host_verification=false`）。尚未应用（需要较大重建）。
+- 测试脚本：`/c/src/tmp/m1/{be.sh,test.sh,kill.sh,cp.sh}`；endpoint 参数 `--app`、`--cr-<switch>` 透传 chrome；chrome 日志用 `--cr-enable-logging` → `<profile>\chrome_debug.log`。
