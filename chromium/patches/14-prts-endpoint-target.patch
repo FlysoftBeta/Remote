@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 03:45:31 +0800
+Subject: [PATCH] prts: build //prts_endpoint from gn_all
+
+Patch-Name: 14-prts-endpoint-target
+
+diff --git a/BUILD.gn b/BUILD.gn
+index 516aa80505..831b9b8dc9 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -857,6 +857,12 @@ group("gn_all") {
+   if (checkout_clusterfuzz_data) {
+     deps += [ "//clusterfuzz-data:all" ]
+   }
++
++  # PRTS: in-tree browser-endpoint (src/prts_endpoint is a junction to
++  # remotekit/endpoint, not part of the patch).
++  if (is_win && !is_cronet_build) {
++    deps += [ "//prts_endpoint" ]
++  }
+ }
+ 
+ # All Rust targets. This is provided for convenience while developing Rust to

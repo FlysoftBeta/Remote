@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 03:34:38 +0800
+Subject: [PATCH] prts: keep popups inside the browser root in remote mode
+
+Patch-Name: 11-remote-popups-in-root
+
+diff --git a/chrome/browser/ui/views/chrome_views_delegate_win.cc b/chrome/browser/ui/views/chrome_views_delegate_win.cc
+index a376c75811..d4859fd9c4 100644
+--- a/chrome/browser/ui/views/chrome_views_delegate_win.cc
++++ b/chrome/browser/ui/views/chrome_views_delegate_win.cc
+@@ -15,6 +15,8 @@
+ #include "chrome/browser/ui/views/native_widget_factory.h"
+ #include "chrome/browser/win/app_icon.h"
+ #include "components/keep_alive_registry/scoped_keep_alive.h"
++// PRTS: Shared runtime guard for root-local popup widgets.
++#include "ui/base/ui_base_switches.h"
+ #include "ui/views/widget/widget_delegate.h"
+ 
+ namespace {
+@@ -157,6 +159,13 @@ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
+     native_widget_type = NativeWidgetType::kDesktopNativeWidgetAura;
+   }
+ 
++  // PRTS: Keep parented popups in the captured root, including context-only ones.
++  if (ui::IsPrtsRemoteMode() && (params->parent || params->context) &&
++      params->type != views::Widget::InitParams::TYPE_WINDOW &&
++      params->type != views::Widget::InitParams::TYPE_CONTROL) {
++    native_widget_type = NativeWidgetType::kNativeWidgetAura;
++  }
++
+   return ::CreateNativeWidget(native_widget_type, params, delegate);
+ }
+ 
+diff --git a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+index c79a1ab2ba..401efc225b 100644
+--- a/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
++++ b/ui/views/widget/desktop_aura/desktop_native_widget_aura.cc
+@@ -36,6 +36,8 @@
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/owned_window_anchor.h"
+ #include "ui/base/ui_base_features.h"
++// PRTS: Shared runtime guard for root-local Aura popup parenting.
++#include "ui/base/ui_base_switches.h"
+ #include "ui/base/ui_base_types.h"
+ #include "ui/color/color_id.h"
+ #include "ui/color/color_provider_key.h"
+@@ -252,6 +254,10 @@ class DesktopNativeWidgetAuraWindowParentingClient
+   aura::Window* GetDefaultParent(aura::Window* window,
+                                  const gfx::Rect& bounds,
+                                  const int64_t display_id) override {
++    // PRTS: Avoid a separate desktop host for menus and content popups.
++    if (ui::IsPrtsRemoteMode()) {
++      return root_window_;
++    }
+     // TODO(crbug.com/40192931): Re-enable this logic once Fuchsia's windowing
+     // APIs provide the required functionality.
+ #if !BUILDFLAG(IS_FUCHSIA)

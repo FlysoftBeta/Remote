@@ -63,3 +63,20 @@
 - 上一轮尝试被取消，b/c 两份报告不完整；本轮改为 6 个窄问题的 Codex 验证任务全部完成（每个 8-12 分钟）。
 - 并发 Codex 启动时 `runs.log` 写冲突导致脚本崩溃，已修复。
 - Codex 额度消耗快（6 个高强度任务约 50% 的 5 小时窗口）；最后一个问题（H.264 level）改用 Sonnet 子代理完成。
+
+## M0（Stage 2 收尾，由 Stage 3 orchestrator 补记，2026-10-26）
+- Checkout `C:\src\chromium\src` 固定在 157.0.8103.15 / `1aa07b63`（`chromium/PIN.json`），depot_tools 固定版本；`scripts/cr.ps1`（init/apply/export/check/stat/gen/build/run/status）已实际使用：
+  `cr build` 写 `out\dev\prts-build-*.log/.exit` 与 `prts-build-last.exit`，`cr export` 生成 `chromium/patches/*.patch` + `series`。
+- 首次全量 dev 构建：第一次 9462 s 后单步失败，增量重跑 11887 s 成功（`exit=0 target=chrome`，chrome.exe 02:11）。参数见 `chromium/args/dev.gn`
+  （component、dcheck、symbol_level=1、proprietary_codecs、ffmpeg_branding=Chrome、rtc_use_h264；rel.gn 同样带编解码参数）。
+- 冒烟（03:33，未打补丁）：`chrome.exe --headless=new --screenshot` 正常出图；UA = `HeadlessChrome/157.0.0.0`，brands = Chromium/Not-A.Brand（补丁 13 前的预期）。
+  GPU 进程日志反复出现 `vsync_thread_win_dxgi.cc: Failed to find DXGI output with matching monitor`（cloaked/无匹配显示器 → VSync 退化路径，S2 关注点）。
+- 坑：siso 不跟随目录 junction（`src/prts_endpoint` 必须用 `mklink /D` 符号链接）；Git Bash 的 `python` 是 Store 桩，用 depot_tools 的 python3。
+
+## M1（Stage 3，进行中）
+- 补丁系列（`chromium/series`）：01 switch、04 viz CompleteCapture（无守卫，可上游化）、11 弹层根内、12 品牌、13 Web 身份、06 aura/views 远程输入、
+  08 RemoteInputMethod、02 `chrome/browser/prts/*`（控制器 + Mojo link + 窗口注册 + 捕获 + 输入 + IME 桥）、14 `gn_all` → `//prts_endpoint`。
+- S10a 结论：endpoint 与浏览器都是 Mojo broker，endpoint `SendIsolated`（持有 chrome 进程句柄），浏览器 `AcceptIsolated`（`--prts-mojo=<handle>`）；
+  NT 句柄经 ipcz driver 由 endpoint 从浏览器进程拉取（`research/` 待补；草稿说明在 `C:\src\tmp\m1\s10-link\NOTES.md`）。
+- endpoint（`endpoint/`，树内 C++）：stdio 信令、libwebrtc PeerConnection、OpenH264（M1 编码器）、3 条 negotiated DC、D3D11 帧源（keyed mutex → 私有拷贝 → staging → I420）。
+- Codex 草稿与提示词：`C:\src\tmp\m1\*`、`research/prompts5/`。

@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 03:34:40 +0800
+Subject: [PATCH] prts: product branding PRTS
+
+Patch-Name: 12-prts-branding
+
+diff --git a/chrome/app/chromium_strings.grd b/chrome/app/chromium_strings.grd
+index 87499190d7..c8de73863b 100644
+--- a/chrome/app/chromium_strings.grd
++++ b/chrome/app/chromium_strings.grd
+@@ -294,15 +294,15 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+         </then>
+         <else>
+           <message name="IDS_PRODUCT_NAME" desc="The Chrome application name" translateable="false">
+-            Chromium
++            PRTS
+           </message>
+           <message name="IDS_SHORT_PRODUCT_NAME" desc="The Chrome application short name." translateable="false">
+-            Chromium
++            PRTS
+           </message>
+         </else>
+       </if>
+       <message name="IDS_APP_MENU_YOUR_CHROME_HEADER" desc="Header title for the Your Chromium section in the main App Menu">
+-        Your Chromium
++        Your PRTS
+       </message>
+       <if expr="is_win">
+         <message name="IDS_SXS_SHORTCUT_NAME" desc="Unused in Chromium builds" translateable="false">
+@@ -312,10 +312,10 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+         <message name="IDS_SHORTCUT_NAME_DEV" desc="Unused in Chromium builds" translateable="false">
+         </message>
+         <message name="IDS_PRODUCT_DESCRIPTION" desc="Browser description">
+-          Chromium is a web browser that runs webpages and applications with lightning speed. It's fast, stable, and easy to use. Browse the web more safely with malware and phishing protection built into Chromium.
++          PRTS is a web browser that runs webpages and applications with lightning speed. It's fast, stable, and easy to use. Browse the web more safely with malware and phishing protection built into PRTS.
+         </message>
+         <message name="IDS_WELCOME_TO_CHROME" desc="Welcoming text announced via screen readers the first time Chrome is launched at the conclusion of installation.">
+-          Welcome to Chromium; new browser window opened
++          Welcome to PRTS; new browser window opened
+         </message>
+       </if>
+       <if expr="is_macosx or is_linux">
+@@ -364,7 +364,7 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+       </if>
+       <if expr="not is_macosx and not is_chromeos">
+         <message name="IDS_TASK_MANAGER_TITLE" desc="The title of the Task Manager window">
+-          Task Manager - Chromium
++          Task Manager - PRTS
+         </message>
+       </if>
+       <message name="IDS_TASK_MANAGER_SEARCH_PLACEHOLDER" desc="The placeholder text for the Search bar in the Task Manager window">
+@@ -491,7 +491,7 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
+         </then>
+         <else>
+           <message name="IDS_ACCESSIBLE_BROWSER_WINDOW_TITLE_FORMAT" desc="The format for the accessible name of a tabbed browser window">
+-            <ph name="PAGE_TITLE">$1<ex>Google</ex></ph> - Chromium
++            <ph name="PAGE_TITLE">$1<ex>Google</ex></ph> - PRTS
+           </message>
+         </else>
+       </if>
+@@ -1147,12 +1147,12 @@ Chromium is unable to recover your settings.
+           </then>
+           <else>
+             <message name="IDS_ABOUT" desc="In Title Case: The text label of the About Chrome menu item">
+-              About &amp;Chromium
++              About &amp;PRTS
+             </message>
+           </else>
+         </if>
+         <message name="IDS_RELAUNCH_TO_UPDATE" desc="In Title Case: The text label of the relaunch to update Chrome menu item">
+-          Relaunch to Update &amp;Chromium
++          Relaunch to Update &amp;PRTS
+         </message>
+       </if>
+       <if expr="not use_titlecase and not is_chromeos">
+@@ -1164,12 +1164,12 @@ Chromium is unable to recover your settings.
+           </then>
+           <else>
+             <message name="IDS_ABOUT" desc="The text label of the About Chrome menu item">
+-              About &amp;Chromium
++              About &amp;PRTS
+             </message>
+           </else>
+         </if>
+         <message name="IDS_RELAUNCH_TO_UPDATE" desc="The text label of the relaunch to update Chrome menu item">
+-          Relaunch to update &amp;Chromium
++          Relaunch to update &amp;PRTS
+         </message>
+       </if>
+       <if expr="is_chromeos">
+diff --git a/chrome/app/settings_chromium_strings.grdp b/chrome/app/settings_chromium_strings.grdp
+index 66b9cc089b..f830e3fcc6 100644
+--- a/chrome/app/settings_chromium_strings.grdp
++++ b/chrome/app/settings_chromium_strings.grdp
+@@ -19,7 +19,7 @@
+     </then>
+     <else>
+       <message name="IDS_SETTINGS_ABOUT_PROGRAM" desc="Menu title for the About Chromium page.">
+-        About Chromium
++        About PRTS
+       </message>
+       <message name="IDS_SETTINGS_GET_HELP_USING_CHROME" desc="Text of the button which takes the user to the Chrome help page.">
+         Get help with Chromium
+diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRANDING
+index f8363d5b29..df148ff0e7 100644
+--- a/chrome/app/theme/chromium/BRANDING
++++ b/chrome/app/theme/chromium/BRANDING
+@@ -1,9 +1,9 @@
+ COMPANY_FULLNAME=The Chromium Authors
+ COMPANY_SHORTNAME=The Chromium Authors
+-PRODUCT_FULLNAME=Chromium
+-PRODUCT_SHORTNAME=Chromium
+-PRODUCT_INSTALLER_FULLNAME=Chromium Installer
+-PRODUCT_INSTALLER_SHORTNAME=Chromium Installer
++PRODUCT_FULLNAME=PRTS
++PRODUCT_SHORTNAME=PRTS
++PRODUCT_INSTALLER_FULLNAME=PRTS Installer
++PRODUCT_INSTALLER_SHORTNAME=PRTS Installer
+ COPYRIGHT=Copyright @LASTCHANGE_YEAR@ The Chromium Authors. All rights reserved.
+ MAC_BUNDLE_ID=org.chromium.Chromium
+ MAC_CREATOR_CODE=Cr24

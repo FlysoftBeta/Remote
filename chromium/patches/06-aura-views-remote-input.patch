@@ -1,0 +1,305 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 03:35:08 +0800
+Subject: [PATCH] aura/views: remote-mode input state, logical capture, cursor
+ sink
+
+Patch-Name: 06-aura-views-remote-input
+
+diff --git a/ui/aura/input_state_lookup_win.cc b/ui/aura/input_state_lookup_win.cc
+index d46eae2aa7..afbb15be10 100644
+--- a/ui/aura/input_state_lookup_win.cc
++++ b/ui/aura/input_state_lookup_win.cc
+@@ -9,6 +9,10 @@
+ #include <winuser.h>
+ 
+ #include "base/memory/ptr_util.h"
++// PRTS: query injected Aura state instead of the server's physical buttons.
++#include "ui/aura/env.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/events/event_constants.h"
+ 
+ namespace aura {
+ 
+@@ -24,6 +28,9 @@ InputStateLookupWin::~InputStateLookupWin() {
+ }
+ 
+ bool InputStateLookupWin::IsMouseButtonDown() const {
++  // PRTS: EnvInputStateController maintains this from injected events.
++  if (ui::IsPrtsRemoteMode())
++    return Env::GetInstance()->mouse_button_flags() != 0;
+   return (::GetKeyState(VK_LBUTTON) & 0x80) ||
+          (::GetKeyState(VK_RBUTTON) & 0x80) ||
+          (::GetKeyState(VK_MBUTTON) & 0x80) ||
+@@ -32,6 +39,10 @@ bool InputStateLookupWin::IsMouseButtonDown() const {
+ }
+ 
+ bool InputStateLookupWin::IsLeftMouseButtonDown() const {
++  // PRTS: avoid native GetKeyState for drag validation too.
++  if (ui::IsPrtsRemoteMode())
++    return (Env::GetInstance()->mouse_button_flags() &
++            ui::EF_LEFT_MOUSE_BUTTON) != 0;
+   return (::GetKeyState(VK_LBUTTON) & 0x80) != 0;
+ }
+ 
+diff --git a/ui/views/BUILD.gn b/ui/views/BUILD.gn
+index cb35a2682b..c14bcdca27 100644
+--- a/ui/views/BUILD.gn
++++ b/ui/views/BUILD.gn
+@@ -946,6 +946,8 @@ component("views") {
+       ]
+       if (is_win) {
+         public += [
++          # PRTS: cursor observer used only by remote-mode hooks.
++          "widget/desktop_aura/remote_cursor_sink.h",
+           "widget/desktop_aura/desktop_drag_drop_client_win.h",
+           "widget/desktop_aura/desktop_window_tree_host_win.h",
+         ]
+diff --git a/ui/views/widget/desktop_aura/desktop_drag_drop_client_win.cc b/ui/views/widget/desktop_aura/desktop_drag_drop_client_win.cc
+index cf9cd3a0f2..0d681ecaa1 100644
+--- a/ui/views/widget/desktop_aura/desktop_drag_drop_client_win.cc
++++ b/ui/views/widget/desktop_aura/desktop_drag_drop_client_win.cc
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ 
+ #include "ui/views/widget/desktop_aura/desktop_drag_drop_client_win.h"
++// PRTS: reject OLE drags before creating any native drag state.
++#include "ui/base/ui_base_switches.h"
+ 
+ #include <memory>
+ #include <utility>
+@@ -82,6 +84,9 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
+     const gfx::Point& screen_location,
+     int allowed_operations,
+     ui::mojom::DragEventSource source) {
++  // PRTS: M1 cancels drag-out instead of entering ::DoDragDrop.
++  if (ui::IsPrtsRemoteMode())
++    return ui::mojom::DragOperation::kNone;
+   CHECK(!g_is_dragging);
+   if (desktop_host_->IsInNativeMoveResizeLoop()) {
+     return ui::PreferredDragOperation(
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
+index 228f4a8ff9..3d2bddc0f2 100644
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
+@@ -41,6 +41,9 @@
+ #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/ui_base_features.h"
++// PRTS: remote input never manipulates the physical desktop cursor.
++#include "ui/base/ui_base_switches.h"
++#include "ui/views/widget/desktop_aura/remote_cursor_sink.h"
+ #include "ui/base/win/event_creation_utils.h"
+ #include "ui/base/win/hwnd_metrics.h"
+ #include "ui/base/win/win_cursor.h"
+@@ -79,6 +82,18 @@
+ #include "ui/wm/core/window_animations.h"
+ #include "ui/wm/public/scoped_tooltip_disabler.h"
+ 
++// PRTS: one UI-sequence sink, stored in the Views component (not header-local).
++namespace {
++views::RemoteCursorSink* g_remote_cursor_sink = nullptr;
++}
++void views::RemoteCursorSink::SetInstance(RemoteCursorSink* sink) {
++  if (ui::IsPrtsRemoteMode())
++    g_remote_cursor_sink = sink;
++}
++views::RemoteCursorSink* views::RemoteCursorSink::GetInstance() {
++  return ui::IsPrtsRemoteMode() ? g_remote_cursor_sink : nullptr;
++}
++
+ DEFINE_UI_CLASS_PROPERTY_TYPE(views::DesktopWindowTreeHostWin*)
+ 
+ namespace views {
+@@ -95,6 +110,9 @@ const int kMouseCaptureRegionBorder = 5;
+ 
+ // Updates the cursor clip region. Used for mouse locking.
+ void UpdateMouseLockRegion(aura::Window* window, bool locked) {
++  // PRTS: pointer lock must not clip the server's physical cursor.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   if (!locked) {
+     ::ClipCursor(nullptr);
+     return;
+@@ -225,6 +243,9 @@ aura::Window* DesktopWindowTreeHostWin::GetContentWindowForHWND(HWND hwnd) {
+ }
+ 
+ void DesktopWindowTreeHostWin::StartTouchDrag(gfx::Point screen_point) {
++  // PRTS: remote drags do not synthesize desktop mouse input.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   // Send a mouse down and mouse move before do drag drop runs its own event
+   // loop. This is required for ::DoDragDrop to start the drag.
+   ui::SendMouseEvent(screen_point,
+@@ -235,6 +256,9 @@ void DesktopWindowTreeHostWin::StartTouchDrag(gfx::Point screen_point) {
+ }
+ 
+ void DesktopWindowTreeHostWin::FinishTouchDrag(gfx::Point screen_point) {
++  // PRTS: no native drag was started.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   if (in_touch_drag_) {
+     in_touch_drag_ = false;
+     ui::SendMouseEvent(screen_point,
+@@ -658,6 +682,9 @@ Widget::MoveLoopResult DesktopWindowTreeHostWin::RunMoveLoop(
+     const gfx::Vector2d& drag_offset,
+     Widget::MoveLoopSource source,
+     Widget::MoveLoopEscapeBehavior escape_behavior) {
++  // PRTS: M1 supports strip reorder, but cancels detached native moves.
++  if (ui::IsPrtsRemoteMode())
++    return Widget::MoveLoopResult::kCanceled;
+   const bool hide_on_escape =
+       escape_behavior == Widget::MoveLoopEscapeBehavior::kHide;
+ 
+@@ -679,6 +706,9 @@ Widget::MoveLoopResult DesktopWindowTreeHostWin::RunMoveLoop(
+ }
+ 
+ void DesktopWindowTreeHostWin::EndMoveLoop() {
++  // PRTS: no native move loop is running.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   message_handler_->EndMoveLoop();
+ }
+ 
+@@ -872,6 +902,9 @@ void DesktopWindowTreeHostWin::ReleaseCapture() {
+ 
+ bool DesktopWindowTreeHostWin::CaptureSystemKeyEventsImpl(
+     std::optional<base::flat_set<ui::DomCode>> dom_codes) {
++  // PRTS: the viewer delivers keys; do not install a desktop keyboard hook.
++  if (ui::IsPrtsRemoteMode())
++    return false;
+   // Only one KeyboardHook should be active at a time, otherwise there will be
+   // problems with event routing (i.e. which Hook takes precedence) and
+   // destruction ordering.
+@@ -898,6 +931,12 @@ DesktopWindowTreeHostWin::GetKeyboardLayoutMap() {
+ }
+ 
+ void DesktopWindowTreeHostWin::SetCursorNative(gfx::NativeCursor cursor) {
++  // PRTS: export the logical type before touching a platform cursor handle.
++  if (ui::IsPrtsRemoteMode()) {
++    if (auto* sink = RemoteCursorSink::GetInstance())
++      sink->OnCursorChanged(window(), cursor.type());
++    return;
++  }
+   TRACE_EVENT1("ui,input", "DesktopWindowTreeHostWin::SetCursorNative",
+                "cursor", cursor.type());
+ 
+@@ -906,6 +945,9 @@ void DesktopWindowTreeHostWin::SetCursorNative(gfx::NativeCursor cursor) {
+ }
+ 
+ void DesktopWindowTreeHostWin::OnCursorVisibilityChangedNative(bool show) {
++  // PRTS: visibility is exported as CursorType::kNone by the cursor manager.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   if (base::FeatureList::IsEnabled(::features::kHideCursorWhileTyping)) {
+     // Cursor visibility is handled by setting the platform cursor to
+     // ui::mojom::CursorType::kNone in
+@@ -925,6 +967,9 @@ void DesktopWindowTreeHostWin::OnCursorVisibilityChangedNative(bool show) {
+ 
+ void DesktopWindowTreeHostWin::MoveCursorToScreenLocationInPixels(
+     const gfx::Point& location_in_pixels) {
++  // PRTS: do not warp the server cursor.
++  if (ui::IsPrtsRemoteMode())
++    return;
+   POINT cursor_location = location_in_pixels.ToPOINT();
+   ::ClientToScreen(GetHWND(), &cursor_location);
+   ::SetCursorPos(cursor_location.x, cursor_location.y);
+diff --git a/ui/views/widget/desktop_aura/remote_cursor_sink.h b/ui/views/widget/desktop_aura/remote_cursor_sink.h
+new file mode 100644
+index 0000000000..86edb024e5
+--- /dev/null
++++ b/ui/views/widget/desktop_aura/remote_cursor_sink.h
+@@ -0,0 +1,28 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef UI_VIEWS_WIDGET_DESKTOP_AURA_REMOTE_CURSOR_SINK_H_
++#define UI_VIEWS_WIDGET_DESKTOP_AURA_REMOTE_CURSOR_SINK_H_
++
++#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
++#include "ui/views/views_export.h"
++
++namespace aura {
++class Window;
++}
++namespace views {
++// UI sequence only. Register before remote hosts are shown; clear before
++// teardown. The embedder maps cursor types to CSS, filtering roots by the
++// active window.
++class VIEWS_EXPORT RemoteCursorSink {
++ public:
++  static void SetInstance(RemoteCursorSink* sink);
++  static RemoteCursorSink* GetInstance();
++  virtual void OnCursorChanged(aura::Window* root,
++                               ui::mojom::CursorType type) = 0;
++
++ protected:
++  virtual ~RemoteCursorSink() = default;
++};
++}  // namespace views
++#endif  // UI_VIEWS_WIDGET_DESKTOP_AURA_REMOTE_CURSOR_SINK_H_
+diff --git a/ui/views/win/hwnd_message_handler_headless.cc b/ui/views/win/hwnd_message_handler_headless.cc
+index 71258803ab..ec7f6dbf82 100644
+--- a/ui/views/win/hwnd_message_handler_headless.cc
++++ b/ui/views/win/hwnd_message_handler_headless.cc
+@@ -6,9 +6,13 @@
+ 
+ #include <dwmapi.h>
+ 
++// PRTS: process-lifetime weak capture owner, active only in remote mode.
++#include "base/no_destructor.h"
+ #include "base/notreached.h"
+ #include "base/trace_event/trace_event.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
++// PRTS: logical capture is opt-in.
++#include "ui/base/ui_base_switches.h"
+ #include "ui/base/win/hwnd_metrics.h"
+ #include "ui/display/win/screen_win.h"
+ #include "ui/display/win/screen_win_headless.h"
+@@ -433,11 +437,29 @@ void HWNDMessageHandlerHeadless::ClearNativeFocus() {
+   delegate_->HandleNativeFocus(/*last_focused_window=*/0);
+ }
+ 
+-// Headless window don't capture mouse.
+-void HWNDMessageHandlerHeadless::SetCapture() {}
+-void HWNDMessageHandlerHeadless::ReleaseCapture() {}
++void HWNDMessageHandlerHeadless::SetCapture() {
++  // PRTS: emulate native capture transfer, including capture-loss notification.
++  if (ui::IsPrtsRemoteMode()) {
++    static base::NoDestructor<base::WeakPtr<HWNDMessageHandler>> owner;
++    auto weak_this = GetWeakPtr();
++    if (*owner && owner->get() != this)
++      (*owner)->ReleaseCapture();
++    if (!weak_this)
++      return;
++    *owner = weak_this;
++    remote_has_capture_ = true;
++  }
++}
++void HWNDMessageHandlerHeadless::ReleaseCapture() {
++  // PRTS: mirror WM_CAPTURECHANGED; clear before the reentrant notification.
++  if (ui::IsPrtsRemoteMode() && remote_has_capture_) {
++    remote_has_capture_ = false;
++    delegate_->HandleCaptureLost();
++  }
++}
+ bool HWNDMessageHandlerHeadless::HasCapture() const {
+-  return false;
++  // PRTS: Views requires both Aura capture and native-handler capture.
++  return ui::IsPrtsRemoteMode() && remote_has_capture_;
+ }
+ 
+ FullscreenHandler* HWNDMessageHandlerHeadless::fullscreen_handler() {
+diff --git a/ui/views/win/hwnd_message_handler_headless.h b/ui/views/win/hwnd_message_handler_headless.h
+index 5faf0e9645..99c1e85ecf 100644
+--- a/ui/views/win/hwnd_message_handler_headless.h
++++ b/ui/views/win/hwnd_message_handler_headless.h
+@@ -111,6 +111,8 @@ class VIEWS_EXPORT HWNDMessageHandlerHeadless : public HWNDMessageHandler {
+   // for the upper layers to retrieve.
+   void SetHeadlessWindowBounds(const gfx::Rect& bounds);
+ 
++  // PRTS: used only when ui::IsPrtsRemoteMode() is enabled.
++  bool remote_has_capture_ = false;
+   bool is_visible_ = false;
+   bool is_active_ = false;
+   bool is_always_on_top_ = false;

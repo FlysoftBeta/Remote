@@ -70,6 +70,13 @@ D4b 成立时每个浏览器窗口只有一个源，endpoint 不做弹层合成�
   RC：A 组 CBR，B 组 VBR(target=max)+`LowDelayBRC`+`MaxFrameSize`；VBV 起点 1 帧，对照 2-3 帧/100 ms。
 - IDR：PLI/FIR/新观众/resize/切换窗口 → `mfxEncodeCtrl.FrameType = I|IDR|REF`，直到输出中确认 IDR；PLI 风暴合并。
 - 码率：`SetRates` → `MFXVideoENCODE_Reset` 改 `TargetKbps`（不强制 IDR），驱动不生效则重建 + IDR。
+- **S7 实测（UHD 630，驱动 30.0.100.9805，MSDK runtime API 1.35，`research/s7-onevpl-probe.md`）**：42 组参数全部可用视频内存输入初始化；
+  LowPower(VDEnc) 1080p60 CBR 12 Mbps 编码 P50 5.9 / P99 11.7 ms（VME 约 2 倍）。**CBR + LowDelayBRC 不被采纳**（回读为 OFF）；
+  VBR + LowDelayBRC + MaxFrameSize 生效（帧上限被遵守）。VBV 1 帧不被采纳，驱动最小约 2 帧（30 fps 101 KB / 60 fps 51 KB）。
+  RGB4 直接输入无收益（P99 28.9 ms）→ 保留 VPP BGRA→NV12。起点：LowPower ON、TU7、AsyncDepth 1、CBR 12 Mbps、驱动最小 VBV；
+  B 组 VBR+LowDelayBRC+MaxFrameSize=1.5×均值待真实浏览器内容对比。能力判定必须看 GetVideoParam 回读，不能只看 Init>=0。
+- **S8（`research/s8-chrome89.md`）**：Chrome 89 把 `playoutDelayHint` 当作下限，设 0 不能把抖动缓冲压到其自身估计以下（回环 35-42 ms，
+  156 为 7-9 ms）→ endpoint **必须**发送 RTP playout-delay (0,0)；JS 侧只设 0 或不设。品牌 Chrome 89 的 H.264 1080p 解码仍未验证。
 - 回退链：oneVPL → `media::VideoEncodeAccelerator`（MF，树内现成）→ OpenH264（`rtc_use_h264`）。每帧统计上报实际后端与输入路径。
 
 ### 3.5 队列纪律

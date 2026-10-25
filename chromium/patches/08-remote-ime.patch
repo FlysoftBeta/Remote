@@ -1,0 +1,246 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 03:35:10 +0800
+Subject: [PATCH] ime: RemoteInputMethod in remote mode
+
+Patch-Name: 08-remote-ime
+
+diff --git a/ui/base/ime/BUILD.gn b/ui/base/ime/BUILD.gn
+index 929dbe322d..61df48efbb 100644
+--- a/ui/base/ime/BUILD.gn
++++ b/ui/base/ime/BUILD.gn
+@@ -72,6 +72,9 @@ component("ime") {
+     "input_method_observer.h",
+     "mock_input_method.cc",
+     "mock_input_method.h",
++    # PRTS: selected by the runtime-guarded input-method factory.
++    "remote_input_method.cc",
++    "remote_input_method.h",
+     "surrounding_text_tracker.cc",
+     "surrounding_text_tracker.h",
+     "text_input_client.cc",
+diff --git a/ui/base/ime/init/input_method_factory.cc b/ui/base/ime/init/input_method_factory.cc
+index ad27a262b3..d7841182c1 100644
+--- a/ui/base/ime/init/input_method_factory.cc
++++ b/ui/base/ime/init/input_method_factory.cc
+@@ -9,6 +9,9 @@
+ #include "base/memory/ptr_util.h"
+ #include "build/build_config.h"
+ #include "ui/base/ime/mock_input_method.h"
++// PRTS: use the remote IME before the ordinary headless mock branch.
++#include "ui/base/ime/remote_input_method.h"
++#include "ui/base/ui_base_switches.h"
+ #include "ui/base/ui_base_features.h"
+ #include "ui/gfx/switches.h"
+ 
+@@ -49,6 +52,10 @@ std::unique_ptr<InputMethod> CreateInputMethod(
+   if (g_input_method_set_for_testing)
+     return std::make_unique<MockInputMethod>(ime_key_event_dispatcher);
+ 
++  // PRTS: retain testing overrides above, and opt in only for remote mode.
++  if (ui::IsPrtsRemoteMode())
++    return std::make_unique<RemoteInputMethod>(ime_key_event_dispatcher);
++
+   if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kHeadless))
+     return base::WrapUnique(new MockInputMethod(ime_key_event_dispatcher));
+ 
+diff --git a/ui/base/ime/remote_input_method.cc b/ui/base/ime/remote_input_method.cc
+new file mode 100644
+index 0000000000..b2614bbdec
+--- /dev/null
++++ b/ui/base/ime/remote_input_method.cc
+@@ -0,0 +1,150 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "ui/base/ime/remote_input_method.h"
++
++#include <utility>
++
++#include "base/observer_list.h"
++#include "ui/base/ime/text_input_client.h"
++#include "ui/base/ime/virtual_keyboard_controller.h"
++#include "ui/base/ime/virtual_keyboard_controller_observer.h"
++#include "ui/events/event.h"
++#include "ui/gfx/geometry/rect.h"
++
++namespace ui {
++class RemoteInputMethod::KeyboardController : public VirtualKeyboardController {
++ public:
++  bool DisplayVirtualKeyboard() override {
++    visible_ = true;
++    auto callback = callback_;
++    observers_.Notify(&VirtualKeyboardControllerObserver::OnKeyboardVisible,
++                      gfx::Rect());
++    if (callback) {
++      callback.Run(true);
++    }
++    return true;
++  }
++  void DismissVirtualKeyboard() override {
++    visible_ = false;
++    auto callback = callback_;
++    observers_.Notify(&VirtualKeyboardControllerObserver::OnKeyboardHidden);
++    if (callback) {
++      callback.Run(false);
++    }
++  }
++  bool IsKeyboardVisible() override { return visible_; }
++  void AddObserver(VirtualKeyboardControllerObserver* observer) override {
++    observers_.AddObserver(observer);
++  }
++  void RemoveObserver(VirtualKeyboardControllerObserver* observer) override {
++    observers_.RemoveObserver(observer);
++  }
++  void SetCallback(base::RepeatingCallback<void(bool)> callback) {
++    callback_ = std::move(callback);
++  }
++
++ private:
++  bool visible_ = false;
++  base::RepeatingCallback<void(bool)> callback_;
++  base::ObserverList<VirtualKeyboardControllerObserver> observers_;
++};
++
++RemoteInputMethod::RemoteInputMethod(ImeKeyEventDispatcher* dispatcher)
++    : MockInputMethod(dispatcher),
++      controller_(std::make_unique<KeyboardController>()) {}
++RemoteInputMethod::~RemoteInputMethod() = default;
++
++void RemoteInputMethod::SetVirtualKeyboardCallback(
++    base::RepeatingCallback<void(bool)> callback) {
++  controller_->SetCallback(std::move(callback));
++}
++
++void RemoteInputMethod::SetFocusedTextInputClient(TextInputClient* client) {
++  if (GetTextInputClient() == client) {
++    return;
++  }
++  MockInputMethod::SetFocusedTextInputClient(client);
++  // MockInputMethod notifies for non-null clients only.
++  if (!client) {
++    OnTextInputTypeChanged(nullptr);
++  }
++}
++
++void RemoteInputMethod::DetachTextInputClient(TextInputClient* client) {
++  if (!client || GetTextInputClient() != client) {
++    return;
++  }
++  MockInputMethod::DetachTextInputClient(client);
++  OnTextInputTypeChanged(nullptr);
++}
++
++void RemoteInputMethod::OnTextInputTypeChanged(TextInputClient* client) {
++  if (client != GetTextInputClient()) {
++    return;
++  }
++  auto weak_this = weak_factory_.GetWeakPtr();
++  MockInputMethod::OnTextInputTypeChanged(client);
++  if (!weak_this) {
++    return;
++  }
++  client = GetTextInputClient();
++  if (!client || client->GetTextInputType() == TEXT_INPUT_TYPE_NONE ||
++      client->GetTextInputMode() == TEXT_INPUT_MODE_NONE) {
++    controller_->DismissVirtualKeyboard();
++  }
++}
++void RemoteInputMethod::OnCaretBoundsChanged(const TextInputClient* client) {
++  if (client == GetTextInputClient()) {
++    MockInputMethod::OnCaretBoundsChanged(client);
++  }
++}
++TextInputType RemoteInputMethod::GetTextInputType() const {
++  auto* client = GetTextInputClient();
++  return client ? client->GetTextInputType() : TEXT_INPUT_TYPE_NONE;
++}
++
++EventDispatchDetails RemoteInputMethod::DispatchKeyEvent(KeyEvent* event) {
++  auto weak_this = weak_factory_.GetWeakPtr();
++  auto client =
++      GetTextInputClient() ? GetTextInputClient()->AsWeakPtr() : nullptr;
++  auto details = MockInputMethod::DispatchKeyEvent(event);
++  // Same InsertChar contract as InputMethodMinimal, with reentrancy checks.
++  // Content marks raw keydowns handled; only stopped propagation suppresses
++  // Char.
++  if (!weak_this || details.dispatcher_destroyed || details.target_destroyed) {
++    return details;
++  }
++  if (client && client.get() == GetTextInputClient() &&
++      !event->stopped_propagation() &&
++      event->type() == EventType::kKeyPressed && !event->is_char() &&
++      event->key_code() != VKEY_PROCESSKEY && event->GetCharacter()) {
++    client->InsertChar(*event);
++    event->StopPropagation();
++  }
++  return details;
++}
++
++void RemoteInputMethod::OnBlur() {
++  auto weak_this = weak_factory_.GetWeakPtr();
++  MockInputMethod::OnBlur();
++  if (weak_this) {
++    controller_->DismissVirtualKeyboard();
++  }
++}
++void RemoteInputMethod::SetVirtualKeyboardVisibilityIfEnabled(bool show) {
++  auto weak_this = weak_factory_.GetWeakPtr();
++  MockInputMethod::SetVirtualKeyboardVisibilityIfEnabled(show);
++  if (!weak_this) {
++    return;
++  }
++  if (show) {
++    controller_->DisplayVirtualKeyboard();
++  } else {
++    controller_->DismissVirtualKeyboard();
++  }
++}
++VirtualKeyboardController* RemoteInputMethod::GetVirtualKeyboardController() {
++  return controller_.get();
++}
++}  // namespace ui
+diff --git a/ui/base/ime/remote_input_method.h b/ui/base/ime/remote_input_method.h
+new file mode 100644
+index 0000000000..d2ef15c72b
+--- /dev/null
++++ b/ui/base/ime/remote_input_method.h
+@@ -0,0 +1,38 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef UI_BASE_IME_REMOTE_INPUT_METHOD_H_
++#define UI_BASE_IME_REMOTE_INPUT_METHOD_H_
++
++#include <memory>
++
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "ui/base/ime/mock_input_method.h"
++
++namespace ui {
++// UI-sequence-only IME for injected input. No native IME or OS keyboard calls.
++class COMPONENT_EXPORT(UI_BASE_IME) RemoteInputMethod : public MockInputMethod {
++ public:
++  explicit RemoteInputMethod(ImeKeyEventDispatcher* dispatcher);
++  ~RemoteInputMethod() override;
++
++  // One active-root bridge installs this callback; clear it before detaching.
++  void SetVirtualKeyboardCallback(base::RepeatingCallback<void(bool)> callback);
++  void SetFocusedTextInputClient(TextInputClient* client) override;
++  void DetachTextInputClient(TextInputClient* client) override;
++  void OnTextInputTypeChanged(TextInputClient* client) override;
++  void OnCaretBoundsChanged(const TextInputClient* client) override;
++  TextInputType GetTextInputType() const override;
++  EventDispatchDetails DispatchKeyEvent(KeyEvent* event) override;
++  void OnBlur() override;
++  void SetVirtualKeyboardVisibilityIfEnabled(bool show) override;
++  VirtualKeyboardController* GetVirtualKeyboardController() override;
++
++ private:
++  class KeyboardController;
++  std::unique_ptr<KeyboardController> controller_;
++  base::WeakPtrFactory<RemoteInputMethod> weak_factory_{this};
++};
++}  // namespace ui
++#endif  // UI_BASE_IME_REMOTE_INPUT_METHOD_H_
