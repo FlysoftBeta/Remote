@@ -37,11 +37,14 @@ $PinFile = Join-Path $CrDir 'PIN.json'
 $Root    = if ($env:CR_ROOT) { $env:CR_ROOT } else { 'C:\src\chromium' }
 $Src     = Join-Path $Root 'src'
 $Url     = 'https://chromium.googlesource.com/chromium/src.git'
+$TmpRoot = 'C:\src\tmp\cr'   # all temporary files live under C:\src\tmp
 $Utf8    = New-Object System.Text.UTF8Encoding($false)
+# Real git.exe: depot_tools git.bat runs through cmd, which eats "^" in revisions like x^{commit}.
+$Git     = (Get-Command git.exe -CommandType Application | Select-Object -First 1).Source
 
-function G { & git -C $Src @args; if ($LASTEXITCODE) { throw "git $args failed ($LASTEXITCODE)" } }
-function Gq { $o = & git -C $Src @args; if ($LASTEXITCODE) { throw "git $args failed ($LASTEXITCODE)" }; $o }
-function Has-Ref($r) { & git -C $Src rev-parse --verify --quiet "$r^{commit}" > $null; -not $LASTEXITCODE }
+function G { & $Git -C $Src @args; if ($LASTEXITCODE) { throw "git $args failed ($LASTEXITCODE)" } }
+function Gq { $o = & $Git -C $Src @args; if ($LASTEXITCODE) { throw "git $args failed ($LASTEXITCODE)" }; $o }
+function Has-Ref($r) { & $Git -C $Src rev-parse --verify --quiet "$r^{commit}" > $null; -not $LASTEXITCODE }
 function Native($line, $dir = $Src) {
   Push-Location $dir
   try { cmd /d /c "$line 2>&1"; if ($LASTEXITCODE) { throw "'$line' failed ($LASTEXITCODE)" } } finally { Pop-Location }
@@ -94,7 +97,7 @@ solutions = [
 "@
     [IO.File]::WriteAllText("$Root\.gclient", $g, $Utf8)
   }
-  if (Test-Path "$Src\.git") { Assert-Clean; & git -C $Src checkout -q --detach }
+  if (Test-Path "$Src\.git") { Assert-Clean; & $Git -C $Src checkout -q --detach }
   Native "gclient sync --revision src@$($pin.ref) --no-history --shallow -D" $Root
   $head = Gq rev-parse HEAD
   if ($head -ne $pin.commit) { throw "checkout HEAD $head != PIN $($pin.commit)" }
@@ -111,7 +114,7 @@ function Apply {
   foreach ($p in Get-Series) {
     $f = Join-Path $Patches $p
     if (-not (Test-Path $f)) { throw "series lists missing patch $p" }
-    & git -C $Src am -q --3way --keep-cr $f
+    & $Git -C $Src am -q --3way --keep-cr $f
     if ($LASTEXITCODE) { throw "git am failed at $p : resolve in $Src, 'git am --continue', then apply the rest by hand (or fix and 'cr export')" }
     $n++
   }
@@ -130,7 +133,7 @@ function Export {
   New-Item -ItemType Directory -Force $Patches | Out-Null
   $commits = @(Gq rev-list --reverse upstream..prts)
   $names = @(); $changed = 0
-  $tmp = [IO.Path]::GetTempFileName()
+  $work = Join-Path $TmpRoot ("export-" + [guid]::NewGuid()); New-Item -ItemType Directory -Force $work | Out-Null
   try {
     foreach ($c in $commits) {
       $name = ((Gq log -1 "--format=%(trailers:key=Patch-Name,valueonly)" $c) -join '').Trim()
@@ -138,14 +141,14 @@ function Export {
       if (-not $name.EndsWith('.patch')) { $name += '.patch' }
       if ($names -contains $name) { throw "duplicate Patch-Name $name (commit $c)" }
       $names += $name
-      cmd /d /c "git -C `"$Src`" format-patch -1 --stdout --zero-commit --no-signature --no-stat $c > `"$tmp`""
+      $pf = (& $Git -C $Src format-patch -1 --zero-commit --no-signature --no-stat -o $work $c | Select-Object -First 1)
       if ($LASTEXITCODE) { throw "format-patch $c failed" }
       $dst = Join-Path $Patches $name
-      $new = [IO.File]::ReadAllBytes($tmp)
+      $new = [IO.File]::ReadAllBytes($pf); Remove-Item $pf
       $same = (Test-Path $dst) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($dst)) -eq [Convert]::ToBase64String($new))
       if (-not $same) { [IO.File]::WriteAllBytes($dst, $new); $changed++; Write-Host "  wrote $name" }
     }
-  } finally { Remove-Item $tmp -ErrorAction SilentlyContinue }
+  } finally { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
   foreach ($f in Get-ChildItem $Patches -Filter *.patch) {
     if ($names -notcontains $f.Name) { Remove-Item $f.FullName; $changed++; Write-Host "  removed $($f.Name)" }
   }
@@ -156,7 +159,9 @@ function Export {
 
 function Check([string]$base) {
   if (-not $base) { Ensure-Upstream; $base = 'upstream' }
-  $idx = [IO.Path]::GetTempFileName()
+  $ErrorActionPreference = 'Continue'   # native stderr is redirected below
+  New-Item -ItemType Directory -Force $TmpRoot | Out-Null
+  $idx = Join-Path $TmpRoot ("index-" + [guid]::NewGuid())
   $old = $env:GIT_INDEX_FILE
   $bad = 0
   try {
@@ -164,11 +169,11 @@ function Check([string]$base) {
     G read-tree $base
     foreach ($p in Get-Series) {
       $f = Join-Path $Patches $p
-      & git -C $Src apply --cached --check $f 2>&1 | Out-Null
+      & $Git -C $Src apply --cached --check $f 2>&1 | Out-Null
       if ($LASTEXITCODE) {
         $bad++
         Write-Host "CONFLICT $p"
-        & git -C $Src apply --cached --check $f 2>&1 | Select-Object -First 8 | ForEach-Object { "    $_" }
+        & $Git -C $Src apply --cached --check $f 2>&1 | Select-Object -First 8 | ForEach-Object { "    $_" }
       } else {
         G apply --cached $f
         Write-Host "ok       $p"
@@ -184,14 +189,15 @@ function Check([string]$base) {
 
 function Stat {
   Ensure-Upstream
+  $ErrorActionPreference = 'Continue'
   $total = 0
   foreach ($p in Get-Series) {
     $f = Join-Path $Patches $p
     $up = 0; $nw = 0
-    foreach ($l in (& git -C $Src apply --numstat $f)) {
+    foreach ($l in (& $Git -C $Src apply --numstat $f)) {
       $a, $d, $path = $l -split "`t", 3
-      $n = [int]$a + [int]$d
-      & git -C $Src cat-file -e "upstream:$path" 2>$null
+      $n = ($a -as [int]) + ($d -as [int])   # "-" for binary
+      & $Git -C $Src cat-file -e "upstream:$path" 2>$null
       if ($LASTEXITCODE) { $nw += $n } else {
         $up += $n
         if ($n -gt 30) { Write-Host "  WARN $p touches upstream $path with $n lines (> 30)" }
@@ -211,7 +217,7 @@ function Finish-Rebase($tag, $new) {
   G checkout -q prts
   $pin = Get-Pin
   $pin.version = $tag; $pin.commit = $new; $pin.ref = "refs/tags/$tag"
-  $pin.depot_tools = ((& git -C C:\src\depot_tools rev-parse HEAD) -join '').Trim()
+  $pin.depot_tools = ((& $Git -C C:\src\depot_tools rev-parse HEAD) -join '').Trim()
   Save-Pin $pin
   Export
   Write-Host "rebased onto $tag ($new); rebuild and commit chromium\"
@@ -224,7 +230,7 @@ function Rebase([string]$tag) {
     G fetch --depth=1 origin "refs/tags/${tag}:refs/tags/$tag"
     $new = Gq rev-parse "$tag^{commit}"
     G branch -f "prts-backup/pre-$tag" prts
-    & git -C $Src rebase --onto $new upstream prts
+    & $Git -C $Src rebase --onto $new upstream prts
     if ($LASTEXITCODE) { throw "rebase stopped: resolve, 'git rebase --continue' until done, then 'cr rebase $tag -Continue'" }
   }
   $new = Gq rev-parse "$tag^{commit}"
