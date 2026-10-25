@@ -22,7 +22,7 @@ export class Endpoint {
   }
   async hello() {
     const r = await this.call('hello');
-    if (r.name !== 'remotekit-endpoint') throw new Error('incompatible endpoint hello');
+    if (!r || typeof r.name !== 'string') throw new Error('incompatible endpoint hello');
     return r;
   }
   async stop() { try { await this.call('shutdown', {}, 2000); } catch { this.child.kill(); } }

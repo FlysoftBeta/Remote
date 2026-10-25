@@ -8,3 +8,7 @@ blink_symbol_level = 0
 v8_symbol_level = 0
 is_chrome_branded = false
 use_siso = true
+# Codecs (design/REVIEW.md): H.264 playback in pages + OpenH264 fallback in the in-tree endpoint.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+rtc_use_h264 = true

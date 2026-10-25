@@ -141,7 +141,7 @@ function Export {
       if (-not $name.EndsWith('.patch')) { $name += '.patch' }
       if ($names -contains $name) { throw "duplicate Patch-Name $name (commit $c)" }
       $names += $name
-      $pf = (& $Git -C $Src format-patch -1 --zero-commit --no-signature --no-stat -o $work $c | Select-Object -First 1)
+      $pf = @(& $Git -C $Src format-patch -1 --zero-commit --no-signature --no-stat -o $work $c)[0]
       if ($LASTEXITCODE) { throw "format-patch $c failed" }
       $dst = Join-Path $Patches $name
       $new = [IO.File]::ReadAllBytes($pf); Remove-Item $pf

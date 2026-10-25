@@ -8,11 +8,13 @@ import { WebSocketServer } from 'ws';
 import { Endpoint } from './endpoint.js';
 
 const root = fileURLToPath(new URL('./', import.meta.url));
-const exe = process.env.ENDPOINT_PATH || path.join(root, '../endpoint/target/debug/endpoint.exe');
+// The endpoint is the in-tree C++ target prts_endpoint (design/REVIEW.md); optional until M1 builds it.
+const exe = process.env.ENDPOINT_PATH || 'C:/src/chromium/src/out/dev/prts_endpoint.exe';
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
 
-const endpoint = new Endpoint(exe);
-const hello = await endpoint.hello();
+const endpoint = fs.existsSync(exe) ? new Endpoint(exe) : null;
+const hello = endpoint ? await endpoint.hello() : null;
+if (!endpoint) console.warn(`endpoint not found at ${exe}; serving without it`);
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -32,4 +34,4 @@ const wss = new WebSocketServer({ server, path: '/signal' });
 wss.on('connection', ws => ws.send(JSON.stringify({ type: 'hello', endpoint: hello })));
 
 server.listen(Number(process.env.PORT ?? 8080), () => console.log(`control-plane on :${server.address().port}`));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { await endpoint.stop(); process.exit(0); });
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => { await endpoint?.stop(); process.exit(0); });
