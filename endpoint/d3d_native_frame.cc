@@ -168,9 +168,11 @@ class D3DNativeFramePool::Impl {
       IDXGIKeyedMutex* mutex,
       const RECT& visible,
       int limit,
-      bool* discard_source) {
+      bool* discard_source,
+      ID3D11Query* source_read_done,
+      bool* source_read_submitted) {
     *discard_source = false;
-    if (!healthy_->load() || !texture || !mutex)
+    if (!healthy_->load() || !texture || (!mutex && !source_read_done))
       return nullptr;
     ComPtr<ID3D11Device> owner;
     texture->GetDevice(&owner);
@@ -193,7 +195,7 @@ class D3DNativeFramePool::Impl {
       return nullptr;  // Drop raw input, never an encoded reference picture.
     // All resources/views exist before acquiring the cross-process mutex.
     const auto started = base::TimeTicks::Now();
-    HRESULT hr = mutex->AcquireSync(0, 20);
+    HRESULT hr = mutex ? mutex->AcquireSync(0, 20) : S_OK;
     if (hr != S_OK) {
       if (hr != WAIT_TIMEOUT) {
         *discard_source = true;
@@ -204,7 +206,12 @@ class D3DNativeFramePool::Impl {
     }
     const auto acquired = base::TimeTicks::Now();
     context_->CopyResource(slot->bgra.Get(), texture);
-    const HRESULT released = mutex->ReleaseSync(0);
+    // PRTS: incoming GPU Wait was queued on this same context by the source.
+    if (source_read_done) {
+      context_->End(source_read_done);
+      *source_read_submitted = true;
+    }
+    const HRESULT released = mutex ? mutex->ReleaseSync(0) : S_OK;
     const auto copied = base::TimeTicks::Now();
     auto& latency = LatencyStats::Get();
     latency.Add("native_mutex_acquire", started, acquired);
@@ -271,8 +278,11 @@ webrtc::scoped_refptr<webrtc::VideoFrameBuffer> D3DNativeFramePool::Convert(
     IDXGIKeyedMutex* mutex,
     const RECT& visible,
     int limit,
-    bool* discard_source) {
-  return impl_->Convert(texture, mutex, visible, limit, discard_source);
+    bool* discard_source,
+    ID3D11Query* source_read_done,
+    bool* source_read_submitted) {
+  return impl_->Convert(texture, mutex, visible, limit, discard_source,
+                        source_read_done, source_read_submitted);
 }
 bool D3DNativeFramePool::healthy() const {
   return impl_->healthy_->load();

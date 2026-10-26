@@ -9,6 +9,8 @@ executable("prts_endpoint") {
     "d3d_native_frame.h",
     "endpoint_link.cc",
     "endpoint_link.h",
+    "experiment_options.cc",
+    "experiment_options.h",
     "frame_source.h",
     "input_parser.cc",
     "input_parser.h",

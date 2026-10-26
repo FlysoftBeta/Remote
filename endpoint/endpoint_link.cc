@@ -9,7 +9,10 @@
 
 #include "prts_endpoint/endpoint_link.h"
 
+#include <d3d11_4.h>
+#include <wrl/client.h>
 #include <utility>
+#include "base/logging.h"
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -41,6 +44,31 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
   base::LaunchOptions options;
   command_line.AppendSwitchASCII(prts::switches::kPrtsMojo,
                                  channel.PrepareToPassRemoteEndpoint(options));
+  // PRTS: select timeline capture by default only if the consumer supports it.
+  auto mode = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+      "capture-sync");
+  if (!mode.empty() && mode != "fence" && mode != "mutex") {
+    LOG(ERROR) << "--capture-sync must be fence or mutex";
+    return false;
+  }
+  Microsoft::WRL::ComPtr<ID3D11Device> device;
+  Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+  Microsoft::WRL::ComPtr<ID3D11Device5> device5;
+  Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context4;
+  Microsoft::WRL::ComPtr<ID3D11Fence> fence;
+  const bool supported =
+      mode != "mutex" &&
+      SUCCEEDED(D3D11CreateDevice(
+          nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+          D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+          nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context)) &&
+      SUCCEEDED(device.As(&device5)) && SUCCEEDED(context.As(&context4)) &&
+      SUCCEEDED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED,
+                                     IID_PPV_ARGS(&fence)));
+  LOG(INFO) << "PRTS capture sync=" << (supported ? "fence" : "mutex")
+            << " requested=" << (mode.empty() ? "auto" : mode);
+  command_line.AppendSwitchASCII("prts-capture-sync",
+                                 supported ? "fence" : "mutex");
   command_line.AppendSwitch("prts-remote");
   command_line.AppendSwitchASCII("headless", "new");
   browser_process_ = base::LaunchProcess(command_line, options);

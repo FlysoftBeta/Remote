@@ -22,7 +22,9 @@ class D3DNativeFramePool {
       IDXGIKeyedMutex* keyed_mutex,
       const RECT& visible,
       int pool_limit,
-      bool* discard_source);
+      bool* discard_source,
+      ID3D11Query* source_read_done = nullptr,
+      bool* source_read_submitted = nullptr);
   bool healthy() const;
   void ClearImports();
 

@@ -12,3 +12,4 @@
 14-prts-endpoint-target.patch
 17-remote-vsync.patch
 18-prts-capture-recovery.patch
+19-prts-shared-fence.patch

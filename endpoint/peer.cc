@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
 #include "base/synchronization/lock.h"
+#include "prts_endpoint/experiment_options.h"
 #include "prts_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/audio_codecs/audio_decoder_factory_template.h"
 #include "third_party/webrtc/api/audio_codecs/audio_encoder_factory_template.h"
@@ -135,6 +136,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         });
   }
   void Start(const base::DictValue& message) {
+    const auto& experiments = GetExperimentOptions();
     webrtc::PeerConnectionInterface::RTCConfiguration config;
     config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
     config.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
@@ -205,7 +207,11 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     for (const auto& codec : owner_.factory_->GetRtpSenderCapabilities(
              webrtc::MediaType::VIDEO).codecs) {
       if ((codec.name == "H264" &&
-           codec.parameters == H264Format().parameters) || codec.name == "rtx")
+           codec.parameters == H264Format().parameters) ||
+          codec.name == "rtx" ||
+          (experiments.fec == "ulpfec" &&
+           (codec.name == "red" || codec.name == "ulpfec")) ||
+          (experiments.fec == "flexfec" && codec.name == "flexfec-03"))
         codecs.push_back(codec);
     }
     auto codec_error = transceiver_->SetCodecPreferences(codecs);
@@ -217,11 +223,13 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     bool found = false;
     for (auto& ext : extensions) {
       if (ext.uri == webrtc::RtpExtension::kPlayoutDelayUri) {
-        ext.direction = webrtc::RtpTransceiverDirection::kSendRecv;
+        ext.direction = experiments.playout_extension
+                            ? webrtc::RtpTransceiverDirection::kSendRecv
+                            : webrtc::RtpTransceiverDirection::kStopped;
         found = true;
       }
     }
-    if (!found) {
+    if (!found && experiments.playout_extension) {
       Fail("playout-delay capability missing");
       return;
     }
@@ -234,8 +242,8 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     if (parameters.encodings.empty()) {
       Fail("sender has no encoding"); return;
     }
-    parameters.encodings[0].min_bitrate_bps = 2000000;
-    parameters.encodings[0].max_bitrate_bps = 12000000;
+    parameters.encodings[0].min_bitrate_bps = experiments.min_kbps * 1000;
+    parameters.encodings[0].max_bitrate_bps = experiments.max_kbps * 1000;
     owner_.encoder_state_->min_bitrate_bps.store(
         *parameters.encodings[0].min_bitrate_bps);
     owner_.encoder_state_->max_bitrate_bps.store(
@@ -252,9 +260,9 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       return;
     }
     webrtc::BitrateSettings bitrate;
-    bitrate.min_bitrate_bps = 2000000;
-    bitrate.start_bitrate_bps = 8000000;
-    bitrate.max_bitrate_bps = 12000000;
+    bitrate.min_bitrate_bps = experiments.min_kbps * 1000;
+    bitrate.start_bitrate_bps = experiments.start_kbps * 1000;
+    bitrate.max_bitrate_bps = experiments.max_kbps * 1000;
     error = pc_->SetBitrate(bitrate);
     if (!error.ok()) {
       Fail(error.message());
@@ -340,8 +348,32 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
               for (const auto& ext : s.transceiver_->GetNegotiatedHeaderExtensions())
                 delay |= ext.uri == webrtc::RtpExtension::kPlayoutDelayUri &&
                     ext.direction != webrtc::RtpTransceiverDirection::kStopped;
-              if (!delay) {
+              if (!delay && GetExperimentOptions().playout_extension) {
                 s.Fail("answer omitted playout-delay");
+                return;
+              }
+              std::string codecs;
+              bool red = false;
+              bool ulpfec = false;
+              bool flexfec = false;
+              for (const auto& codec :
+                   s.transceiver_->sender()->GetParameters().codecs) {
+                codecs += codec.name + ',';
+                red |= codec.name == "red";
+                ulpfec |= codec.name == "ulpfec";
+                flexfec |= codec.name == "flexfec-03";
+              }
+              const auto& experiments = GetExperimentOptions();
+              const bool fec_negotiated =
+                  experiments.fec == "off" ||
+                  (experiments.fec == "ulpfec" && red && ulpfec) ||
+                  (experiments.fec == "flexfec" && flexfec);
+              LOG(INFO) << "PRTS peer negotiated fec=" << experiments.fec
+                        << " fec_negotiated=" << fec_negotiated
+                        << " codecs=" << codecs
+                        << " playout_extension=" << delay;
+              if (!fec_negotiated) {
+                s.Fail("answer omitted requested FEC codec(s)");
                 return;
               }
               s.DrainIce();
@@ -423,6 +455,33 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
                 if (!e.ok()) {
                   s.Fail(e.message());
                   return;
+                }
+                if (GetExperimentOptions().fec == "ulpfec") {
+                  // PRTS: H264 + generic NACK disables ULPFEC in
+                  // ShouldDisableRedAndUlpfec(). Codec preference feedback is
+                  // ignored at this pin; remove only generic NACK from the
+                  // actual local offer, keeping nack pli and ccm fir for IDR.
+                  std::string original;
+                  if (!description->ToString(&original)) {
+                    s.Fail("empty ULPFEC offer");
+                    return;
+                  }
+                  std::string filtered;
+                  for (const auto& line :
+                       base::SplitString(original, "\n", base::TRIM_WHITESPACE,
+                                         base::SPLIT_WANT_NONEMPTY)) {
+                    if (line.starts_with("a=rtcp-fb:") &&
+                        line.ends_with(" nack"))
+                      continue;
+                    filtered += line + "\r\n";
+                  }
+                  description = webrtc::CreateSessionDescription(
+                      webrtc::SdpType::kOffer, filtered);
+                  if (!description) {
+                    s.Fail("invalid ULPFEC offer");
+                    return;
+                  }
+                  LOG(INFO) << "PRTS ULPFEC generic_nack=off pli_fir=preserved";
                 }
                 s.pc_->SetLocalDescription(std::move(description),
                     webrtc::make_ref_counted<DescriptionObserver<

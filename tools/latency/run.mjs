@@ -23,7 +23,7 @@ const preset = arg('preset', null);
 if (preset && preset !== 'm3-combined') throw new Error('Unknown --preset: ' + preset);
 if (preset) {
   if (!process.env.ENDPOINT_PATH) throw new Error('--preset m3-combined requires ENDPOINT_PATH and ENDPOINT_ARGS (Chrome path and dedicated user-data-dir)');
-  if (+arg('fps', 60) !== 60) throw new Error('m3-combined requires --fps 60');
+  if (![30, 60].includes(+arg('fps', 60))) throw new Error('m3-combined requires --fps 30 or 60');
   if (/--no-hires-timer(?:\s|$)/.test(process.env.ENDPOINT_ARGS || '')) throw new Error('m3-combined requires the default hires timer');
   argv.push('--no-mock');
 }
@@ -64,7 +64,7 @@ if (!alreadyUp) {
   if (preset) {
     const scenario = arg('scenario', 'marker');
     if (!['marker', 'S', 'V', 'G'].includes(scenario)) throw new Error('--scenario must be marker, S, V or G');
-    env.ENDPOINT_ARGS = `${env.ENDPOINT_ARGS || ''} --encoder=vpl --fps=60 --cr-fake-vsync-rate=60 --webrtc-field-trials=WebRTC-Video-Pacing/factor:2.5/WebRTC-Bwe-LimitPacingFactorByUpperLinkCapacityEstimate/Enabled/ --url=${base}/tools/latency/remote-page.html?scenario=${scenario}`;
+    env.ENDPOINT_ARGS = `${env.ENDPOINT_ARGS || ''} --encoder=vpl --fps=${fps} --cr-fake-vsync-rate=60 --webrtc-field-trials=WebRTC-Video-Pacing/factor:2.5/WebRTC-Bwe-LimitPacingFactorByUpperLinkCapacityEstimate/Enabled/ --url=${base}/tools/latency/remote-page.html?scenario=${scenario}`;
     console.log('preset m3-combined endpoint args: ' + env.ENDPOINT_ARGS);
   }
   const cp = spawn(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(port)], { env, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });

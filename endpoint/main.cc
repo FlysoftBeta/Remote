@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include <memory>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -33,6 +34,7 @@
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
 #include "prts_endpoint/browser_session.h"
+#include "prts_endpoint/experiment_options.h"
 #include "prts_endpoint/peer.h"
 #include "prts_endpoint/synthetic_source.h"
 #include "prts_endpoint/vpl_encoder.h"
@@ -47,6 +49,9 @@ int main(int argc, char** argv) {
   logging::LoggingSettings settings;
   settings.logging_dest = logging::LOG_TO_STDERR;
   CHECK(logging::InitLogging(settings));
+  const auto& experiments = prts::GetExperimentOptions();
+  if (!experiments.valid)
+    return 1;
   // Retain 30 fps: VPL can fall back during 60 fps startup or rate changes on
   // the current driver. --fps=60 plus --cr-fake-vsync-rate=60 is opt-in.
   int fps = 30;
@@ -105,6 +110,30 @@ int main(int argc, char** argv) {
           << "bad --webrtc-field-trials";
       LOG(INFO) << "PRTS webrtc field trials: " << trials;
     }
+  }
+  if (experiments.fec == "flexfec") {
+    // PRTS: advertise the codec AND generate the repair SSRC/FEC-FR group.
+    // Reject conflicting --webrtc-field-trials rather than silently disabling
+    // protection. CreateTrialsFromString must run before WebRtcEnvironment().
+    for (const char* name :
+         {"WebRTC-FlexFEC-03", "WebRTC-FlexFEC-03-Advertised"}) {
+      const std::string group = base::FieldTrialList::FindFullName(name);
+      if (!group.empty() && !group.starts_with("Enabled")) {
+        LOG(ERROR) << "--fec=flexfec conflicts with " << name << '/' << group;
+        return 1;
+      }
+      if (group.empty() && !base::FieldTrialList::CreateTrialsFromString(
+                               std::string(name) + "/Enabled/")) {
+        LOG(ERROR) << "Cannot enable FlexFEC trial " << name;
+        return 1;
+      }
+    }
+  }
+  if (experiments.fec == "ulpfec" &&
+      base::FieldTrialList::FindFullName("WebRTC-DisableUlpFecExperiment")
+          .starts_with("Enabled")) {
+    LOG(ERROR) << "--fec=ulpfec conflicts with WebRTC-DisableUlpFecExperiment";
+    return 1;
   }
   base::FeatureList::InitInstance(
       command.GetSwitchValueASCII("enable-features"),

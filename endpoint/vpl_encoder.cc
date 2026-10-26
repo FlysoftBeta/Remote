@@ -20,6 +20,7 @@
 #include <cstring>
 #include <map>
 #include <new>
+#include <optional>
 #include <span>
 #include <thread>
 #include <utility>
@@ -28,9 +29,11 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "prts_endpoint/experiment_options.h"
 #include "prts_endpoint/latency_stats.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
 #include "third_party/libyuv/include/libyuv/convert_from.h"
+#include "third_party/webrtc/api/units/time_delta.h"
 #include "third_party/webrtc/api/video/encoded_image.h"
 #include "third_party/webrtc/api/video/i420_buffer.h"
 #include "third_party/webrtc/api/video/video_frame.h"
@@ -56,7 +59,7 @@ bool ValidSize(int width, int height) {
          static_cast<int64_t>(width) * height <= 1920 * 1080;
 }
 
-// Annex A limits for constrained baseline, <=20 Mbps. Never understate the
+// Annex A limits for constrained baseline. Never understate the
 // actual SPS level to match a nominal SDP string. Odd padded aspect ratios may
 // exceed MaxFS even if the visible pixel count fits the viewport budget.
 mfxU16 AvcLevel(int width, int height, int fps, int kbps) {
@@ -231,43 +234,110 @@ struct Parameters {
 };
 
 void SetRateFields(Parameters& params, int kbps, int max_kbps, int fps) {
+  const auto& options = GetExperimentOptions();
   auto& m = params.p.mfx;
+  // CLI validation bounds rates and VBV before any mfxU16 narrowing. Treat
+  // multiplier=0 as 1 on readback; writes use explicit unscaled units.
+  m.BRCParamMultiplier = 1;
   m.TargetKbps = static_cast<mfxU16>(kbps);
   m.MaxKbps = static_cast<mfxU16>(max_kbps);
   m.FrameInfo.FrameRateExtN = fps;
   m.FrameInfo.FrameRateExtD = 1;
   // Allocate once for the negotiated maximum; rate resets never change VBV.
-  m.BufferSizeInKB = static_cast<mfxU16>((max_kbps + 8 * fps - 1) / (8 * fps));
+  const int64_t numerator =
+      int64_t{max_kbps} *
+      (options.vbv_ms ? *options.vbv_ms : options.vbv_frames);
+  const int denominator = options.vbv_ms ? 8000 : 8 * fps;
+  m.BufferSizeInKB =
+      static_cast<mfxU16>((numerator + denominator - 1) / denominator);
   m.InitialDelayInKB = m.BufferSizeInKB / 2;
-  params.co2.MaxFrameSize = static_cast<mfxU32>(max_kbps * 1000 / (8 * fps));
+  // MaxFrameSize is VBR-only. It is not in the seamless-reset field list in
+  // mfxExtEncoderResetOption: apply the explicit target-based factor at Init,
+  // retain it on Reset. Defaults retain the old max-rate one-frame cap.
+  params.co2.MaxFrameSize =
+      options.cbr
+          ? 0
+          : static_cast<mfxU32>(options.max_frame_factor.value_or(1) *
+                                (options.max_frame_factor ? kbps : max_kbps) *
+                                1000 / (8 * fps));
+}
+
+int64_t EffectiveBrc(const mfxInfoMFX& m, mfxU16 value) {
+  return int64_t{value} * std::max<mfxU16>(1, m.BRCParamMultiplier);
 }
 
 void LogParameters(const char* phase, mfxStatus status, const Parameters& p) {
+  const auto& options = GetExperimentOptions();
   LOG(INFO) << "PRTS VPL " << phase << " status=" << status
-            << " kbps=" << p.p.mfx.TargetKbps << '/' << p.p.mfx.MaxKbps
+            << " kbps=" << EffectiveBrc(p.p.mfx, p.p.mfx.TargetKbps) << '/'
+            << EffectiveBrc(p.p.mfx, p.p.mfx.MaxKbps)
             << " fps=" << p.p.mfx.FrameInfo.FrameRateExtN
-            << " VBV_KB=" << p.p.mfx.BufferSizeInKB
-            << " initial_KB=" << p.p.mfx.InitialDelayInKB
+            << " VBV_KB=" << EffectiveBrc(p.p.mfx, p.p.mfx.BufferSizeInKB)
+            << " initial_KB=" << EffectiveBrc(p.p.mfx, p.p.mfx.InitialDelayInKB)
+            << " brc_multiplier=" << p.p.mfx.BRCParamMultiplier
             << " cap_bytes=" << p.co2.MaxFrameSize
             << " LDB=" << p.co3.LowDelayBRC << " LP=" << p.p.mfx.LowPower
             << " rate_control=" << p.p.mfx.RateControlMethod
             << " AsyncDepth=" << p.p.AsyncDepth
             << " level=" << p.p.mfx.CodecLevel
-            << " profile=" << p.p.mfx.CodecProfile;
+            << " profile=" << p.p.mfx.CodecProfile << " profile_option=cb"
+            << " tu=" << p.p.mfx.TargetUsage << " slices=" << p.p.mfx.NumSlice
+            << " intra_refresh_type=" << p.co2.IntRefType
+            << " intra_refresh=" << p.co2.IntRefCycleSize
+            << " rc=" << (options.cbr ? "cbr" : "vbr")
+            << " max_frame_factor=" << options.max_frame_factor.value_or(1)
+            << " cap_basis=" << (options.max_frame_factor ? "target" : "max")
+            << " cap_policy=init_only"
+            << " cap_active=" << !options.cbr
+            << " vbv_frames=" << options.vbv_frames
+            << " vbv_ms=" << options.vbv_ms.value_or(0)
+            << " lowpower=" << (options.low_power ? "on" : "off");
 }
 
-bool Compatible(const Parameters& requested, const Parameters& actual) {
+bool RoundedField(const char* name,
+                  int64_t requested,
+                  int64_t actual,
+                  int64_t quantum) {
+  if (requested == actual)
+    return true;
+  // Zero must stay zero (disabled/unspecified), never accept a disabled rate
+  // or frame cap as rounding. Bound both absolute granularity and 10% drift.
+  const int64_t delta =
+      actual > requested ? actual - requested : requested - actual;
+  if (!requested || !actual || delta > std::max(quantum, requested / 10)) {
+    LOG(ERROR) << "PRTS VPL incompatible " << name << " requested=" << requested
+               << " actual=" << actual;
+    return false;
+  }
+  LOG(INFO) << "PRTS VPL rounded " << name << " requested=" << requested
+            << " actual=" << actual;
+  return true;
+}
+
+bool Compatible(const Parameters& requested,
+                const Parameters& actual,
+                bool allow_vbv_minimum = false) {
   const auto& a = actual.p.mfx;
   const auto& r = requested.p.mfx;
   return actual.p.AsyncDepth == 1 &&
          actual.p.IOPattern == MFX_IOPATTERN_IN_VIDEO_MEMORY &&
          a.CodecId == MFX_CODEC_AVC && a.CodecProfile == r.CodecProfile &&
-         a.CodecLevel == r.CodecLevel && a.LowPower == MFX_CODINGOPTION_ON &&
-         a.TargetUsage == 7 && a.GopPicSize == 65535 && a.IdrInterval == 0 &&
-         a.RateControlMethod == MFX_RATECONTROL_VBR &&
-         // m3-trace: the driver rounds the target (2000 -> 2005/2148); accept +-10% instead of falling back to OpenH264.
-         (a.TargetKbps * 10 >= r.TargetKbps * 9 && a.TargetKbps * 10 <= r.TargetKbps * 11) && a.MaxKbps == r.MaxKbps &&
-         a.GopRefDist == 1 && a.NumRefFrame == 1 && a.NumSlice == 1 &&
+         a.CodecLevel == r.CodecLevel && a.LowPower == r.LowPower &&
+         a.TargetUsage == r.TargetUsage && a.GopPicSize == 65535 &&
+         a.IdrInterval == 0 && a.RateControlMethod == r.RateControlMethod &&
+         RoundedField("TargetKbps", EffectiveBrc(r, r.TargetKbps),
+                      EffectiveBrc(a, a.TargetKbps), 16) &&
+         RoundedField("MaxKbps", EffectiveBrc(r, r.MaxKbps),
+                      EffectiveBrc(a, a.MaxKbps), 16) &&
+         // UHD630 M3 readback was 101/50 KB for a 50/25 KB request. Preserve
+         // that existing driver minimum, with explicit requested/actual logs.
+         RoundedField("BufferSizeInKB", EffectiveBrc(r, r.BufferSizeInKB),
+                      EffectiveBrc(a, a.BufferSizeInKB),
+                      allow_vbv_minimum ? 64 : 2) &&
+         RoundedField("InitialDelayInKB", EffectiveBrc(r, r.InitialDelayInKB),
+                      EffectiveBrc(a, a.InitialDelayInKB),
+                      allow_vbv_minimum ? 32 : 2) &&
+         a.GopRefDist == 1 && a.NumRefFrame == 1 && a.NumSlice == r.NumSlice &&
          a.FrameInfo.FourCC == MFX_FOURCC_NV12 &&
          a.FrameInfo.Width == r.FrameInfo.Width &&
          a.FrameInfo.Height == r.FrameInfo.Height &&
@@ -278,15 +348,32 @@ bool Compatible(const Parameters& requested, const Parameters& actual) {
          a.FrameInfo.PicStruct == MFX_PICSTRUCT_PROGRESSIVE &&
          a.FrameInfo.FrameRateExtN == r.FrameInfo.FrameRateExtN &&
          a.FrameInfo.FrameRateExtD == 1 &&
-         actual.co3.LowDelayBRC == MFX_CODINGOPTION_ON &&
+         (r.RateControlMethod != MFX_RATECONTROL_VBR ||
+          actual.co3.LowDelayBRC == requested.co3.LowDelayBRC) &&
          actual.co2.AdaptiveI == MFX_CODINGOPTION_OFF &&
          actual.co2.AdaptiveB == MFX_CODINGOPTION_OFF &&
          actual.co2.MBBRC == MFX_CODINGOPTION_OFF &&
-         actual.co2.MaxFrameSize == requested.co2.MaxFrameSize &&
+         actual.co2.IntRefType == requested.co2.IntRefType &&
+         (!requested.co2.IntRefType ||
+          actual.co2.IntRefCycleSize == requested.co2.IntRefCycleSize) &&
+         (r.RateControlMethod != MFX_RATECONTROL_VBR ||
+          RoundedField("MaxFrameSize", requested.co2.MaxFrameSize,
+                       actual.co2.MaxFrameSize, 1024)) &&
          actual.vui.ColourDescriptionPresent == 1 &&
          actual.vui.ColourPrimaries == 1 &&
          actual.vui.TransferCharacteristics == 1 &&
          actual.vui.MatrixCoefficients == 1 && actual.vui.VideoFullRange == 0;
+}
+
+void SetPlayoutDelay(webrtc::EncodedImage& output) {
+  const auto& options = GetExperimentOptions();
+  if (options.playout_metadata) {
+    output.SetPlayoutDelay(webrtc::VideoPlayoutDelay(
+        webrtc::TimeDelta::Millis(options.playout_min_ms),
+        webrtc::TimeDelta::Millis(options.playout_max_ms)));
+  } else {
+    output.SetPlayoutDelay(std::nullopt);
+  }
 }
 
 // Output decoration also applies after the stock software fallback activates.
@@ -382,10 +469,7 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
       }
     }
     auto output = image;  // Encoded buffer is refcounted, no payload copy.
-    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-            "latency-no-playout-delay")) {
-      output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
-    }
+    SetPlayoutDelay(output);
     output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
     const auto handed = base::TimeTicks::Now();
     LatencyStats::Get().Add("encoded_to_handoff", encoded, handed);
@@ -716,6 +800,7 @@ class VplEncoder::Impl {
     if (!OpenDevice(std::move(supplied)) || !OpenSession())
       return false;
     Parameters requested;
+    const auto& options = GetExperimentOptions();
     requested.p.AsyncDepth = 1;
     requested.p.IOPattern = MFX_IOPATTERN_IN_VIDEO_MEMORY;
     auto& m = requested.p.mfx;
@@ -725,11 +810,13 @@ class VplEncoder::Impl {
     m.CodecLevel = AvcLevel(width, height, fps, max_kbps_);
     if (!m.CodecLevel)
       return false;
-    m.LowPower = MFX_CODINGOPTION_ON;
-    m.TargetUsage = 7;
-    m.RateControlMethod = MFX_RATECONTROL_VBR;
+    m.LowPower = options.low_power ? MFX_CODINGOPTION_ON : MFX_CODINGOPTION_OFF;
+    m.TargetUsage = static_cast<mfxU16>(options.target_usage);
+    m.RateControlMethod =
+        options.cbr ? MFX_RATECONTROL_CBR : MFX_RATECONTROL_VBR;
     m.GopPicSize = 65535;
-    m.GopRefDist = m.NumRefFrame = m.NumSlice = 1;
+    m.GopRefDist = m.NumRefFrame = 1;
+    m.NumSlice = static_cast<mfxU16>(options.slices);
     m.FrameInfo.FourCC = MFX_FOURCC_NV12;
     m.FrameInfo.Width = static_cast<mfxU16>(Align16(width));
     m.FrameInfo.Height = static_cast<mfxU16>(Align16(height));
@@ -739,7 +826,13 @@ class VplEncoder::Impl {
     m.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
     requested.co2.AdaptiveI = requested.co2.AdaptiveB = MFX_CODINGOPTION_OFF;
     requested.co2.MBBRC = MFX_CODINGOPTION_OFF;
-    requested.co3.LowDelayBRC = MFX_CODINGOPTION_ON;
+    requested.co3.LowDelayBRC =
+        options.cbr ? MFX_CODINGOPTION_OFF : MFX_CODINGOPTION_ON;
+    if (options.intra_refresh) {
+      requested.co2.IntRefType = MFX_REFRESH_VERTICAL;
+      requested.co2.IntRefCycleSize =
+          static_cast<mfxU16>(options.intra_refresh);
+    }
     // Input contract is BT.709 limited; repacking I420 does not change color.
     requested.vui.VideoFormat = 5;
     requested.vui.ColourDescriptionPresent = 1;
@@ -749,7 +842,7 @@ class VplEncoder::Impl {
     Parameters queried(requested);
     mfxStatus status = MFXVideoENCODE_Query(session_, &requested.p, &queried.p);
     LogParameters("Query", status, queried);
-    if (status < 0 || !Compatible(requested, queried))
+    if (status < 0 || !Compatible(requested, queried, true))
       return false;
     parameters_ = queried;
     status = MFXVideoENCODE_Init(session_, &parameters_.p);
@@ -760,9 +853,12 @@ class VplEncoder::Impl {
     Parameters actual;
     status = MFXVideoENCODE_GetVideoParam(session_, &actual.p);
     LogParameters("GetVideoParam", status, actual);
-    if (status != MFX_ERR_NONE || !Compatible(requested, actual))
+    if (status != MFX_ERR_NONE || !Compatible(requested, actual, true))
       return false;
     parameters_ = actual;
+    kbps_ =
+        static_cast<int>(EffectiveBrc(actual.p.mfx, actual.p.mfx.TargetKbps));
+    last_rate_request_kbps_ = kbps;
     mfxFrameAllocRequest request{};
     if (MFXVideoENCODE_QueryIOSurf(session_, &parameters_.p, &request) < 0)
       return false;
@@ -789,8 +885,9 @@ class VplEncoder::Impl {
     }
     packed_.resize(static_cast<size_t>(Align16(width)) * Align16(height) * 3 /
                    2);
-    bitstream_storage_.resize(std::max<size_t>(
-        1024 * 1024, static_cast<size_t>(actual.p.mfx.BufferSizeInKB) * 1000));
+    bitstream_storage_.resize(std::clamp<size_t>(
+        EffectiveBrc(actual.p.mfx, actual.p.mfx.BufferSizeInKB) * 1000,
+        1024 * 1024, kMaxBitstreamBytes));
     force_idr_ = true;
     failed_ = false;
     if (state_)
@@ -826,8 +923,12 @@ class VplEncoder::Impl {
   bool TryReset(int kbps, bool with_option) {
     Parameters wanted(parameters_);
     // These are the only fields allowed to change during seamless reset.
-    wanted.p.mfx.TargetKbps = static_cast<mfxU16>(kbps);
-    wanted.p.mfx.MaxKbps = static_cast<mfxU16>(max_kbps_);
+    const int multiplier = std::max<mfxU16>(1, wanted.p.mfx.BRCParamMultiplier);
+    wanted.p.mfx.TargetKbps =
+        static_cast<mfxU16>((kbps + multiplier - 1) / multiplier);
+    const int ceiling = GetExperimentOptions().cbr ? kbps : max_kbps_;
+    wanted.p.mfx.MaxKbps =
+        static_cast<mfxU16>((ceiling + multiplier - 1) / multiplier);
     mfxExtEncoderResetOption reset{};
     reset.Header = {MFX_EXTBUFF_ENCODER_RESET_OPTION, sizeof(reset)};
     reset.StartNewSequence = MFX_CODINGOPTION_OFF;
@@ -838,6 +939,7 @@ class VplEncoder::Impl {
       wanted.p.ExtParam = extensions;
       wanted.p.NumExtParam = 4;
     }
+    const Parameters expected(wanted);
     ++reset_attempts_;
     const mfxStatus status = MFXVideoENCODE_Reset(session_, &wanted.p);
     LogParameters(with_option ? "Reset-no-IDR" : "Reset-plain", status, wanted);
@@ -848,15 +950,15 @@ class VplEncoder::Impl {
     if (status < 0)
       return false;
     ++resets_;
-    if (readback != MFX_ERR_NONE || !Compatible(wanted, actual) ||
-        actual.p.mfx.BufferSizeInKB != parameters_.p.mfx.BufferSizeInKB ||
-        actual.p.mfx.InitialDelayInKB != parameters_.p.mfx.InitialDelayInKB) {
+    if (readback != MFX_ERR_NONE || !Compatible(expected, actual)) {
       // A successful but incompatible reset cannot safely keep streaming.
       Fail("reset readback mismatch", readback);
       return false;
     }
     parameters_ = actual;
-    kbps_ = actual.p.mfx.TargetKbps;
+    kbps_ =
+        static_cast<int>(EffectiveBrc(actual.p.mfx, actual.p.mfx.TargetKbps));
+    last_rate_request_kbps_ = kbps;
     check_reset_idr_ = true;
     return true;
   }
@@ -871,7 +973,7 @@ class VplEncoder::Impl {
     // Keep the latest request until cooldown expires, including small changes.
     // Large decreases can immediately relieve congestion.
     const bool large_decrease = kbps * 10 <= kbps_ * 7;
-    if (kbps == kbps_ ||
+    if (kbps == last_rate_request_kbps_ ||
         (!large_decrease && now - last_reset_ < base::Seconds(2))) {
       ++rate_ignored_;
       return;
@@ -881,7 +983,8 @@ class VplEncoder::Impl {
       // Keep the initialized maximum-rate VBR encoder if the runtime rejects
       // seamless changes. Never rebuild merely because GCC changed its rate.
       hold_max_ = true;
-      LOG(WARNING) << "PRTS VPL rate reset rejected; retain VBR kbps=" << kbps_;
+      LOG(WARNING) << "PRTS VPL rate reset rejected; retain rate kbps="
+                   << kbps_;
     }
   }
 
@@ -1119,7 +1222,7 @@ class VplEncoder::Impl {
     output.set_frame_type(idr ? webrtc::VideoFrameType::kVideoFrameKey
                               : webrtc::VideoFrameType::kVideoFrameDelta);
     output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
-    output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
+    SetPlayoutDelay(output);
     // Slice initial QP is misleading on VDEnc (MB deltas carry actual QP).
     // H264BitstreamParser also lacks RTC_EXPORT for component consumers.
     output.qp_ = -1;
@@ -1131,7 +1234,8 @@ class VplEncoder::Impl {
     info.codecSpecific.H264.temporal_idx = webrtc::kNoTemporalIdx;
     info.codecSpecific.H264.base_layer_sync = false;
     info.codecSpecific.H264.idr_frame = idr;
-    if (bits.DataLength > parameters_.co2.MaxFrameSize)
+    if (parameters_.co2.MaxFrameSize &&
+        bits.DataLength > parameters_.co2.MaxFrameSize)
       ++cap_violations_;
     RTC_LOG(LS_VERBOSE) << "PRTS VPL AU bytes=" << bits.DataLength
                         << " cap=" << parameters_.co2.MaxFrameSize
@@ -1186,6 +1290,7 @@ class VplEncoder::Impl {
   int width_ = 0;
   int height_ = 0;
   int kbps_ = 0;
+  int last_rate_request_kbps_ = 0;
   int pending_kbps_ = 0;
   int consecutive_errors_ = 0;
   int fps_ = 0;
@@ -1224,10 +1329,10 @@ int VplEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings&) {
         << "PRTS VPL unsupported configuration; fallback encoder=openh264";
     return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
   }
-  impl_->max_kbps_ =
-      std::clamp(codec->maxBitrate ? static_cast<int>(codec->maxBitrate)
-                                 : impl_->state_->max_bitrate_bps.load() / 1000,
-                 1, 20000);
+  impl_->max_kbps_ = std::clamp(
+      codec->maxBitrate ? static_cast<int>(codec->maxBitrate)
+                        : impl_->state_->max_bitrate_bps.load() / 1000,
+      1, 50000);
   impl_->min_kbps_ =
       std::min(static_cast<int>(codec->minBitrate), impl_->max_kbps_);
   // Legacy runtimes size internal BRC resources from the initial target and

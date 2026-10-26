@@ -19,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
@@ -119,6 +120,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                mojo::PendingReceiver<mojom::PrtsFrameSink> receiver) {
               self->receiver_.reset();
               self->buffers_.clear();
+              self->fences_.clear();
               if (self->native_pool_)
                 self->native_pool_->ClearImports();
               self->bound_epoch_ = epoch;
@@ -186,10 +188,12 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     Buffer buffer;
     HRESULT hr = device_->OpenSharedResource1(handle.GetHandle().get(),
                                               IID_PPV_ARGS(&buffer.texture));
-    if (FAILED(hr) || FAILED(buffer.texture.As(&buffer.mutex))) {
+    if (FAILED(hr)) {
       LOG(ERROR) << "OpenSharedResource1/keyed mutex failed: " << hr;
       return;
     }
+    // PRTS: no-keyed textures are usable only with a matching ready dependency.
+    buffer.texture.As(&buffer.mutex);
     D3D11_TEXTURE2D_DESC desc;
     buffer.texture->GetDesc(&desc);
     if (desc.Width != static_cast<UINT>(size.width()) ||
@@ -224,7 +228,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       job->epoch = bound_epoch_;
       job->consumer_epoch = consumer_epoch_;
       if (!consumer_ || job->epoch != epoch_) {
-        std::move(reply).Run();
+        std::move(reply).Run(true);
         return;
       }
     }
@@ -241,33 +245,100 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                      << " geometry=" << g.width << "x" << g.height
                      << " drops=" << drops;
       }
-      std::move(reply).Run();
+      std::move(reply).Run(true);
       return;
     }
     auto& buffer = it->second;
+    const auto shared_source = buffer.texture;
     D3D11_TEXTURE2D_DESC desc;
     buffer.texture->GetDesc(&desc);
     if (info->coded_size != gfx::Size(static_cast<int>(desc.Width),
                                       static_cast<int>(desc.Height))) {
-      std::move(reply).Run();
+      std::move(reply).Run(true);
       return;
+    }
+    // PRTS: open once per writer token; validate the actual consumer adapter.
+    const bool fenced = !!info->ready_fence;
+    if (fenced == !!buffer.mutex) {
+      LOG(ERROR) << "PRTS capture sync/texture mismatch";
+      std::move(reply).Run(true);
+      return;
+    }
+    ComPtr<ID3D11Query> source_read;
+    bool read_submitted = false;
+    if (fenced) {
+      auto& ready = *info->ready_fence;
+      ComPtr<IDXGIDevice> dxgi;
+      ComPtr<IDXGIAdapter> adapter;
+      DXGI_ADAPTER_DESC adapter_desc{};
+      ComPtr<ID3D11Device5> device5;
+      ComPtr<ID3D11DeviceContext4> context4;
+      if (!ready.value || ready.token.is_empty() || FAILED(device_.As(&dxgi)) ||
+          FAILED(dxgi->GetAdapter(&adapter)) ||
+          FAILED(adapter->GetDesc(&adapter_desc)) ||
+          ready.adapter_luid != ((uint64_t{static_cast<uint32_t>(
+                                      adapter_desc.AdapterLuid.HighPart)}
+                                  << 32) |
+                                 adapter_desc.AdapterLuid.LowPart) ||
+          FAILED(device_.As(&device5)) || FAILED(context_.As(&context4))) {
+        std::move(reply).Run(true);  // No shared read submitted.
+        return;
+      }
+      auto fence = fences_.find(ready.token);
+      if (fence == fences_.end()) {
+        ComPtr<ID3D11Fence> opened;
+        if (!ready.fence_handle.is_valid() || fences_.size() >= 8 ||
+            FAILED(device5->OpenSharedFence(
+                ready.fence_handle.GetHandle().get(), IID_PPV_ARGS(&opened)))) {
+          LOG(ERROR) << "PRTS OpenSharedFence failed";
+          std::move(reply).Run(true);
+          return;
+        }
+        LOG(INFO) << "PRTS OpenSharedFence token=" << ready.token.ToString();
+        fence = fences_.emplace(ready.token, std::move(opened)).first;
+      }
+      D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
+      if (pending_reads_.size() >= 32 ||
+          FAILED(device_->CreateQuery(&query, &source_read)) ||
+          FAILED(context4->Wait(fence->second.Get(), ready.value))) {
+        std::move(reply).Run(true);
+        return;
+      }
+      if (TraceEnabled())
+        LOG(INFO) << "PRTS TR F seq=" << info->frame_seq
+                  << " value=" << ready.value
+                  << " cb=" << TraceUs(info->capture_begin)
+                  << " ce=" << TraceUs(info->capture_end)
+                  << " rcv=" << TraceUs(received)
+                  << " wait=" << TraceUs(base::TimeTicks::Now()) << " pending="
+                  << (fence->second->GetCompletedValue() < ready.value);
     }
     if (native_pool_ && !native_pool_->healthy() &&
         received - native_pool_retry_ >= base::Seconds(2)) {
       RebuildNativePool();
     }
     if (native_pool_ && native_pool_->healthy() &&
-        encoder_state_->NativeActive(device_.Get())) {
-      const RECT rect{visible.x(), visible.y(), visible.right(), visible.bottom()};
+        (fenced || encoder_state_->NativeActive(device_.Get()))) {
+      const RECT rect{visible.x(), visible.y(), visible.right(),
+                      visible.bottom()};
       bool discard_source = false;
       job->native = native_pool_->Convert(
           buffer.texture.Get(), buffer.mutex.Get(), rect,
-          encoder_state_->native_pool_limit.load(), &discard_source);
+          encoder_state_->native_pool_limit.load(), &discard_source,
+          source_read.Get(), &read_submitted);
       if (discard_source)
         buffers_.erase(it);
       job->copied = base::TimeTicks::Now();
       latency.Add("native_vpp", received, job->copied);
-      std::move(reply).Run();  // Private copy submitted, shared key 0 released.
+      if (fenced && read_submitted) {
+        HoldSourceRead(shared_source, source_read, std::move(reply));
+      } else {
+        std::move(reply).Run(true);
+      }
+      if (TraceEnabled())
+        LOG(INFO) << "PRTS TR P cb=" << TraceUs(info->capture_begin)
+                  << " rcv=" << TraceUs(received)
+                  << " vpp=" << TraceUs(job->copied);
       if (!job->native)
         return;  // Raw pool pressure/timeout; failed VPP uses CPU next frame.
     } else {
@@ -276,22 +347,29 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       desc.CPUAccessFlags = 0;
       desc.MiscFlags = 0;
       if (FAILED(device_->CreateTexture2D(&desc, nullptr, &job->texture))) {
-        std::move(reply).Run();
+        std::move(reply).Run(true);
         return;
       }
       // WAIT_TIMEOUT and WAIT_ABANDONED are nonnegative: SUCCEEDED is wrong.
-      if (HRESULT hr = buffer.mutex->AcquireSync(0, 20); hr != S_OK) {
+      if (HRESULT hr = buffer.mutex ? buffer.mutex->AcquireSync(0, 20) : S_OK;
+          hr != S_OK) {
         LOG(WARNING) << "PRTS AcquireSync failed: " << hr;
         if (hr != WAIT_TIMEOUT)
           buffers_.erase(it);
-        std::move(reply).Run();
+        std::move(reply).Run(true);
         return;
       }
       context_->CopyResource(job->texture.Get(), buffer.texture.Get());
       job->copied = base::TimeTicks::Now();
       latency.Add("import_copy_submit", received, job->copied);
-      HRESULT released = buffer.mutex->ReleaseSync(0);
-      std::move(reply).Run();  // Browser can call Done before staging/Map/encode.
+      HRESULT released = buffer.mutex ? buffer.mutex->ReleaseSync(0) : S_OK;
+      if (fenced) {
+        context_->End(source_read.Get());
+        context_->Flush();
+        HoldSourceRead(shared_source, source_read, std::move(reply));
+      } else {
+        std::move(reply).Run(true);
+      }
       if (released != S_OK) {
         LOG(ERROR) << "ReleaseSync failed: " << released;
         buffers_.erase(it);
@@ -318,6 +396,14 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         FROM_HERE, base::BindOnce(&Impl::Convert, base::Unretained(this)));
   }
   void Reset() override {
+    // PRTS: retire old leases, timelines and blocked GPU waits on pool restart.
+    for (auto& read : pending_reads_)
+      std::move(read.reply).Run(false);
+    const bool had_pending = !pending_reads_.empty();
+    pending_reads_.clear();
+    fences_.clear();
+    if (had_pending)
+      CreateDevice(luid_);
     buffers_.clear();
     RebuildNativePool();
     {
@@ -338,6 +424,53 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   }
 
  private:
+  struct SourceRead {
+    ComPtr<ID3D11Texture2D> source;
+    ComPtr<ID3D11Query> query;
+    ComPtr<ID3D11DeviceContext> context;
+    OnFrameCallback reply;
+    base::TimeTicks queued;
+  };
+  void HoldSourceRead(ComPtr<ID3D11Texture2D> source,
+                      ComPtr<ID3D11Query> query,
+                      OnFrameCallback reply) {
+    pending_reads_.push_back({std::move(source), std::move(query), context_,
+                              std::move(reply), base::TimeTicks::Now()});
+    if (!poll_pending_) {
+      poll_pending_ = true;
+      import_runner_->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&Impl::PollSourceReads, base::Unretained(this)),
+          base::Milliseconds(1));
+    }
+  }
+  void PollSourceReads() {
+    poll_pending_ = false;
+    for (auto it = pending_reads_.begin(); it != pending_reads_.end();) {
+      BOOL complete = FALSE;
+      const HRESULT hr =
+          it->context->GetData(it->query.Get(), &complete, sizeof(complete),
+                               D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (hr == S_OK && complete) {
+        std::move(it->reply).Run(true);
+        it = pending_reads_.erase(it);
+      } else if (FAILED(hr) ||
+                 base::TimeTicks::Now() - it->queued > base::Seconds(2)) {
+        LOG(ERROR) << "PRTS source read abandoned hr=" << hr;
+        std::move(it->reply).Run(false);
+        it = pending_reads_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (!pending_reads_.empty()) {
+      poll_pending_ = true;
+      import_runner_->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&Impl::PollSourceReads, base::Unretained(this)),
+          base::Milliseconds(1));
+    }
+  }
   void RebuildNativePool() {
     native_pool_.reset();
     native_pool_retry_ = base::TimeTicks::Now();
@@ -449,12 +582,13 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       }
       job->context->CopyResource(staging.Get(), job->texture.Get());
       D3D11_MAPPED_SUBRESOURCE mapped;
-      if (FAILED(
-              job->context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+      if (FAILED(job->context->Map(staging.Get(), 0, D3D11_MAP_READ, 0,
+                                   &mapped))) {
         return;
       }
       if (mapped.RowPitch < desc.Width * 4 ||
-          mapped.RowPitch > static_cast<UINT>(std::numeric_limits<int>::max())) {
+          mapped.RowPitch >
+              static_cast<UINT>(std::numeric_limits<int>::max())) {
         job->context->Unmap(staging.Get(), 0);
         return;
       }
@@ -471,8 +605,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       int result = libyuv::ARGBToI420Matrix(
           bytes, static_cast<int>(mapped.RowPitch), i420->MutableDataY(),
           i420->StrideY(), i420->MutableDataU(), i420->StrideU(),
-          i420->MutableDataV(), i420->StrideV(),
-          &libyuv::kArgbH709Constants, r.width(), r.height());
+          i420->MutableDataV(), i420->StrideV(), &libyuv::kArgbH709Constants,
+          r.width(), r.height());
       job->context->Unmap(staging.Get(), 0);
       latency.Add("argb_i420", mapped_at, base::TimeTicks::Now());
       if (result != 0) {
@@ -509,11 +643,11 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       consumer(
           webrtc::VideoFrame::Builder()
               .set_video_frame_buffer(output)
-              .set_color_space(webrtc::ColorSpace(
-                  webrtc::ColorSpace::PrimaryID::kBT709,
-                  webrtc::ColorSpace::TransferID::kBT709,
-                  webrtc::ColorSpace::MatrixID::kBT709,
-                  webrtc::ColorSpace::RangeID::kLimited))
+              .set_color_space(
+                  webrtc::ColorSpace(webrtc::ColorSpace::PrimaryID::kBT709,
+                                     webrtc::ColorSpace::TransferID::kBT709,
+                                     webrtc::ColorSpace::MatrixID::kBT709,
+                                     webrtc::ColorSpace::RangeID::kLimited))
               .set_timestamp_us(
                   (job->info->capture_end - base::TimeTicks()).InMicroseconds())
               .set_rotation(webrtc::kVideoRotation_0)
@@ -551,6 +685,9 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   // threads.
   std::unique_ptr<mojo::Receiver<mojom::PrtsFrameSink>> receiver_;
   std::map<uint32_t, Buffer> buffers_;
+  std::map<base::UnguessableToken, ComPtr<ID3D11Fence>> fences_;
+  std::vector<SourceRead> pending_reads_;
+  bool poll_pending_ = false;
   base::RepeatingClosure on_reset_;  // Import sequence only.
   ComPtr<ID3D11Device1> device_;
   ComPtr<ID3D11DeviceContext> context_;
