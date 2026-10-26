@@ -292,7 +292,9 @@
       overlay.textContent = lines.join('\n');
       sendCtl({ t: 'vstats', fps: v.fps, kbps: v.kbps, jbMs: v.jbMs, decMs: v.decMs, rtt: v.rtt, lost: inb.packetsLost, nack: inb.nackCount, pli: inb.pliCount,
         freeze: inb.freezeCount, lat: lat ? { p50: lat.lat.p50, p80: lat.lat.p80, p99: lat.lat.p99 } : null });
-      window.rk.last = { inbound: inb, derived: v, codec: c.mimeType, hint: hintInfo, decoder: inb.decoderImplementation };
+      window.rk.last = { inbound: inb, derived: v, codec: c.mimeType, codecDetails: c,
+        jitterBuffer: { statsType: jbSrc.type, delay: jbSrc.jitterBufferDelay, emitted: jbSrc.jitterBufferEmittedCount },
+        hint: hintInfo, decoder: inb.decoderImplementation };
     }).catch(function (e) { if (current(s, p)) console.warn('stats', e); });
   }, 1000);
 
@@ -340,8 +342,10 @@
             durationSeconds: secs, query: location.search,
             statsSamples: statsSamples.slice(-secs),
             playoutDelayExtmap: p.localDescription.sdp.split('\n').filter(function (line) { return line.indexOf('a=extmap:') === 0 && line.indexOf('playout-delay') >= 0; }),
-            stats: window.rk.last ? { codec: window.rk.last.codec, decoder: window.rk.last.decoder, derived: window.rk.last.derived,
-              jitterBufferDelay: window.rk.last.inbound.jitterBufferDelay, emitted: window.rk.last.inbound.jitterBufferEmittedCount,
+            stats: window.rk.last ? { codec: window.rk.last.codec, codecDetails: window.rk.last.codecDetails,
+              decoder: window.rk.last.decoder, derived: window.rk.last.derived,
+              jitterBufferStatsType: window.rk.last.jitterBuffer.statsType,
+              jitterBufferDelay: window.rk.last.jitterBuffer.delay, emitted: window.rk.last.jitterBuffer.emitted,
               totalDecodeTime: window.rk.last.inbound.totalDecodeTime, totalProcessingDelay: window.rk.last.inbound.totalProcessingDelay,
               framesDropped: window.rk.last.inbound.framesDropped,
               frameWidth: window.rk.last.inbound.frameWidth, frameHeight: window.rk.last.inbound.frameHeight } : null,
