@@ -16,3 +16,7 @@ Flags: --user-data-dir=C:\src\tmp\chrome89-google\profile --no-first-run --no-de
    is short: 1 each, S first). Same table format as research/m3/matrix2.md: P50/P80/P95/P99 capture->display and input->flip, fps, the backend actually used.
    Then 1 run of Edge (default viewer) on d25j5-c12 S for an A/B reference in the same session.
 4. Note anything Chrome 89 does differently (freezes, NACK/PLI storms, decode errors, resolution changes).
+5. Field kit runtime check (tools/field-test/, written by another task, syntax-checked only): start it with tools/field-test/start-server.ps1 (out\dev
+   binaries), open the printed LAN URL with `?measure=60&scenario=S` in Chrome 89 headed (no CDP-driven measurement; only CDP/screenshot to tap start),
+   confirm the report lands in the run folder and its numbers are close to the harness run. Fix small bugs in tools/field-test/, viewer/ and
+   control-plane/ (list them).

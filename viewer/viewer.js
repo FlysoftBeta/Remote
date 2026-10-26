@@ -2,9 +2,11 @@
 // URL params: instance, token, measure=1 (pixel-marker latency), report=<s> (POST summary to /api/report after s seconds),
 //             my=<source px> (fixed marker row; default auto-detect),
 //             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=0 (hide overlay), cp=<host:port>.
+//             measure=<seconds> enables the optional field kit's tap-to-start mode.
 (function () {
   'use strict';
   var q = new URLSearchParams(location.search);
+  var field = window.RKField || null;
   var video = document.getElementById('video'), stage = document.getElementById('stage');
   var overlay = document.getElementById('overlay'), statusEl = document.getElementById('status');
   var touchOnly = (navigator.maxTouchPoints || 0) > 0 && matchMedia('(pointer: coarse)').matches &&
@@ -60,6 +62,7 @@
   }
   statusEl.addEventListener('click', function () { if (terminal) { retryDelay = 1000; connect(); } });
   function closePc() {
+    if (field) field.disconnect();
     generation++;
     if (session) clearTimeout(session.failedTimer);
     session = null; sid = null;
@@ -309,12 +312,14 @@
     // Synthetic input for input-to-photon: a mouse move every ~97 ms (the mock echoes the applied seq in the marker).
     if (q.get('autoinput') === '1') setInterval(function () { if (input.enabled) input.synthMove(0.2 + 0.6 * Math.random(), 0.6 + 0.3 * Math.random()); }, 97);
     setInterval(function () {
-      if (session && started !== session && measure && clock && clock.offset != null && video.videoWidth) {
+      if ((!field || field.ready) && session && started !== session && measure && clock && clock.offset != null && video.videoWidth) {
         var s = session, p = pc;
         started = s;
+        if (field) field.begin(warm);
         setTimeout(function () { if (current(s, p)) { measure.reset(); syncRelayClock().then(function (b) { window.__traceRelay = { start: b }; }); } }, warm * 1000);
         setTimeout(function () {
-          if (!current(s, p)) return;
+          if (!current(s, p) || (field && !field.running)) return;
+          var snapshot = field ? field.snapshot(measure) : null;
           syncRelayClock().then(function (b) { window.__traceRelay = Object.assign(window.__traceRelay || {}, { end: b }); }).then(function () { return p.getStats(); }).then(function (rs) {
           var pipeline = { relay: relayUrl(), pairs: [], inbound: null, headlessUa: /HeadlessChrome/.test(navigator.userAgent) };
           var cands = {};
@@ -330,7 +335,8 @@
               nackCount: x.nackCount, pliCount: x.pliCount, firCount: x.firCount, retransmittedPacketsReceived: x.retransmittedPacketsReceived, jitter: x.jitter, jitterBufferTargetDelay: x.jitterBufferTargetDelay };
           });
           pipeline.display = 'requestVideoFrameCallback expectedDisplayTime estimate' + (pipeline.headlessUa ? ' (headless UA: no real vsync/scanout)' : '');
-          var body = { trace: measure.trace, traceRelay: window.__traceRelay || null, perfNowAtReport: performance.now(), pipeline: pipeline, kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
+          if (!current(s, p) || (field && !field.running)) return;
+          var body = { trace: snapshot ? snapshot.trace : measure.trace, traceRelay: window.__traceRelay || null, perfNowAtReport: performance.now(), pipeline: pipeline, kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: snapshot ? snapshot.summary.lat.n : measure.lat.length, summary: snapshot ? snapshot.summary : measure.summary(),
             durationSeconds: secs, query: location.search,
             statsSamples: statsSamples.slice(-secs),
             playoutDelayExtmap: p.localDescription.sdp.split('\n').filter(function (line) { return line.indexOf('a=extmap:') === 0 && line.indexOf('playout-delay') >= 0; }),
@@ -339,9 +345,10 @@
               totalDecodeTime: window.rk.last.inbound.totalDecodeTime, totalProcessingDelay: window.rk.last.inbound.totalProcessingDelay,
               framesDropped: window.rk.last.inbound.framesDropped,
               frameWidth: window.rk.last.inbound.frameWidth, frameHeight: window.rk.last.inbound.frameHeight } : null,
-            sender: epStats, csv: measure.csv() };
+            sender: epStats, csv: snapshot ? snapshot.csv : measure.csv() };
+          if (field) { field.submit(body); return; }
           var x = new XMLHttpRequest(); x.open('POST', '/api/report'); x.setRequestHeader('content-type', 'application/json'); x.send(JSON.stringify(body));
-          });
+          }).catch(function (e) { if (field) field.error(e); else console.warn('report', e); });
         }, (warm + secs) * 1000);
       }
     }, 500);

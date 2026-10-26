@@ -21,6 +21,9 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 23), ...a);
 const instances = new Map();
 const inst = id => { if (!instances.has(id)) instances.set(id, { endpoint: null, viewer: null, sid: null }); return instances.get(id); };
 const reports = [];
+const fieldDir = process.env.FIELD_REPORT_DIR;
+const fieldConfig = process.env.FIELD_CONFIG_JSON ? JSON.parse(process.env.FIELD_CONFIG_JSON) : null;
+if (fieldDir) fs.mkdirSync(fieldDir, { recursive: true });
 
 const FROM_VIEWER = new Set(['answer', 'ice', 'restart', 'bye']);
 const FROM_ENDPOINT = new Set(['offer', 'ice', 'bye']);
@@ -111,6 +114,27 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 const server = http.createServer(async (req, res) => {
   try {
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/field-config') return json(res, fieldConfig ? 200 : 404, fieldConfig || { error: 'field mode disabled' });
+  if (url.pathname === '/field-report') {
+    if (!fieldDir) return json(res, 404, { error: 'field mode disabled' });
+    if (req.method !== 'POST') return json(res, 405, { error: 'POST required' });
+    if (req.headers.origin && req.headers.origin !== `http://${req.headers.host}` &&
+        req.headers.origin !== `https://${req.headers.host}`) return json(res, 403, { error: 'origin mismatch' });
+    let report;
+    try {
+      report = JSON.parse(await readBody(req, 16 << 20));
+      if (!report || report.kind !== 'field-latency' || !report.summary || !report.summary.latDecoded ||
+          !report.summary.i2decoded || !report.summary.lat || !report.summary.i2display)
+        throw new Error('invalid field report');
+    } catch (e) { return json(res, 400, { error: e.message }); }
+    report.at = new Date().toISOString();
+    report.serverRun = fieldConfig;
+    const name = `field-${report.at.replace(/[:.]/g, '-')}-${crypto.randomBytes(4).toString('hex')}.json`;
+    try { await fs.promises.writeFile(path.join(fieldDir, name), JSON.stringify(report, null, 2), { flag: 'wx' }); }
+    catch (e) { log(`field report save failed: ${e.message}`); return json(res, 500, { error: 'report save failed; download a copy on the viewer' }); }
+    log(`field report saved: ${name}`);
+    return json(res, 201, { ok: true, file: name });
+  }
   if (url.pathname === '/api/health') {
     return json(res, 200, { ok: true, v: V, instances: [...instances].map(([id, I]) => ({ id, endpoint: I.endpoint?.name ?? null, viewer: !!I.viewer, session: !!I.sid })) });
   }
@@ -172,5 +196,5 @@ if (process.env.ENDPOINT_PATH) {
   conn.role = 'endpoint';
 }
 
-server.listen(PORT, () => log(`control-plane v${V} on http://localhost:${server.address().port}/ (mock endpoint: /mock)`));
+server.listen(PORT, process.env.HOST || undefined, () => log(`control-plane v${V} on http://localhost:${server.address().port}/ (mock endpoint: /mock)`));
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));

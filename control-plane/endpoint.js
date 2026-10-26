@@ -4,7 +4,11 @@ import { spawn } from 'node:child_process';
 import { Decoder, Writer } from './framing.js';
 
 export function spawnEndpoint(exe, instance, onMessage, onClose, log = console.log) {
-  const extra = (process.env.ENDPOINT_ARGS || '').split(' ').filter(Boolean);
+  // Field launcher uses an array so executable/profile paths may contain spaces.
+  const extra = process.env.ENDPOINT_ARGS_JSON ? JSON.parse(process.env.ENDPOINT_ARGS_JSON) :
+    (process.env.ENDPOINT_ARGS || '').split(' ').filter(Boolean);
+  if (!Array.isArray(extra) || extra.some(arg => typeof arg !== 'string'))
+    throw new Error('ENDPOINT_ARGS_JSON must be an array of strings');
   const child = spawn(exe, [`--instance=${instance}`, ...extra], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
   const writer = new Writer(child.stdin);
   let closed = false;
