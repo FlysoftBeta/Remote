@@ -15,7 +15,8 @@ param(
   [string]$Dir = "",
   [ValidateSet('low','medium','high','xhigh')][string]$Effort = 'medium',
   [string]$Model = 'gpt-6.1-sol',
-  [int]$TimeoutMin = 40
+  [int]$TimeoutMin = 40,
+  [string]$Resume = ''   # session/thread id: `codex exec resume <id>` with the prompt as continuation (keeps context)
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -49,9 +50,14 @@ if (Test-Path $exe) { $codex = $exe }
 
 $argList = @('exec','-m',$Model,'-c',"model_reasoning_effort=$Effort",'--skip-git-repo-check',
   '--dangerously-bypass-approvals-and-sandbox','-C',"`"$Dir`"",'-o',"`"$OutFile`"",'--json','--color','never','-')
+if ($Resume) {
+  # `exec resume` has no -C/--color; the working directory is set via Start-Process below.
+  $argList = @('exec','resume','-m',$Model,'-c',"model_reasoning_effort=$Effort",'--skip-git-repo-check',
+    '--dangerously-bypass-approvals-and-sandbox','-o',"`"$OutFile`"",'--json',$Resume,'-')
+}
 
-"[$(Get-Date -Format s)] start $Name effort=$Effort timeout=${TimeoutMin}m out=$OutFile" | Log
-$p = Start-Process -FilePath $codex -ArgumentList $argList -NoNewWindow -PassThru `
+"[$(Get-Date -Format s)] start $Name$(if ($Resume) { " resume=$Resume" }) effort=$Effort timeout=${TimeoutMin}m out=$OutFile" | Log
+$p = Start-Process -FilePath $codex -ArgumentList $argList -NoNewWindow -PassThru -WorkingDirectory $Dir `
   -RedirectStandardInput $PromptFile -RedirectStandardOutput "$base.jsonl" -RedirectStandardError "$base.err"
 $null = $p.Handle  # keep handle so ExitCode is available
 if (-not $p.WaitForExit($TimeoutMin * 60 * 1000)) {
