@@ -12,10 +12,14 @@
 <script>
 const c = document.getElementById('c'), ctx = c.getContext('2d');
 let frameId = 0, inputs = 0, x = 0;
-addEventListener('pointerdown', () => inputs++); addEventListener('keydown', () => inputs++);
+// m3-trace: window.__rt = per-rAF {f, a (rAF timestamp), p (tick start), d (draw end)}; window.__rk = per-keydown {ts (event.timeStamp), p (handler), f (frame id at handler)}. performance.now() is TimeTicks based.
+window.__rt = []; window.__rk = [];
+addEventListener('pointerdown', () => inputs++);
+addEventListener('keydown', e => { inputs++; window.__rk.push({ ts: e.timeStamp, p: performance.now(), f: frameId, n: inputs }); if (window.__rk.length > 4000) window.__rk.shift(); });
 function resize() { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; }
 addEventListener('resize', resize); resize();
-function tick() {
+function tick(raf) {
+  const p0 = performance.now();
   frameId++; x = (x + 8) % c.width;
   if (window.rkScenario.name !== 'marker') {
     ctx.clearRect(0, 0, c.width, c.height);
@@ -33,6 +37,7 @@ function tick() {
     ctx.fillText('PRTS remote latency page  frame ' + frameId + '  inputs ' + inputs, 20, c.height - 40);
   }
   RKMarker.draw(ctx, c.width, { frameId, t: performance.timeOrigin + performance.now(), inputSeq: inputs });
+  window.__rt.push({ f: frameId, a: raf, p: p0, d: performance.now(), n: inputs }); if (window.__rt.length > 20000) window.__rt.shift();
   requestAnimationFrame(tick);
 }
 requestAnimationFrame(tick);

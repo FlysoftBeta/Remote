@@ -116,7 +116,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/api/report') {
     if (req.method === 'POST') {
-      try { const r = JSON.parse(await readBody(req)); r.at = new Date().toISOString(); reports.push(r); if (reports.length > 50) reports.shift();
+      try { const r = JSON.parse(await readBody(req, 64 << 20)); r.at = new Date().toISOString(); reports.push(r); if (reports.length > 50) reports.shift();
         if (process.env.REPORT_FILE) fs.appendFileSync(process.env.REPORT_FILE, JSON.stringify(r) + '\n');
         log(`report: ${r.kind || '?'} n=${r.n ?? '?'}`); return json(res, 200, { ok: true });
       } catch (e) { return json(res, 400, { error: e.message }); }

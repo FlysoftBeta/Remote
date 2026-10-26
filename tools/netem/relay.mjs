@@ -18,7 +18,7 @@ export function holdTimerResolution() {
   process.on('exit', () => { try { p.kill(); } catch {} });
   return p;
 }
-import { Scheduler, Link } from './shaper.mjs';
+import { Scheduler, Link, now } from './shaper.mjs';
 
 // libwebrtc does not gather/use loopback (a port bound to a LAN interface cannot send to 127.0.0.1, WSAEADDRNOTAVAIL), so the relay must listen on a
 // real local interface address. Packets to the machine's own address never leave the host (no Wi-Fi traffic).
@@ -66,6 +66,7 @@ const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32BE(n); return b; };
 const errAttr = (code, text) => { const b = Buffer.alloc(4 + text.length); b[2] = code / 100 | 0; b[3] = code % 100; b.write(text, 4); return b; };
 
 export async function startRelay(opts = {}) {
+  const traceBuf = opts.trace || process.env.RELAY_TRACE ? [] : null;
   const host = opts.host || pickHost(), port = opts.port ?? 3478, pass = opts.pass || 'netem';
   const prof = opts.profile || {};
   const sched = new Scheduler(opts.spinMs ?? 1.0);
@@ -88,7 +89,15 @@ export async function startRelay(opts = {}) {
     if (dst) {
       const link = al.user === 'endpoint' ? links.down : links.up;
       al.sent += payload.length; al.sentPkts++;
-      link.push(payload.length + 28, () => deliver(dst, { ip: host, port: al.rport }, payload));
+      let rec = null;
+      if (traceBuf) { // m3-trace: per-packet dwell keyed by RTP seq/timestamp (RTP header is in clear under SRTP); kinds: r=RTP, c=RTCP, t=STUN, d=DTLS/SCTP, o=other
+        const b0 = payload[0], b1 = payload[1];
+        let kind = 'o', seq = 0, ts = 0, ssrc = 0, mk = 0;
+        if (b0 < 4) kind = 't'; else if (b0 >= 20 && b0 <= 63) kind = 'd';
+        else if (b0 >> 6 === 2 && payload.length >= 12) { if (b1 >= 192 && b1 <= 223) kind = 'c'; else { kind = 'r'; seq = payload.readUInt16BE(2); ts = payload.readUInt32BE(4); ssrc = payload.readUInt32BE(8); mk = b1 >> 7; } }
+        rec = [al.user === 'endpoint' ? 'D' : 'U', now(), null, payload.length, kind, seq, ts, mk, ssrc]; traceBuf.push(rec);
+      }
+      link.push(payload.length + 28, () => { if (rec) rec[2] = now(); deliver(dst, { ip: host, port: al.rport }, payload); });
     } else { tally.unshapedPkts++; al.sock.send(payload, peerPort, peerIp); }
   }
   function onClient(msg, ri) {
@@ -157,7 +166,9 @@ export async function startRelay(opts = {}) {
   let httpServer = null;
   if (opts.http != null) {
     httpServer = http.createServer((q, r) => {
-      if (q.method === 'POST' && q.url === '/reset') { reset(); r.end('ok'); return; }
+      if (q.method === 'POST' && q.url === '/reset') { reset(); if (traceBuf) traceBuf.length = 0; r.end('ok'); return; }
+      if (q.url === '/now') { r.setHeader('access-control-allow-origin', '*'); r.setHeader('cache-control', 'no-store'); r.end(String(Number(process.hrtime.bigint()) / 1e6)); return; } // hrtime ms (same QPC base as TimeTicks, verified by correlation)
+      if (q.url === '/trace') { r.setHeader('content-type', 'application/json'); r.end(JSON.stringify({ hrMinusPerf: Number(process.hrtime.bigint()) / 1e6 - now(), cols: ['dir', 'tIn', 'tOut', 'size', 'kind', 'seq', 'ts', 'marker', 'ssrc'], rows: traceBuf || [] })); return; }
       r.setHeader('content-type', 'application/json'); r.end(JSON.stringify(stats()));
     });
     await new Promise(res => httpServer.listen(opts.http, host, res));

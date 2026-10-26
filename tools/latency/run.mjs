@@ -84,7 +84,7 @@ const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -101,6 +101,25 @@ while (Date.now() < deadline) {
 if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
 report.netem = null;
 report.preset = preset;
+if (process.env.TRACE_OUT) { // m3-trace: relay per-packet trace + remote page rAF/keydown records + clock offsets (hrtime ms is the TimeTicks base)
+  const out = process.env.TRACE_OUT; fs.mkdirSync(out, { recursive: true });
+  try { if (netemProfile) fs.writeFileSync(path.join(out, 'relay.json'), await (await fetch(`http://${netemHost}:${netemHttp}/trace`)).text()); } catch (e) { console.log('relay trace failed ' + e); }
+  const cdp = arg('remote-cdp', null);
+  if (cdp) try {
+    const list = await (await fetch(`http://127.0.0.1:${cdp}/json`)).json();
+    const page = list.find(t => t.type === 'page' && /remote-page/.test(t.url));
+    const ws = new WebSocket(page.webSocketDebuggerUrl); await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+    let id = 0; const pend = new Map(); ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pend.has(m.id)) { pend.get(m.id)(m); pend.delete(m.id); } };
+    const call = (method, params) => new Promise(r => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+    const ev = async expr => (await call('Runtime.evaluate', { expression: expr, returnByValue: true })).result.result.value;
+    let best = null;
+    for (let i = 0; i < 40; i++) { const t0 = Number(process.hrtime.bigint()) / 1e6, v = await ev('performance.now()'), t1 = Number(process.hrtime.bigint()) / 1e6; if (!best || t1 - t0 < best.rtt) best = { rtt: t1 - t0, off: (t0 + t1) / 2 - v }; }
+    const rt = await ev('JSON.stringify({rt: window.__rt, rk: window.__rk})');
+    fs.writeFileSync(path.join(out, 'remote.json'), JSON.stringify({ clock: best, ...JSON.parse(rt) }));
+    ws.close();
+  } catch (e) { console.log('remote trace failed ' + e); }
+  fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ ...report, csv: undefined }));
+}
 if (netemProfile) { try { report.netem = await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json(); } catch (e) { report.netem = { error: String(e) }; } }
 if (netemSamples.length) {
   const start = report.summary.measurementStartWall;

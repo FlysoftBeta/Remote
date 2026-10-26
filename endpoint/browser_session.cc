@@ -8,6 +8,7 @@
 #endif
 
 #include "prts_endpoint/browser_session.h"
+#include "prts_endpoint/latency_stats.h"
 
 #include <algorithm>
 #include <cmath>
@@ -284,6 +285,8 @@ void BrowserSession::Key(const KeyInput& i) {
         p->code = i.code;
         p->key = i.key;
         p->timestamp = base::TimeTicks::Now();
+        if (TraceEnabled() && i.down)  // m3-trace
+          LOG(INFO) << "PRTS TR K down t=" << TraceUs(p->timestamp);
         s.link_.browser()->Key(s.active_, std::move(p));
       },
       i));

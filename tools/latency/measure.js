@@ -28,6 +28,8 @@
     this.canvas = document.createElement('canvas');
     // Chrome 89 ignores this newer dictionary hint; ordinary 2D readback remains the fallback.
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+    // m3-trace: ?trace=1 keeps one record per rVFC callback (rtpTimestamp, receiveTime, presentation/display times, marker) for frame correlation.
+    this.trace = new URLSearchParams(location.search).get('trace') === '1' ? [] : null; this.curTrace = null;
     this.precise = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
     var self = this;
     if (this.colorInput) setInterval(function () {
@@ -65,6 +67,12 @@
     }
     this.lastDisplayPerf = displayPerf;
     var self = this;
+    this.curTrace = null;
+    if (this.trace && meta) {
+      this.curTrace = { p: performance.now(), d: displayPerf, rt: meta.rtpTimestamp, rx: meta.receiveTime, pr: meta.presentationTime, ed: meta.expectedDisplayTime,
+        ct: meta.captureTime, pf: meta.presentedFrames, pd: meta.processingDuration, mt: meta.mediaTime };
+      if (this.trace.length < 60000) this.trace.push(this.curTrace);
+    }
     function stage(name, value) {
       if (!Number.isFinite(value)) return;
       var values = self.stages[name] || (self.stages[name] = []);
@@ -97,7 +105,8 @@
       if (state != null && this.colorState != null && state !== this.colorState && this.colorPending != null) {
         var elapsed = detected - this.colorPending;
         this.i2p.push(elapsed);
-        this.colorRows.push({ sent: this.colorPending, detected: detected, latency: elapsed, state: state });
+        this.colorRows.push({ sent: this.colorPending, detected: detected, latency: elapsed, state: state, rt: meta ? meta.rtpTimestamp : null, ed: meta ? meta.expectedDisplayTime : null });
+        if (this.curTrace) this.curTrace.flip = 1;
         this.colorPending = null;
       }
       if (state != null) this.colorState = state;
@@ -136,6 +145,7 @@
       return;
     }
     this.markerFailures = 0;
+    if (this.curTrace) { this.curTrace.fid = m.frameId; this.curTrace.mtw = m.t; this.curTrace.iseq = m.inputSeq; }
     this.decoded++;
     if (m.frameId === this.lastFrameId) { this.dupes++; return; }
     if (this.lastFrameId >= 0) { var gap = (m.frameId - this.lastFrameId) & 0xffff; if (gap > 1 && gap < 1000) this.skipped += gap - 1; }
@@ -179,7 +189,7 @@
     this.stages = {};
     this.displayGaps = []; this.lastDisplayPerf = null; this.freezeCount = 0;
     this.measurementStartWall = Date.now();
-    this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {};
+    this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {}; if (this.trace) this.trace.length = 0;
     this.lastInputSeq = this.lastFrameId = -1;
     this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0;
     this.colorPending = null; this.colorAttempts = this.colorTimeouts = 0; this.colorRows = [];

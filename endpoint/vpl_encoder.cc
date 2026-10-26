@@ -265,7 +265,8 @@ bool Compatible(const Parameters& requested, const Parameters& actual) {
          a.CodecLevel == r.CodecLevel && a.LowPower == MFX_CODINGOPTION_ON &&
          a.TargetUsage == 7 && a.GopPicSize == 65535 && a.IdrInterval == 0 &&
          a.RateControlMethod == MFX_RATECONTROL_VBR &&
-         a.TargetKbps == r.TargetKbps && a.MaxKbps == r.MaxKbps &&
+         // m3-trace: the driver rounds the target (2000 -> 2005/2148); accept +-10% instead of falling back to OpenH264.
+         (a.TargetKbps * 10 >= r.TargetKbps * 9 && a.TargetKbps * 10 <= r.TargetKbps * 11) && a.MaxKbps == r.MaxKbps &&
          a.GopRefDist == 1 && a.NumRefFrame == 1 && a.NumSlice == 1 &&
          a.FrameInfo.FourCC == MFX_FOURCC_NV12 &&
          a.FrameInfo.Width == r.FrameInfo.Width &&
@@ -330,6 +331,10 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
         base::TimeTicks() + base::Microseconds(frame.timestamp_us());
     LatencyStats::Get().Add("capture_to_encode", capture, now);
     LatencyStats::Get().EncodeStart(frame.timestamp_us(), now);
+    if (TraceEnabled()) {  // m3-trace
+      LOG(INFO) << "PRTS TR E ce=" << frame.timestamp_us()
+                << " rtp=" << frame.rtp_timestamp() << " t0=" << TraceUs(now);
+    }
     {
       base::AutoLock lock(timing_lock_);
       timing_[frame.rtp_timestamp()] = {capture, now};
@@ -361,6 +366,11 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
   Result OnEncodedImage(const webrtc::EncodedImage& image,
                         const webrtc::CodecSpecificInfo* info) override {
     const auto encoded = base::TimeTicks::Now();
+    if (TraceEnabled()) {  // m3-trace
+      LOG(INFO) << "PRTS TR X rtp=" << image.RtpTimestamp()
+                << " t1=" << TraceUs(encoded) << " bytes=" << image.size()
+                << " key=" << (image.FrameType() == webrtc::VideoFrameType::kVideoFrameKey);
+    }
     {
       base::AutoLock lock(timing_lock_);
       auto it = timing_.find(image.RtpTimestamp());

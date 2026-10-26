@@ -497,6 +497,15 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       latency.Add("converted_to_source", converted_at, base::TimeTicks::Now());
       latency.SourceReady(
           (job->info->capture_end - base::TimeTicks()).InMicroseconds());
+      if (TraceEnabled()) {  // m3-trace
+        LOG(INFO) << "PRTS TR S ce=" << TraceUs(job->info->capture_end)
+                  << " cb=" << TraceUs(job->info->capture_begin)
+                  << " ref=" << TraceUs(job->info->reference_time)
+                  << " rcv=" << TraceUs(job->received)
+                  << " cp=" << TraceUs(job->copied)
+                  << " cv=" << TraceUs(converted_at)
+                  << " native=" << (job->native != nullptr);
+      }
       consumer(
           webrtc::VideoFrame::Builder()
               .set_video_frame_buffer(output)

@@ -5,6 +5,8 @@
 #ifndef PRTS_ENDPOINT_LATENCY_STATS_H_
 #define PRTS_ENDPOINT_LATENCY_STATS_H_
 
+#include <stdlib.h>
+
 #include <algorithm>
 #include <deque>
 #include <map>
@@ -18,6 +20,20 @@
 #include "base/time/time.h"
 
 namespace prts {
+// m3-trace: per-frame / per-input TimeTicks trace lines ("PRTS TR ...", microseconds) when the environment variable PRTS_TRACE is set.
+inline bool TraceEnabled() {
+  static const bool on = [] {
+    char* v = nullptr;
+    size_t n = 0;
+    bool set = _dupenv_s(&v, &n, "PRTS_TRACE") == 0 && v != nullptr;
+    free(v);
+    return set;
+  }();
+  return on;
+}
+inline int64_t TraceUs(base::TimeTicks t) {
+  return (t - base::TimeTicks()).InMicroseconds();
+}
 // Bounded, per-frame TimeTicks samples; only the last five seconds are logged.
 // Windows TimeTicks is consistent across the browser and endpoint processes.
 class LatencyStats {

@@ -293,6 +293,15 @@
     }).catch(function (e) { if (current(s, p)) console.warn('stats', e); });
   }, 1000);
 
+  // m3-trace: relay hrtime (== TimeTicks base) minus this page's performance.now(), best of 30 by round trip.
+  function syncRelayClock() {
+    var r = relayUrl(), m = r && /turn:([^:?]+):(\d+)/.exec(r);
+    if (q.get('trace') !== '1' || !m) return Promise.resolve(null);
+    var url = 'http://' + m[1] + ':' + (+m[2] + 1) + '/now', best = null, chain = Promise.resolve();
+    for (var i = 0; i < 30; i++) chain = chain.then(function () { var t0 = performance.now(); return fetch(url, { cache: 'no-store' }).then(function (x) { return x.text(); }).then(function (txt) {
+      var t1 = performance.now(), rtt = t1 - t0, off = parseFloat(txt) - (t0 + t1) / 2; if (!best || rtt < best.rtt) best = { rtt: rtt, off: off }; }); });
+    return chain.then(function () { return best; }, function () { return best; });
+  }
   // ---- automated report for tools/latency/run.mjs ----
   if (q.get('report')) {
     var secs = +q.get('report'), warm = +(q.get('warmup') || 3);
@@ -303,10 +312,10 @@
       if (session && started !== session && measure && clock && clock.offset != null && video.videoWidth) {
         var s = session, p = pc;
         started = s;
-        setTimeout(function () { if (current(s, p)) measure.reset(); }, warm * 1000);
+        setTimeout(function () { if (current(s, p)) { measure.reset(); syncRelayClock().then(function (b) { window.__traceRelay = { start: b }; }); } }, warm * 1000);
         setTimeout(function () {
           if (!current(s, p)) return;
-          p.getStats().then(function (rs) {
+          syncRelayClock().then(function (b) { window.__traceRelay = Object.assign(window.__traceRelay || {}, { end: b }); }).then(function () { return p.getStats(); }).then(function (rs) {
           var pipeline = { relay: relayUrl(), pairs: [], inbound: null, headlessUa: /HeadlessChrome/.test(navigator.userAgent) };
           var cands = {};
           rs.forEach(function (x) { if (x.type === 'local-candidate' || x.type === 'remote-candidate') cands[x.id] = x; });
@@ -321,7 +330,7 @@
               nackCount: x.nackCount, pliCount: x.pliCount, firCount: x.firCount, retransmittedPacketsReceived: x.retransmittedPacketsReceived, jitter: x.jitter, jitterBufferTargetDelay: x.jitterBufferTargetDelay };
           });
           pipeline.display = 'requestVideoFrameCallback expectedDisplayTime estimate' + (pipeline.headlessUa ? ' (headless UA: no real vsync/scanout)' : '');
-          var body = { pipeline: pipeline, kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
+          var body = { trace: measure.trace, traceRelay: window.__traceRelay || null, perfNowAtReport: performance.now(), pipeline: pipeline, kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
             durationSeconds: secs, query: location.search,
             statsSamples: statsSamples.slice(-secs),
             playoutDelayExtmap: p.localDescription.sdp.split('\n').filter(function (line) { return line.indexOf('a=extmap:') === 0 && line.indexOf('playout-delay') >= 0; }),

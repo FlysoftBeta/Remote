@@ -378,7 +378,9 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       if (data.size() > 65536)
         return;
       double received = session_.owner_.clock_.WallMs();
-      session_.Post([id = id_, data, received](Session& s) {
+      const auto rx_ticks = base::TimeTicks::Now();  // m3-trace
+      session_.Post([id = id_, data, received, rx_ticks](Session& s) {
+        s.rx_ticks_ = rx_ticks;
         s.OnData(id, data, received);
       });
     }
@@ -483,8 +485,13 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         return;
       InputMetadata metadata;
       if (parser_.Parse(std::span(data.data.cdata(), data.size()),
-                        source_->geometry(), &metadata))
+                        source_->geometry(), &metadata)) {
+        if (TraceEnabled())  // m3-trace
+          LOG(INFO) << "PRTS TR I seq=" << metadata.seq
+                    << " rx=" << TraceUs(rx_ticks_)
+                    << " parsed=" << TraceUs(base::TimeTicks::Now());
         source_->SetInputSequence(metadata.seq);
+      }
       else
         ++invalid_inputs_;
       return;
@@ -568,6 +575,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
   Peer& owner_;
   const std::string sid_;
   InputParser parser_;
+  base::TimeTicks rx_ticks_;  // m3-trace
   std::unique_ptr<FrameSource> source_;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
   webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver_;
