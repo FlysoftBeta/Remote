@@ -15,4 +15,6 @@ Setup to support: server machine (Windows, wired) runs the chain; viewer = a rea
    no private class fields, no structuredClone, no Array.prototype.at; check each API you use exists in Chrome 89).
 3. `tools/field-test/README.md`: steps (build, start, open URL on the device, what to tap, where the report lands, how to compare with loopback/netem
    numbers), troubleshooting (firewall, Wi-Fi client isolation, ICE host candidates must be the LAN IP, mDNS candidates, no TURN needed).
+4. README section "Glass-to-glass check": high-speed (240 fps) phone video filming the server screen (a local PRTS window showing the marker page)
+   and the viewer device side by side; how to read the frame counter difference; expected accuracy.
 NOTES.md: files changed, what is verified (syntax only) vs unverified.
