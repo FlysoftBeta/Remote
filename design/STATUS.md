@@ -174,3 +174,56 @@ D3D11 共享纹理 → endpoint 私有拷贝 → staging 回读 → libyuv I420�
 2. `m2-netem-matrix`：加高码率场景（滚动长页、1080p 视频、canvas 游戏式动画）后跑 d25j5/d50j10 × 16/12/10 Mbps + 两个 Wi-Fi 变体，OpenH264 与 VPL 各一轮，
    每个配置 ≥2 次，用有头 viewer；结果表写入本文件。
 3. GPU 崩溃后 capturer 恢复；Chrome 89 H.264；补丁 16 拆分；zh-CN 剩余字符串。
+（以上第 1、3 项（除 Chrome 89）已在 M3 完成，见下。）
+
+## M3 交接（Stage 4 orchestrator，2026-10-26 19:00）——下一位 orchestrator（M4）从这里开始
+
+### 现在能用的（全部已提交、已推送）
+- M2 全部功能项（见上节）+ M3：
+  - **oneVPL 编码器**（`endpoint/vpl_encoder.*`、`d3d_native_frame.*`，libvpl 2.17 dispatcher 源码 vendored 在 `endpoint/third_party/libvpl`）：UHD 630 上是 legacy MSDK 1.35；
+    零拷贝路径 = 键控互斥内只做 CopyResource 到私有池纹理 → 释放互斥（持有 ~0.04 ms）→ VPP BGRA→NV12（BT.709 limited）→ ENCODE（之间不 Sync）；
+    `--encoder=vpl|openh264`（默认 vpl，可用时）；速率变化走无 IDR 的 Reset（VBV 固定），带滞回和挂起目标；与 OpenH264 同样的 2/2/12 Mbps；
+    审查 12 条（`research/m3/vpl-review.md`）中 1-5 + 小项已修（`research/m3/vpl-harden.md`）。
+  - **GPU 进程崩溃恢复**（补丁 18 + endpoint）：capture 会话保留并重连，endpoint 丢纹理缓存并要 IDR；两次 kill GPU 进程后零拷贝恢复，viewer 断流约 0.53 s。
+  - **精确 60 Hz fake vsync**（补丁 17，`ui/gl/prts_fake_vsync_clock.h`）：headless 的 cloaked 窗口没有 DXGI output，vsync 退化为 Sleep(17)+重新枚举（约 53 fps）；
+    remote 模式 + `--fake-vsync-rate=60` 用高精度定时器 → 稳定约 60 fps。
+  - 延迟工具：`tools/latency/run.mjs --preset m3-combined`（VPL@60 + `--cr-fake-vsync-rate=60` + 高精度定时器 + pacer 试验
+    `WebRTC-Video-Pacing/factor:2.5/...`）、`--scenario marker|S|V|G`、`--netem <profile>`（`tools/netem/`，自写 TURN 中继整形）、每份报告的 `pipeline` 配置块、
+    每帧/每输入关联追踪（`research/m3/trace.md`）。说明见 `tools/latency/PRESETS.md`。
+- Chromium 补丁系列（`chromium/series`，13 个）：01、04、11、12（含 zh-CN/zh-TW xtb）、13、06、08、15 remote-window、09 prts-web-prefs、02 prts-browser、14、
+  17 remote-vsync、18 prts-capture-recovery（**18 应在下次拆分时并入 02**；方法：临时 index + commit-tree，不动工作区，见 git log 中的拆分提交说明）。
+
+### 延迟（配置：Chromium 157 dev/component；GPU 进程 + UHD 630 + ANGLE D3D11 + Graphite；捕获 viz FrameSinkVideoCapturer D3D11 共享纹理；
+VPL@60 + 精确 vsync + pacer 试验（m3-combined）；headless Edge 156 viewer，rVFC expectedDisplayTime；P50/P80/P95/P99 ms）
+| 网络 / 场景 | capture→display | input→flip | 目标（P80<100、P99<200） |
+|---|---|---|---|
+| 回环（`research/m3/levers-measurements.md` combined） | 43.9/48.5/51.5/53.0 | 44.0/49.3/53.4/56.2 | 通过 |
+| d25j5-c12（50 ms RTT）S/V/G（`research/m3/matrix2*.md`） | P80 104-124，P99 117-136 | P80 138-165，P99 149-182 | capture 接近；input P80 不通过 |
+| d25j5-c12-wifi | P80 107-118，P99 157-171 | P80 144-161，P99 180-221 | 不通过 |
+| d25j5-c10 S（突发丢包） | P80 130，P99 265 | P80 164，P99 357 | 不通过 |
+| OpenH264 基线（同矩阵，`research/m3/netem-matrix-openh264.md`） | P80 140-260 | P80 200-360 | 不通过 |
+- 20 行中 capture 1/20、input 0/20 达标；M3 相对基线 P80 改善 40-210 ms，游戏场景 10→59 fps。
+- **分解（`research/m3/stage-table.md`，[M]/[I] 标注）**：编码 7.3 ms，Mojo 0.8，VPP 0.4，pacer 0.35，抖动缓冲+解码 1.4-2.9，注入 1.2；
+  **capture 的 copy 结果要等 present（约 12.8 ms 是等待，不是工作：GPU CopyOutput 在 rAF+3.5 完成，capture_end 在 rAF+16.4）**；
+  **capture 相对页面 rAF 的相位每次运行不同（1-3 个 vsync，运行内恒定）→ 运行间差 15-30 ms 的主因**；按键到 rAF 7-12 ms（vsync 相位）；
+  viewer presentation→display 约 18/23 ms（headless 与有头一致，都是估计值，测不到真实扫描输出）；
+  netem 中继：FIFO 保序 + 高斯抖动每方向额外约 3.5 ms（离线仿真吻合）、最后一个包约 2 ms；S 场景 13-25 KB 帧在 12 Mbps 下串行化约 13 ms/20 KB。
+- 测量方法注意：同配置至少 3 次重复（相位锁定）；抖动 FIFO 模型偏悲观（是否符合真实 Wi-Fi 待定）。
+
+### 已知问题 / 风险
+1. VPL Reset 回读的码率量化（请求 2000 → 回读 2005）曾被严格相等判定为失败 → 回退 OpenH264（matrix2 一次）；需容差判断（harden 后未复测此场景）。
+2. c10 + 滚动突发：队列丢包 480，尾部 265/357 ms → 需要按网络的 VBR 上限 / MaxFrameSize 与包突发平滑。
+3. Network Service 启动崩溃根因未明（ACL 后不复现）；导航重试保留为守卫。
+4. Chrome 89 + H.264 未验证：本机 `C:\src\tmp\chrome89` 是不带 H.264 的 Chromium 89；**需要用户提供可信的带专有编解码器的 Chrome 89**。
+5. 补丁 18 待并入 02；endpoint 仍有 `allow_unsafe_buffers`/去 style plugin（M5 清理）；zh 少量 “Chrome 应用商店” 类字符串保留。
+6. 有头 viewer 的 decoderImplementation 读不到（GPU 视频解码引擎约 6% 占用，推断为硬件解码）。
+
+### 下一步（M4 建议顺序，按可去掉的延迟排序）
+1. `research/prompts7/m3-capture-phase.md`（已写好、未运行）：用 CDP trace 确认 copy 结果等 present 的 12.8 ms → 让 CopyOutputRequest 结果在 GPU 完成时交付
+   （或 S12 present 时刻的 back buffer tap）；capture 与页面 BeginFrame 相位对齐（S5 endpoint 驱动 BeginFrame，或 120 Hz vsync + 60 fps 捕获）——预计 -12 到 -30 ms。
+2. VPL：Reset 回读容差；网络感知的 MaxFrameSize/VBR 上限 + 包突发平滑（c10/Wi-Fi 尾部）；考虑 intra refresh 代替 IDR。
+3. 复跑 d25j5 矩阵（每配置 3 次，有头 viewer 一行），按目标判定。
+4. rel 构建（非 component、无 dcheck）测量；Chrome 89；然后 Workstream C 隔离。
+- Codex：5 小时窗口 20:03 重置（交接时 89%）；`scripts/codex-run.ps1` 现在用 `--dangerously-bypass-approvals-and-sandbox`；
+  偶发 “Selected model is at capacity” → 用重试循环（见本阶段的后台命令写法：`for i in 1 2 3; do codex-task.sh ...; [ -s final.md ] && break; sleep 120; done`）。
+- 运行期任务必须串行（`kill.sh`/`be.sh` 会杀掉所有测试 chrome/endpoint）；草稿任务（只出 diff）可以并行。
