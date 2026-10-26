@@ -1,0 +1,33 @@
+diff --git a/tools/latency/PRESETS.md b/tools/latency/PRESETS.md
+index d5627d6..a407e9c 100644
+--- a/tools/latency/PRESETS.md
++++ b/tools/latency/PRESETS.md
+@@ -6,6 +6,8 @@
+ WebRTC-Video-Pacing/factor:2.5/WebRTC-Bwe-LimitPacingFactorByUpperLinkCapacityEstimate/Enabled/
+ ```
+ 
++M4 endpoint defaults are now start/max **8000 kbps**. At `--fps=60`, the endpoint defaults to S5 demand pacing: external root BeginFrames on a precise absolute 60 Hz clock, one outstanding tick per root, input ticks at least 4 ms apart, full-pipeline scheduling and `NoCompositorFrameAcks`. It advertises/uses protocol 2 pacing capability with the patched browser. Other FPS values retain the normal clock; explicit external pacing requires 60 fps. `--begin-frame-mode=off|fixed|demand` selects the comparison mode; `--begin-frame-stock-scheduler` suppresses the automatic full-pipeline/ACK flags for diagnostics. The selected policy is retained in `pipeline.capture.pacing`. Shared-fence capture remains the probed default. Results and limits: [S5 pacing](../../research/m4/s5-pacing.md).
++
+ Stop the previous test chain first. Set `ENDPOINT_PATH` and `ENDPOINT_ARGS` as for the ordinary control plane, including the Chrome executable and a dedicated browser profile. PowerShell example from the repository root:
+ 
+ ```powershell
+diff --git a/tools/latency/pipeline.mjs b/tools/latency/pipeline.mjs
+index 5402f23..642cb34 100644
+--- a/tools/latency/pipeline.mjs
++++ b/tools/latency/pipeline.mjs
+@@ -57,6 +57,7 @@ export async function collectPipeline(ctx) {
+   const vpl = /^PRTS oneVPL/.test(out.encoder.backend || '');
+   const sync = last(/PRTS capture sync=/)?.match(/sync=(\w+)/)?.[1];
+   out.capture.sync = sync || (last(/PRTS OpenSharedFence token=/) ? 'fence' : 'mutex');
++  out.capture.pacing = fields(last(/PRTS BeginFrame mode=/));
+   out.encoder.fallbacks = lines.filter(l => /^\[/.test(l) && /PRTS VPL .*fallback encoder=openh264/.test(l)).map(strip);
+   out.encoder.mixedBackend = activeVpl >= 0 && out.encoder.fallbacks.length > 0;
+   out.encoder.requested = last(/PRTS encoder requested=/)?.match(/requested=(\w+)/)?.[1];
+@@ -103,6 +104,7 @@ export function pipelineLines(r) {
+   const L = [
+     `pipeline.remote: ${p.remote.browser || '?'}; GPU ${g ? g.vendor + ' / ' + g.device : 'n/a'}; gpu-process=${p.remote.gpuProcessPresent}; software=${p.remote.softwareRenderer}; ${(p.remote.gpuProcessFlags || []).filter(x => /angle|use-gl|graphite/.test(x)).join(' ')}`,
+     `pipeline.capture: ${p.capture.path}`,
++    `pipeline.pacing: ${JSON.stringify(p.capture.pacing || {})}`,
+     `pipeline.encoder: ${p.encoder.backend || p.encoder.impl}${p.encoder.mixedBackend ? ' (runtime fallback; mixed run)' : ''} ${p.encoder.resolution}@${p.encoder.fps} kbps start/min/max ${p.encoder.startKbps}/${p.encoder.minKbps}/${p.encoder.maxKbps} cores ${p.encoder.cores}; ${p.encoder.mode}`,
+     `pipeline.viewer: ${p.viewer.browser} ${p.viewer.headless ? 'headless' : 'HEADED'}; decoder ${p.viewer.decoderImplementation} powerEfficient=${p.viewer.powerEfficientDecoder}`,
+     `pipeline.display: ${p.display.measurementPoint}; ${p.display.note}`,

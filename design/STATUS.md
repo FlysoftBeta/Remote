@@ -235,3 +235,36 @@ VPL@60 + 精确 vsync + pacer 试验（m3-combined）；headless Edge 156 viewer
 - rel 构建：后台进行（`out\rel`，chrome + prts_endpoint，-j 16），不阻塞 M4；完成时才顺带用于一次测量，正式 rel 测量移到 M5。
 - Codex 任务（提示词 `research/prompts8/`，结果 `research/m4/`）：copy-delivery（copy 结果在 GPU 完成时交付 + capture 相位）、endpoint-knobs（实验开关 + VPL 回读容差）、
   shared-fence（共享 D3D11 fence 交接调查 + probe）、experiments（E5/E2/E3/E1/E6/E13/Wi-Fi，每配置 3 次）、chrome89、field-kit、presenter（低优先级）。
+
+## M4 交接（Stage 5 orchestrator，2026-10-27 08:00）——M4 结束；下一步 M6 隔离（新 orchestrator），M5 推迟
+验收口径：capture→decoded / input→decoded（viewer 解码帧可用，rVFC presentationTime），P80 < 100、P99 < 200 ms；另报 glass 估计（expectedDisplayTime）。
+配置：Chromium 157 dev/component；fence 捕获 + VPL@60 + 8 Mbps 上限 + m3-combined（精确 vsync、pacer 2.5）；headless Edge viewer（另有 Chrome 89 有头行）。
+
+| 网络 / 场景（P80/P99 ms） | capture→decoded | input→decoded | glass capture / input（P80） | 来源 |
+|---|---|---|---|---|
+| 回环 marker | 19-20 / 23-28 | 31-38 / 45-57 | 42 / 52-58 | s5-pacing.md |
+| d25j5-c12 S（3 次） | 80-82 / 88 | 138-141 / 162 | 101-103 / 152-158 | s5-pacing.md 最终行 + experiments.md P99 |
+| d25j5-c12 V（2 次） | 80 / — | 127-143 / — | 102 / 143-168 | s5-pacing.md |
+| d25j5-c12 G（2-3 次） | 82-84 / 102 | 135-140 / 177 | 104 / 155-159 | 同上 |
+| d25j5-c12-wifi S/V/G（3 次） | 85-95 / 134-145 | 141-152 / 200-203 | 103-113 / 159-172 | experiments.md W |
+| Chrome 89 有头 d25j5-c12 | 63-82（6/6 通过） | 126-160（0/6） | ≈ decoded | chrome89.md |
+- **结论**：capture→decoded 在 c12 与 Wi-Fi 全部场景 P80/P99 达标；input→decoded P80 全部不达标（127-152），P99 c12 达标、Wi-Fi 约 200（边界）。
+  用户已确认 input P80 为尽力项。
+- **起作用的杠杆**：共享 fence 交接（每对 -10~-13 ms，Viz capture 14.8→1.3 ms）；8 Mbps 上限（消除 c12 队列丢包，S P99 123→88）；VPL 回读容差（无 OpenH264 回退）。
+  无效：30 fps（更差）、MaxFrameSize ×2、VBV 4 帧、intra refresh、ULPFEC、capture 相位调度标志、S5 外部 BeginFrame（回退）、viewer 呈现模式。
+- **剩余瓶颈（input→decoded，S，P50）**：上行网络 28 + 下行最后一包驻留 38-43（25 ms 单向 + 每方向约 3.5 ms FIFO 抖动模型 + 约 11 ms 串行化 16 KB/12 Mbps）
+  + 页面 draw→capture_begin 相位 17-32（每次运行锁定 0/1/2 帧；S5 只在标记页修好，真实内容的子 sink 仍滞后）+ keydown→rAF 5-11 + capture/编码 ~17 + 解码 ~7。
+  网络本身约 60 ms，剩下可去的主要是相位（需要让浏览器内容子 sink 与根同 BeginFrame 提交，即 viz 聚合/激活层面的改动）与 keydown→rAF（输入触发帧）。
+- **Chrome 89**（`research/m4/chrome89.md`）：正版 89.0.4389.90 有头解码 H.264（SPS 4.2，ExternalDecoder）；playout-delay 扩展已协商，但 M89 抖动计数为模型值，未见 ≈0。
+- **测试套件**：`tools/field-test/start-server.ps1` + `README.md`（viewer `?measure=60&scenario=S` 自测并 `POST /field-report`，Chrome 89 实测通过，与 harness 差 11 ms 内；
+  含高速相机 glass-to-glass 步骤）。
+- **rel 构建**：`out\rel`（non-component）已建成到补丁 19（04:27）；未做 rel 测量（M5）。
+- 补丁系列：新增 `19-prts-shared-fence`（22 个文件，含 services/viz mojom 与 d3d_image_backing_factory）。
+
+### 开放问题（给 M5/M6）
+1. GPU 进程重启后 fence 路径有 2 个不可解码帧（重开 fence + IDR 已做）。
+2. 相位（draw→capture 0-2 帧）仍是运行级变量；修法需在 viz 聚合层让内容子 sink 与根同帧（S5 记录了阻塞点）。
+3. Chrome 89 jitter buffer 行为（计数为模型值）与真实扫描输出未验证；用户可用 field kit + 高速相机核对。
+4. 编码画质（8 Mbps 下文字/视频）未做主观或客观评估；rel 构建延迟未测。
+5. 补丁 18 待并入 02；补丁 19 体积较大，M5 时考虑拆分（viz 部分 vs GMB 池部分）。
+- Codex：`/c/src/tmp/m4/lane.sh`（顺序、额度感知、`-Resume`）；`scripts/codex-run.ps1 -Resume <thread>`；`codex-limits.ps1` 已修复空快照。

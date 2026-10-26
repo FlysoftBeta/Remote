@@ -132,6 +132,18 @@ D4b 成立时每个浏览器窗口只有一个源，endpoint 不做弹层合成�
 
 顺序：B0 三场景基线（M3 末）→ E7/E8/E9 → E2/E3/E6 → E1/E5/E11 → 其余。结果写 `design/experiments/E*.md`。
 
+## 6a. M4 调优后的默认值（2026-10-27，`research/m4/*.md`）
+- 捕获交接：**共享 D3D11 fence**（补丁 19，`--capture-sync=fence` 默认，keyed mutex 为回退）：viz 提交 copy 后立即 Signal 并投递 {token, value, LUID}，
+  endpoint `ID3D11DeviceContext4::Wait` 后直接 VPP + 编码；consumed 回执门控 `Done()`/池复用。Viz capture 段 P50 14.8 → 1.3 ms（`fence-impl.md`）。
+- 编码：oneVPL VBR + LowDelayBRC，LowPower ON，TU7，AsyncDepth 1，CB profile，1 slice，MaxFrameSize = 1.0 × 最大码率下的平均帧，VBV 请求 1 帧（驱动取整约 34 KB），
+  无周期 IDR、intra refresh 关；回读容差（驱动取整不再触发 OpenH264 回退）。
+- 码率：**min/start/max = 2000/8000/8000 kbps**（E5：12 Mbps 链路上 max = 链路速率会填满瓶颈队列；8 Mbps 消除 c12 丢包，S capture P99 123 → 88 ms）。
+- 帧率 60（E1：30 fps 使 G 变慢约 28 ms）；playout-delay (0,0)；FEC 关（E13 无收益）；pacer 试验 `WebRTC-Video-Pacing/factor:2.5` + 精确 60 Hz fake vsync（补丁 17）。
+- 场景覆盖（开关，非默认）：视频为主且链路 ≥ 14 Mbps 时可 `--max-kbps=10000-12000` 换画质（以队列丢包为代价，先测）；高丢包 Wi-Fi 可试 `--vpl-intra-refresh=30`
+  （E6 在 c10 上无延迟收益，恢复性未验证）；`--fps=30` 仅用于带宽极低的情况。
+- 否决：S5 外部 BeginFrame（fixed/demand）：标记页相位稳定到 1.4 ms，但真实滚动/GPU 恢复后内容子 sink 仍滞后 1-2 帧（相位回到约 33 ms），已回退
+  （`research/m4/s5-pacing.md`，diff 留在 `research/m4/s5-rejected/`）；viewer 呈现杠杆（overlay/desynchronized canvas）无收益（`presenter.md`）。
+
 ## 7. 主要风险
 - R1（已降级）capturer 成本：一次全帧 blit + GPU 完成后投递；不阻塞 GPU 主线程。S4 测量；不可接受时 S12（自定义 OutputDevice）。
 - R2 UHD 630 渲染与编码争用：监控 3D 与 VideoEncode 引擎占用；VDEnc 是固定功能单元。

@@ -1,0 +1,490 @@
+diff --git a/chrome/browser/prts/BUILD.gn b/chrome/browser/prts/BUILD.gn
+index 7ec75a6a82..1a515d754a 100644
+--- a/chrome/browser/prts/BUILD.gn
++++ b/chrome/browser/prts/BUILD.gn
+@@ -34,6 +34,8 @@ if (is_win) {
+       "prts_cursor_bridge.cc",
+       "prts_cursor_bridge.h",
+       "prts_delegates.h",
++      "prts_frame_pacer.cc",
++      "prts_frame_pacer.h",
+       "prts_ime_bridge.cc",
+       "prts_ime_bridge.h",
+       "prts_input.cc",
+diff --git a/chrome/browser/prts/mojom/prts.mojom b/chrome/browser/prts/mojom/prts.mojom
+index 93a2127a09..ea49f23e3b 100644
+--- a/chrome/browser/prts/mojom/prts.mojom
++++ b/chrome/browser/prts/mojom/prts.mojom
+@@ -11,6 +11,7 @@ struct HelloInfo {
+   uint32 version;            // 1
+   uint64 gpu_luid;           // adapter LUID of the browser GPU process (0 = unknown/software)
+   bool software_compositing;
++  [MinVersion=1] bool external_begin_frames = false;
+ };
+ 
+ struct WindowInfo {
+@@ -128,4 +129,12 @@ interface PrtsBrowser {
+   SetViewport(gfx.mojom.Size dip, float dsf);
+   ImeHidden(uint32 context);           // local OSK dismissed; preserve remote focus
+   SetTouchCapabilities(uint8 touch_points, bool touch_only);
++  // PRTS: capability-gated version 2 pacing; generation isolates root lifetimes.
++  [MinVersion=1] PaceConfig(uint32 window_id, uint64 generation,
++                           mojo_base.mojom.TimeDelta interval) => (bool enabled);
++  [MinVersion=1] PaceTick(uint32 window_id, uint64 generation, uint64 tick_seq,
++                         mojo_base.mojom.TimeTicks frame_time)
++      => (bool admitted, bool has_damage);
++  [MinVersion=1] PaceReset(uint32 window_id, uint64 generation)
++      => (bool recreated);
+ };
+diff --git a/chrome/browser/prts/prts_capture.cc b/chrome/browser/prts/prts_capture.cc
+index 4c745a97c7..2060bd5d54 100644
+--- a/chrome/browser/prts/prts_capture.cc
++++ b/chrome/browser/prts/prts_capture.cc
+@@ -332,7 +332,13 @@ class PrtsCapture::Session {
+     capturer_ = std::make_unique<viz::ClientFrameSinkVideoCapturer>(
+         std::move(establish));
+     capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
+-    capturer_->SetMinCapturePeriod(base::Seconds(1) / fps);
++    // PRTS: endpoint admission limits cadence; demand ticks may be 4 ms apart.
++    // Capture every admitted damage aggregation instead of adding a second
++    // 60 Hz sampler phase. Normal capture retains the requested FPS ceiling.
++    const bool external_frames = ui::IsPrtsRemoteMode() &&
++        compositor->use_external_begin_frame_control();
++    capturer_->SetMinCapturePeriod(external_frames ? base::Milliseconds(4)
++                                                 : base::Seconds(1) / fps);
+     capturer_->SetMinSizeChangePeriod(base::TimeDelta());
+     capturer_->SetAutoThrottlingEnabled(false);
+     capturer_->SetAnimationFpsLockIn(false, 0.0f);
+diff --git a/chrome/browser/prts/prts_controller.cc b/chrome/browser/prts/prts_controller.cc
+index ee82ad9563..f1d342a1d3 100644
+--- a/chrome/browser/prts/prts_controller.cc
++++ b/chrome/browser/prts/prts_controller.cc
+@@ -7,12 +7,14 @@
+ #include <cmath>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/scoped_observation.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/prts/prts_capture.h"
++#include "chrome/browser/prts/prts_frame_pacer.h"
+ #include "chrome/browser/prts/prts_cursor_bridge.h"
+ #include "chrome/browser/prts/prts_content_browser_client_part.h"
+ #include "chrome/browser/prts/prts_ime_bridge.h"
+@@ -30,6 +32,7 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/browser/web_contents_observer.h"
+ #include "net/base/net_errors.h"
++#include "ui/aura/window_tree_host.h"
+ #include "ui/base/ui_base_switches.h"
+ #include "ui/display/win/screen_win_headless.h"
+ #include "url/gurl.h"
+@@ -170,12 +173,15 @@ PrtsController::PrtsController()
+       link_(this,
+             base::BindOnce(&PrtsController::OnDisconnect,
+                            base::Unretained(this))) {
++  registry_->AddObserver(this);
+   if (ui::IsPrtsRemoteMode()) {
+     startup_navigation_recovery_ =
+         std::make_unique<PrtsStartupNavigationRecovery>();
+   }
+ }
+ PrtsController::~PrtsController() {
++  registry_->RemoveObserver(this);
++  pacers_.clear();
+   link_.Close();
+   ime_->SetActiveHost(nullptr);
+   cursor_->SetActiveHost(nullptr);
+@@ -219,7 +225,11 @@ void PrtsController::SetClient(
+     return;
+   }
+   auto hello = mojom::HelloInfo::New();
+-  hello->version = 1;
++  hello->version = 2;
++  hello->external_begin_frames =
++      ui::IsPrtsRemoteMode() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "prts-external-begin-frame");
+   hello->gpu_luid = 0;
+   hello->software_compositing = true;  // Conservative link-only spike default.
+   if (delegates_.capture) {
+@@ -257,6 +267,50 @@ void PrtsController::StartCapture(
+                                      std::move(sink));
+   }
+ }
++void PrtsController::OnPrtsWindowChanged(uint32_t id) {}
++
++void PrtsController::OnPrtsWindowRemoving(uint32_t id) {
++  pacers_.erase(id);
++}
++
++void PrtsController::PaceConfig(uint32_t window_id,
++                                uint64_t generation,
++                                base::TimeDelta interval,
++                                PaceConfigCallback reply) {
++  auto* host = registry_->GetHost(window_id);
++  if (!ui::IsPrtsRemoteMode() || !host || !generation ||
++      !host->compositor()->use_external_begin_frame_control() ||
++      interval < base::Milliseconds(4) || interval > base::Milliseconds(100) ||
++      pacers_.contains(window_id)) {
++    std::move(reply).Run(false);
++    return;
++  }
++  pacers_[window_id] = std::make_unique<PrtsFramePacer>(host->compositor(),
++                                                        generation, interval);
++  std::move(reply).Run(true);
++}
++
++void PrtsController::PaceTick(uint32_t window_id,
++                              uint64_t generation,
++                              uint64_t tick_seq,
++                              base::TimeTicks frame_time,
++                              PaceTickCallback reply) {
++  auto it = pacers_.find(window_id);
++  if (it == pacers_.end() || it->second->generation() != generation) {
++    std::move(reply).Run(false, false);
++    return;
++  }
++  it->second->Tick(tick_seq, frame_time, std::move(reply));
++}
++
++void PrtsController::PaceReset(uint32_t window_id, uint64_t generation,
++                               PaceResetCallback reply) {
++  auto it = pacers_.find(window_id);
++  std::move(reply).Run(it != pacers_.end() &&
++                       it->second->generation() == generation &&
++                       it->second->Recover());
++}
++
+ void PrtsController::StopCapture(uint32_t window_id) {
+   if (delegates_.capture) {
+     delegates_.capture->StopCapture(window_id);
+@@ -334,6 +388,7 @@ void PrtsController::NewWindow(const std::string& url) {
+   }
+ }
+ void PrtsController::OnDisconnect() {
++  pacers_.clear();
+   startup_navigation_recovery_.reset();
+   if (delegates_.windows) {
+     delegates_.windows->SetClient(nullptr);
+diff --git a/chrome/browser/prts/prts_controller.h b/chrome/browser/prts/prts_controller.h
+index 2aac078481..053be2b425 100644
+--- a/chrome/browser/prts/prts_controller.h
++++ b/chrome/browser/prts/prts_controller.h
+@@ -7,7 +7,9 @@
+ 
+ #include "chrome/browser/prts/prts_delegates.h"
+ #include "chrome/browser/prts/prts_link.h"
++#include "chrome/browser/prts/prts_window_registry.h"
+ 
++#include <map>
+ #include <memory>
+ 
+ #include "base/memory/raw_ptr.h"
+@@ -20,13 +22,15 @@ namespace prts {
+ 
+ class PrtsWindowRegistry;
+ class PrtsCapture;
++class PrtsFramePacer;
+ class PrtsInput;
+ class PrtsImeBridge;
+ class PrtsCursorBridge;
+ class PrtsStartupNavigationRecovery;
+ 
+ // UI-thread dispatcher; owns only the link, never the implementation delegates.
+-class PrtsController : public mojom::PrtsBrowser {
++class PrtsController : public mojom::PrtsBrowser,
++                       public PrtsWindowRegistry::Observer {
+  public:
+   PrtsController();
+   ~PrtsController() override;
+@@ -37,6 +41,12 @@ class PrtsController : public mojom::PrtsBrowser {
+                     mojom::CaptureParamsPtr params,
+                     mojo::PendingRemote<mojom::PrtsFrameSink> sink) override;
+   void StopCapture(uint32_t window_id) override;
++  void PaceConfig(uint32_t window_id, uint64_t generation,
++                  base::TimeDelta interval, PaceConfigCallback reply) override;
++  void PaceTick(uint32_t window_id, uint64_t generation, uint64_t tick_seq,
++                base::TimeTicks frame_time, PaceTickCallback reply) override;
++  void PaceReset(uint32_t window_id, uint64_t generation,
++                 PaceResetCallback reply) override;
+   void RequestRefreshFrame(uint32_t window_id) override;
+   void ActivateWindow(uint32_t window_id) override;
+   void Pointer(uint32_t window_id, mojom::PointerInputPtr input) override;
+@@ -56,6 +66,8 @@ class PrtsController : public mojom::PrtsBrowser {
+ 
+  private:
+   void OnDisconnect();
++  void OnPrtsWindowChanged(uint32_t id) override;
++  void OnPrtsWindowRemoving(uint32_t id) override;
+   void OnCursor(const std::string& css);
+   void OnImeState(mojom::ImeStatePtr state);
+   void OnVirtualKeyboard(bool show, uint32_t seq);
+@@ -66,6 +78,7 @@ class PrtsController : public mojom::PrtsBrowser {
+   std::unique_ptr<PrtsInput> input_;
+   std::unique_ptr<PrtsImeBridge> ime_;
+   std::unique_ptr<PrtsCursorBridge> cursor_;
++  std::map<uint32_t, std::unique_ptr<PrtsFramePacer>> pacers_;
+   raw_ptr<aura::WindowTreeHost> active_host_ = nullptr;
+   PrtsDelegates delegates_;
+   PrtsLink link_;
+diff --git a/components/viz/service/display/surface_aggregator.cc b/components/viz/service/display/surface_aggregator.cc
+index d5116fa02c..ba6133b427 100644
+--- a/components/viz/service/display/surface_aggregator.cc
++++ b/components/viz/service/display/surface_aggregator.cc
+@@ -13,6 +13,8 @@
+ #include <vector>
+ 
+ #include "base/check_op.h"
++// PRTS: opt-in request-side child/root identity trace.
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
+@@ -2076,6 +2078,18 @@ gfx::Rect SurfaceAggregator::PrewalkSurface(ResolvedFrameData& resolved_frame,
+     // The following call can cause one or more copy requests to be added to the
+     // Surface. Therefore, no code before this point should have assumed
+     // anything about the presence or absence of copy requests after this point.
++    // PRTS: trace the actual activated child frame at aggregation, not at copy
++    // completion. The root's ACK alone cannot prove child frame freshness.
++    if (base::CommandLine::ForCurrentProcess()->HasSwitch("prts-remote")) {
++      const auto& metadata = resolved_frame.GetMetadata();
++      TRACE_EVENT_INSTANT("viz", "PrtsAggregatedFrame",
++                          "surface", surface->surface_id().ToString(),
++                          "source_id", metadata.begin_frame_ack.frame_id.source_id,
++                          "sequence", metadata.begin_frame_ack.frame_id.sequence_number,
++                          "frame_token", metadata.frame_token,
++                          "expected_display_us",
++                          expected_display_time_.since_origin().InMicroseconds());
++    }
+     surface->NotifyAggregatedDamage(damage_rect_surface_space,
+                                     expected_display_time_);
+   }
+diff --git a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
+index 38e1978559..59dfb3d9e1 100644
+--- a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
++++ b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
+@@ -12,6 +12,8 @@
+ #include <variant>
+ 
+ #include "base/command_line.h"
++// PRTS: only enable per-frame identity logging for diagnostic launches.
++#include "base/environment.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+@@ -983,6 +985,18 @@ void FrameSinkVideoCapturerImpl::MaybeCaptureFrame(
+   VideoFrameMetadata& metadata = frame->metadata();
+   metadata.capture_begin_time = capture_begin_time;
+   metadata.capture_counter = capture_frame_number;
++  // PRTS: request-side frame identity, independent of asynchronous copy return.
++  static const bool prts_trace =
++      base::Environment::Create()->HasVar("PRTS_TRACE") &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch("prts-remote");
++  if (prts_trace && consumer_) {
++    consumer_->OnLog(base::StringPrintf(
++        "PRTS TR C cb=%lld sid=%llu seq=%llu token=%u event=%d",
++        capture_begin_time.since_origin().InMicroseconds(),
++        frame_metadata.begin_frame_ack.frame_id.source_id,
++        frame_metadata.begin_frame_ack.frame_id.sequence_number,
++        frame_metadata.frame_token, static_cast<int>(event)));
++  }
+   metadata.frame_duration = oracle_->estimated_frame_duration();
+   metadata.frame_rate = 1.0 / oracle_->min_capture_period().InSecondsF();
+   metadata.reference_time = event_time;
+diff --git a/ui/compositor/compositor.cc b/ui/compositor/compositor.cc
+index 9849318dc2..5439190c8d 100644
+--- a/ui/compositor/compositor.cc
++++ b/ui/compositor/compositor.cc
+@@ -692,6 +692,10 @@ gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
+   host_->ReleaseLayerTreeFrameSink();
+   display_private_.reset();
+   external_begin_frame_controller_.reset();
++  // PRTS: widget recreation aborts both bound and not-yet-bound external ticks.
++  if (ui::IsPrtsRemoteMode() && use_external_begin_frame_control()) {
++    pending_begin_frame_args_.reset();
++  }
+   context_factory_->RemoveCompositor(this);
+   context_creation_weak_ptr_factory_.InvalidateWeakPtrs();
+   widget_valid_ = false;
+diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
+index f834c19bd8..1b2f3a4ab8 100644
+--- a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
++++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
+@@ -324,7 +324,18 @@ void DesktopWindowTreeHostWin::Init(const Widget::InitParams& params) {
+ 
+   UpdateBackdropColorMode();
+ 
+-  CreateCompositor(params.force_software_compositing);
++  // PRTS: external control must be selected before the root sink is created.
++  const bool prts_external =
++      (params.type == Widget::InitParams::TYPE_WINDOW ||
++       params.type == Widget::InitParams::TYPE_WINDOW_FRAMELESS) &&
++      ui::IsPrtsRemoteMode() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "prts-external-begin-frame");
++  CreateCompositor(params.force_software_compositing, prts_external);
++  if (prts_external) {
++    // PRTS: joining/idle child sinks must not deadlock the root controller.
++    compositor()->set_wait_for_all_frame_sinks(false);
++  }
+   OnAcceleratedWidgetAvailable();
+   InitHost();
+   window()->Show();
+diff --git a/chrome/browser/prts/prts_frame_pacer.cc b/chrome/browser/prts/prts_frame_pacer.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/prts/prts_frame_pacer.cc
+@@ -0,0 +1,94 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prts/prts_frame_pacer.h"
++
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "mojo/public/cpp/bindings/callback_helpers.h"
++
++namespace prts {
++
++PrtsFramePacer::PrtsFramePacer(ui::Compositor* compositor,
++                               uint64_t generation,
++                               base::TimeDelta interval)
++    : generation_(generation), interval_(interval) {
++  observation_.Observe(compositor);
++  LOG(INFO) << "PRTS pacer gen=" << generation_
++            << " sid=" << source_->source_id();
++}
++
++PrtsFramePacer::~PrtsFramePacer() {
++  if (pending_) {
++    std::move(pending_).Run(false, false);
++  }
++}
++
++void PrtsFramePacer::OnCompositingShuttingDown(ui::Compositor* compositor) {
++  observation_.Reset();
++  weak_factory_.InvalidateWeakPtrs();
++  if (pending_) {
++    std::move(pending_).Run(false, false);
++  }
++}
++
++bool PrtsFramePacer::Recover() {
++  if (!observation_.IsObserving()) {
++    return false;
++  }
++  // Old callbacks must not complete the replacement controller's transaction.
++  weak_factory_.InvalidateWeakPtrs();
++  auto* compositor = observation_.GetSource();
++  const bool was_visible = compositor->IsVisible();
++  compositor->SetVisible(false);
++  const auto widget = compositor->ReleaseAcceleratedWidget();
++  compositor->SetAcceleratedWidget(widget);
++  compositor->SetVisible(was_visible);
++  compositor->ScheduleFullRedraw();
++  source_ = std::make_unique<viz::StubBeginFrameSource>();
++  if (pending_) {
++    // The old controller has actually been destroyed, not synthetically ACKed.
++    std::move(pending_).Run(false, false);
++  }
++  LOG(WARNING) << "PRTS pacer recreated gen=" << generation_
++               << " sid=" << source_->source_id();
++  return true;
++}
++
++void PrtsFramePacer::Tick(uint64_t sequence,
++                          base::TimeTicks time,
++                          mojom::PrtsBrowser::PaceTickCallback reply) {
++  const auto now = base::TimeTicks::Now();
++  if (!observation_.IsObserving() || pending_ || sequence <= sequence_ ||
++      time <= last_time_ || time > now + interval_ || now >= time + interval_ * 0.8 ||
++      (!last_time_.is_null() && time - last_time_ < base::Milliseconds(4))) {
++    std::move(reply).Run(false, false);
++    return;
++  }
++  sequence_ = sequence;
++  last_time_ = time;
++  pending_ = std::move(reply);
++  // Sequence numbers never reset during a root generation.
++  auto args = viz::BeginFrameArgs::Create(
++      BEGINFRAME_FROM_HERE, source_->source_id(), sequence, time,
++      time + interval_ * 0.8, interval_, viz::BeginFrameArgs::NORMAL);
++  observation_.GetSource()->IssueExternalBeginFrame(
++      args, mojo::WrapCallbackWithDefaultInvokeIfNotRun(
++                base::BindOnce(&PrtsFramePacer::OnAck,
++                               weak_factory_.GetWeakPtr(), sequence),
++                viz::BeginFrameAck()));
++}
++
++void PrtsFramePacer::OnAck(uint64_t sequence, const viz::BeginFrameAck& ack) {
++  if (!pending_ || sequence != sequence_) {
++    return;
++  }
++  const bool valid = ack.frame_id.sequence_number == sequence &&
++                     ack.frame_id.source_id == source_->source_id();
++  std::move(pending_).Run(valid, valid && ack.has_damage);
++}
++
++}  // namespace prts
+diff --git a/chrome/browser/prts/prts_frame_pacer.h b/chrome/browser/prts/prts_frame_pacer.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/prts/prts_frame_pacer.h
+@@ -0,0 +1,50 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PRTS_PRTS_FRAME_PACER_H_
++#define CHROME_BROWSER_PRTS_PRTS_FRAME_PACER_H_
++
++#include <memory>
++
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/prts/mojom/prts.mojom.h"
++#include "components/viz/common/frame_sinks/begin_frame_args.h"
++#include "components/viz/common/frame_sinks/begin_frame_source.h"
++#include "ui/compositor/compositor.h"
++#include "ui/compositor/compositor_observer.h"
++
++namespace prts {
++
++// UI-thread, one per root. A display ACK is not a capture/GPU completion.
++class PrtsFramePacer : public ui::CompositorObserver {
++ public:
++  PrtsFramePacer(ui::Compositor* compositor,
++                 uint64_t generation,
++                 base::TimeDelta interval);
++  ~PrtsFramePacer() override;
++  uint64_t generation() const { return generation_; }
++  bool Recover();
++  void Tick(uint64_t sequence,
++            base::TimeTicks time,
++            mojom::PrtsBrowser::PaceTickCallback reply);
++
++ private:
++  void OnCompositingShuttingDown(ui::Compositor* compositor) override;
++  void OnAck(uint64_t sequence, const viz::BeginFrameAck& ack);
++  const uint64_t generation_;
++  const base::TimeDelta interval_;
++  // Allocate a unique source ID from the browser process source namespace.
++  std::unique_ptr<viz::StubBeginFrameSource> source_ =
++      std::make_unique<viz::StubBeginFrameSource>();
++  uint64_t sequence_ = 0;
++  base::TimeTicks last_time_;
++  mojom::PrtsBrowser::PaceTickCallback pending_;
++  base::ScopedObservation<ui::Compositor, ui::CompositorObserver> observation_{
++      this};
++  base::WeakPtrFactory<PrtsFramePacer> weak_factory_{this};
++};
++
++}  // namespace prts
++#endif  // CHROME_BROWSER_PRTS_PRTS_FRAME_PACER_H_

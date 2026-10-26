@@ -22,7 +22,7 @@ struct ExperimentOptions {
   int slices = 1;
   int min_kbps = 2000;
   int start_kbps = 8000;
-  int max_kbps = 12000;
+  int max_kbps = 8000;
   bool playout_extension = true;
   bool playout_metadata = true;
   int playout_min_ms = 0;

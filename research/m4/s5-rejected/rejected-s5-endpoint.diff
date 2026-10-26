@@ -1,0 +1,396 @@
+diff --git a/endpoint/browser_session.cc b/endpoint/browser_session.cc
+index ef84222..9ac9cdf 100644
+--- a/endpoint/browser_session.cc
++++ b/endpoint/browser_session.cc
+@@ -19,9 +19,146 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/bind_post_task.h"
++#include "base/timer/timer.h"
+ #include "ui/gfx/geometry/rect_f.h"
+ 
+ namespace prts {
++// Endpoint-owned absolute clock. Lost ticks are skipped; ACKs never drive a
++// catch-up burst. Input may rephase the clock after a minimum 4 ms separation.
++class BrowserSession::RootPacer {
++ public:
++  RootPacer(mojom::PrtsBrowser* browser,
++            uint32_t id,
++            uint64_t generation,
++            bool demand,
++            base::RepeatingCallback<bool()> credit,
++            base::RepeatingClosure failure)
++      : browser_(browser),
++        id_(id),
++        generation_(generation),
++        demand_(demand),
++        credit_(std::move(credit)),
++        failure_(std::move(failure)) {
++    browser_->PaceConfig(
++        id_, generation_, interval_,
++        base::BindOnce(&RootPacer::Configured, weak_factory_.GetWeakPtr()));
++  }
++  void Input() {
++    if (!demand_ || !enabled_) {
++      return;
++    }
++    input_pending_ = true;
++    MaybeDemand();
++  }
++
++ private:
++  void Configured(bool enabled) {
++    if (!enabled) {
++      failure_.Run();
++      return;
++    }
++    enabled_ = true;
++    next_ = base::TimeTicks::Now();
++    Timer();
++  }
++  void Schedule() {
++    timer_.Start(FROM_HERE, next_, this, &RootPacer::Timer,
++                 base::subtle::DelayPolicy::kPrecise);
++  }
++  void Timer() {
++    const auto now = base::TimeTicks::Now();
++    if (now >= next_) {
++      next_ += interval_ * ((now - next_).IntDiv(interval_) + 1);
++      if (!pending_ && !recovering_ && credit_.Run()) {
++        Tick(now, false);
++      }
++    }
++    if (pending_ && !recovering_ && now - last_ > base::Seconds(2)) {
++      if (++recoveries_ > 2) {
++        LOG(ERROR) << "PRTS external BeginFrame recovery exhausted root=" << id_;
++        failure_.Run();
++        return;
++      }
++      recovering_ = true;
++      LOG(WARNING) << "PRTS external BeginFrame recovery root=" << id_;
++      browser_->PaceReset(id_, generation_,
++          base::BindOnce(&RootPacer::Recovered, weak_factory_.GetWeakPtr()));
++    }
++    Schedule();
++  }
++  void MaybeDemand() {
++    const auto now = base::TimeTicks::Now();
++    if (!input_pending_ || pending_ || recovering_ || !credit_.Run()) {
++      return;
++    }
++    const auto earliest = last_ + base::Milliseconds(4);
++    if (now < earliest) {
++      // Input in the 4 ms guard window must not wait a whole fixed period.
++      demand_timer_.Start(FROM_HERE, earliest, this, &RootPacer::MaybeDemand,
++                          base::subtle::DelayPolicy::kPrecise);
++      return;
++    }
++    demand_timer_.Stop();
++    next_ = now + interval_;
++    Tick(now, true);
++    Schedule();
++  }
++  void Tick(base::TimeTicks now, bool input) {
++    pending_ = true;
++    input_pending_ = false;
++    last_ = now;
++    if (TraceEnabled()) {
++      LOG(INFO) << "PRTS TR P root=" << id_ << " gen=" << generation_
++                << " seq=" << ++sequence_ << " t=" << TraceUs(now)
++                << " input=" << input;
++    } else {
++      ++sequence_;
++    }
++    browser_->PaceTick(
++        id_, generation_, sequence_, now,
++        base::BindOnce(&RootPacer::Ack, weak_factory_.GetWeakPtr(), sequence_));
++  }
++  void Recovered(bool recreated) {
++    if (!recreated) {
++      failure_.Run();
++      return;
++    }
++    pending_ = false;
++    recovering_ = false;
++    next_ = base::TimeTicks::Now() + interval_;
++    Schedule();
++  }
++  void Ack(uint64_t sequence, bool admitted, bool has_damage) {
++    pending_ = false;
++    if (admitted && has_damage) {
++      recoveries_ = 0;
++    }
++    if (TraceEnabled()) {
++      LOG(INFO) << "PRTS TR A root=" << id_ << " gen=" << generation_
++                << " seq=" << sequence
++                << " t=" << TraceUs(base::TimeTicks::Now())
++                << " admitted=" << admitted << " damage=" << has_damage;
++    }
++    MaybeDemand();
++  }
++  const raw_ptr<mojom::PrtsBrowser> browser_;
++  const uint32_t id_;
++  const uint64_t generation_;
++  const bool demand_;
++  const base::TimeDelta interval_ = base::Seconds(1) / 60;
++  base::RepeatingCallback<bool()> credit_;
++  base::RepeatingClosure failure_;
++  bool enabled_ = false;
++  bool pending_ = false;
++  bool recovering_ = false;
++  int recoveries_ = 0;
++  bool input_pending_ = false;
++  uint64_t sequence_ = 0;
++  base::TimeTicks next_, last_;
++  base::DeadlineTimer timer_, demand_timer_;
++  base::WeakPtrFactory<RootPacer> weak_factory_{this};
++};
++
+ BrowserSession::BrowserSession(std::shared_ptr<D3DFrameSource> source,
+                                int fps,
+                                base::OnceClosure failure)
+@@ -40,6 +177,62 @@ void BrowserSession::SetPeerCallbacks(ControlSender send,
+   keyframe_ = std::move(keyframe);
+ }
+ bool BrowserSession::Launch(base::CommandLine command) {
++  const auto& endpoint = *base::CommandLine::ForCurrentProcess();
++  // Validated S5 policy is the default for the 60 fps pipeline. Other capture
++  // rates retain the ordinary browser clock unless explicitly requested.
++  std::string mode = endpoint.HasSwitch("begin-frame-mode")
++                         ? endpoint.GetSwitchValueASCII("begin-frame-mode")
++                         : (fps_ == 60 ? "demand" : "off");
++  if (command.HasSwitch("prts-external-begin-frame") &&
++      !endpoint.HasSwitch("begin-frame-mode")) {
++    mode = "fixed";
++  }
++  if (!mode.empty() && mode != "off" && mode != "fixed" && mode != "demand") {
++    LOG(ERROR) << "--begin-frame-mode must be off, fixed or demand";
++    return false;
++  }
++  external_frames_ = mode == "fixed" || mode == "demand" ||
++                     command.HasSwitch("prts-external-begin-frame");
++  demand_frames_ = mode == "demand";
++  if (external_frames_) {
++    if (fps_ != 60) {
++      LOG(ERROR) << "External BeginFrames require --fps=60";
++      return false;
++    }
++    command.AppendSwitch("prts-external-begin-frame");
++    // Full-pipeline scheduling waits for this tick's renderer work. Removing
++    // the renderer submit-ACK gate is also needed for slow/OOPIF recovery.
++    // The stock scheduler option is only for diagnostic comparisons.
++    if (!endpoint.HasSwitch("begin-frame-stock-scheduler")) {
++      command.AppendSwitch("run-all-compositor-stages-before-draw");
++      if (command.GetSwitchValueASCII("disable-features")
++              .find("NoCompositorFrameAcks") != std::string::npos) {
++        LOG(ERROR) << "External BeginFrames require NoCompositorFrameAcks";
++        return false;
++      }
++      auto features = command.GetSwitchValueASCII("enable-features");
++      if (features.find("NoCompositorFrameAcks") == std::string::npos) {
++        if (!features.empty()) {
++          features += ",";
++        }
++        features += "NoCompositorFrameAcks";
++        command.AppendSwitchASCII("enable-features", features);
++      }
++    }
++  }
++  LOG(INFO) << "PRTS BeginFrame mode="
++            << (external_frames_ ? (demand_frames_ ? "demand" : "fixed")
++                                 : "off")
++            << " scheduler="
++            << (command.HasSwitch("run-all-compositor-stages-before-draw")
++                    ? "full"
++                    : "stock")
++            << " no_compositor_acks="
++            << (command.GetSwitchValueASCII("enable-features")
++                    .find("NoCompositorFrameAcks") != std::string::npos)
++            << " interval_us=" << (external_frames_ ? 16666 : 0)
++            << " demand_min_us=" << (demand_frames_ ? 4000 : 0)
++            << " max_in_flight=1";
+   if (!link_.Launch(std::move(command))) {
+     return false;
+   }
+@@ -59,6 +252,7 @@ void BrowserSession::Shutdown() {
+     return;
+   }
+   closed_ = true;
++  pacers_.clear();
+   weak_factory_.InvalidateWeakPtrs();
+   if (auto* browser = link_.browser()) {
+     browser->ResetInput();
+@@ -74,13 +268,18 @@ void BrowserSession::Shutdown() {
+   }
+ }
+ void BrowserSession::Hello(mojom::HelloInfoPtr info) {
+-  if (info->version != 1 || info->software_compositing) {
+-    LOG(ERROR) << "M1 requires protocol 1 and D3D11 GPU compositing";
++  if ((info->version != 1 && info->version != 2) || info->software_compositing ||
++      (external_frames_ && (info->version < 2 || !info->external_begin_frames))) {
++    LOG(ERROR) << "Requires compatible protocol and D3D11 GPU compositing; "
++               << "external control requires protocol 2 capability";
+     OnDisconnect();
+     return;
+   }
+   hello_ = true;
+   luid_ = info->gpu_luid;
++  for (const auto& [id, window] : windows_) {
++    StartPacing(id);
++  }
+   if (!windows_.empty()) {
+     Select(active_ ? active_ : windows_.begin()->first);
+   }
+@@ -88,6 +287,7 @@ void BrowserSession::Hello(mojom::HelloInfoPtr info) {
+ void BrowserSession::WindowAdded(mojom::WindowInfoPtr info) {
+   uint32_t id = info->window_id;
+   windows_[id] = std::move(info);
++  StartPacing(id);
+   if (!active_ || wanted_ == id) {
+     Select(id);
+   }
+@@ -103,6 +303,7 @@ void BrowserSession::WindowChanged(mojom::WindowInfoPtr info) {
+   }
+ }
+ void BrowserSession::WindowRemoved(uint32_t id) {
++  pacers_.erase(id);
+   if (id == wanted_) {
+     wanted_ = 0;
+   }
+@@ -126,6 +327,26 @@ void BrowserSession::WindowActivated(uint32_t id) {
+     Select(id);
+   }
+ }
++void BrowserSession::StartPacing(uint32_t id) {
++  if (!hello_ || !external_frames_ || pacers_.contains(id)) {
++    return;
++  }
++  pacers_[id] = std::make_unique<RootPacer>(
++      link_.browser(), id, ++pace_generation_, demand_frames_,
++      base::BindRepeating(
++          [](base::WeakPtr<BrowserSession> self, uint32_t window) {
++            return self && (self->active_ != window ||
++                            self->source_->HasPacingCredit());
++          },
++          weak_, id),
++      base::BindRepeating(&BrowserSession::OnDisconnect, weak_));
++}
++void BrowserSession::DemandFrame() {
++  auto it = pacers_.find(active_);
++  if (it != pacers_.end()) {
++    it->second->Input();
++  }
++}
+ void BrowserSession::Select(uint32_t id) {
+   auto it = windows_.find(id);
+   auto* browser = link_.browser();
+@@ -251,6 +472,7 @@ void BrowserSession::Pointer(const PointerInput& i) {
+         p->radius_y = i.radius_y;
+         p->timestamp = base::TimeTicks::Now();
+         s.link_.browser()->Pointer(s.active_, std::move(p));
++        s.DemandFrame();
+       },
+       i));
+ }
+@@ -268,6 +490,7 @@ void BrowserSession::Wheel(const WheelInput& i) {
+         p->mods = i.mods;
+         p->timestamp = base::TimeTicks::Now();
+         s.link_.browser()->Wheel(s.active_, std::move(p));
++        s.DemandFrame();
+       },
+       i));
+ }
+@@ -288,6 +511,7 @@ void BrowserSession::Key(const KeyInput& i) {
+         if (TraceEnabled() && i.down)  // m3-trace
+           LOG(INFO) << "PRTS TR K down t=" << TraceUs(p->timestamp);
+         s.link_.browser()->Key(s.active_, std::move(p));
++        s.DemandFrame();
+       },
+       i));
+ }
+@@ -418,6 +642,9 @@ void BrowserSession::OnControl(base::DictValue m) {
+     browser->Key(active_, std::move(p));
+     browser->Key(active_, std::move(up));
+   }
++  if (type->starts_with("ime.")) {
++    DemandFrame();
++  }
+   // ime.hidden records local OSK dismissal only.
+ }
+ }  // namespace prts
+diff --git a/endpoint/browser_session.h b/endpoint/browser_session.h
+index 16b1628..474dc8d 100644
+--- a/endpoint/browser_session.h
++++ b/endpoint/browser_session.h
+@@ -46,6 +46,9 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
+   void Control(const base::DictValue& message) override;
+ 
+  private:
++  class RootPacer;
++  void StartPacing(uint32_t id);
++  void DemandFrame();
+   void Select(uint32_t id);
+   void Refresh();
+   void Send(base::DictValue message);
+@@ -59,6 +62,10 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
+   scoped_refptr<base::SingleThreadTaskRunner> main_runner_;
+   prts_endpoint::EndpointLink link_{this};
+   std::map<uint32_t, mojom::WindowInfoPtr> windows_;
++  std::map<uint32_t, std::unique_ptr<RootPacer>> pacers_;
++  uint64_t pace_generation_ = 0;
++  bool external_frames_ = false;
++  bool demand_frames_ = false;
+   // Latest browser state is replayed after each viewer ctl hello.
+   std::map<std::string, base::DictValue> state_messages_;
+   uint32_t ime_seq_ = 0;
+diff --git a/endpoint/d3d_frame_source.cc b/endpoint/d3d_frame_source.cc
+index 61f4a23..c99e13f 100644
+--- a/endpoint/d3d_frame_source.cc
++++ b/endpoint/d3d_frame_source.cc
+@@ -171,6 +171,10 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
+     // already taken by conversion before track/PC teardown on signaling.
+     Drain();
+   }
++  bool HasPacingCredit() const {
++    base::AutoLock lock(mutex_);
++    return !pending_;
++  }
+   FrameGeometry geometry() const {
+     base::AutoLock lock(mutex_);
+     return geometry_;
+@@ -711,6 +715,9 @@ mojo::PendingRemote<mojom::PrtsFrameSink> D3DFrameSource::BindCapture(
+     base::RepeatingClosure on_reset) {
+   return impl_->Bind(luid, g, std::move(on_reset));
+ }
++bool D3DFrameSource::HasPacingCredit() const {
++  return impl_->HasPacingCredit();
++}
+ void D3DFrameSource::ClearCapture() {
+   impl_->Clear();
+ }
+diff --git a/endpoint/d3d_frame_source.h b/endpoint/d3d_frame_source.h
+index dbdefb4..efc7794 100644
+--- a/endpoint/d3d_frame_source.h
++++ b/endpoint/d3d_frame_source.h
+@@ -29,6 +29,8 @@ class D3DFrameSource : public FrameSource,
+       FrameGeometry geometry,
+       base::RepeatingClosure on_reset);
+   void ClearCapture();
++  // Main-sequence pacing hint: do not admit over an already queued raw frame.
++  bool HasPacingCredit() const;
+   // A new lease for each Peer session; destruction drains its consumer.
+   std::unique_ptr<FrameSource> CreateLease();
+   void Start(Consumer consumer) override;
+diff --git a/endpoint/experiment_options.h b/endpoint/experiment_options.h
+index 7f623c5..509d7d6 100644
+--- a/endpoint/experiment_options.h
++++ b/endpoint/experiment_options.h
+@@ -22,7 +22,7 @@ struct ExperimentOptions {
+   int slices = 1;
+   int min_kbps = 2000;
+   int start_kbps = 8000;
+-  int max_kbps = 12000;
++  int max_kbps = 8000;
+   bool playout_extension = true;
+   bool playout_metadata = true;
+   int playout_min_ms = 0;

@@ -6,6 +6,8 @@
 WebRTC-Video-Pacing/factor:2.5/WebRTC-Bwe-LimitPacingFactorByUpperLinkCapacityEstimate/Enabled/
 ```
 
+M4 endpoint start/max defaults are now **8000 kbps**. Shared-fence capture remains the probed default. S5 external/demand BeginFrame pacing was rejected after phase and lifecycle experiments and is not enabled in the retained code; the final matrix uses the ordinary browser clock. See [S5 pacing and fallback results](../../research/m4/s5-pacing.md).
+
 Stop the previous test chain first. Set `ENDPOINT_PATH` and `ENDPOINT_ARGS` as for the ordinary control plane, including the Chrome executable and a dedicated browser profile. PowerShell example from the repository root:
 
 ```powershell
