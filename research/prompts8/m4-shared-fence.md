@@ -1,6 +1,6 @@
 # Task m4-shared-fence (timeout 45 min): hand the capture texture + a shared D3D11 fence to the endpoint at submit time (investigation + probe + design)
 Task dir C:\src\tmp\m4\shared-fence\. Report: research/m4/shared-fence.md (create early, fill incrementally).
-Another task (m4-copy-delivery) is editing chromium viz and launching the chain right now: do NOT edit C:\src\chromium\src or remotekit/endpoint, do NOT
+Another task (m4-harness-phase: harness + capture-phase alignment in the capturer) is editing chromium and launching the chain right now: do NOT edit C:\src\chromium\src or remotekit/endpoint, do NOT
 build in out\dev or launch chrome/endpoint. You MAY build a small standalone probe (cl.exe/clang-cl from the VS 2026 toolchain, files in your task dir).
 Idea (from the user): instead of waiting for Chromium's CPU-side CopyOutput completion callback (~12.8 ms waits-for-present, research/m3/trace.md t6) and the
 Mojo hop, viz delivers the frame (texture + shared fence + value) right after it SUBMITS the copy; the endpoint does a GPU-side wait
@@ -19,4 +19,4 @@ Mojo hop, viz delivers the frame (texture + shared fence + value) right after it
    reuse so viz never overwrites a texture the endpoint's VPP has not read yet).
 3. Design: changed files and approximate patch size, intrusiveness (upstream files touched), expected ms saved vs. the current path (12.8 ms
    wait + Mojo/CPU hop ~0.8 ms), risks (ANGLE device vs. Graphite submission order, fence value monotonicity across GPU process restarts, buffer reuse),
-   and how it combines or competes with the copy-delivery fix (m4-copy-delivery: deliver at GPU completion by polling). Recommend go/no-go and a prototype plan.
+   and the alternative (deliver the copy result at GPU completion by polling). Give a clear GO/NO-GO: GO requires driver support AND verified ordering of the video engine (VPP and encode) after the 3D copy. The next task implements whatever you decide, so make the design concrete (files, functions, Mojo fields).
