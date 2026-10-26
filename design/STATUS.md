@@ -128,3 +128,49 @@
 2. 审 netsvc-crash 结论，替换 P0 重试为真正修复。
 3. M2：remote 窗口最大化/无边框 + `--screen-info` 与 viewer 尺寸（S6）、光标、IME/软键盘端到端、触摸 + `prts-web-prefs`（补丁 09）、zh-CN 品牌字符串。
 4. M3：审 vpl-encoder 草稿 → oneVPL 编码器 + 零拷贝 VPP（取代 OpenH264 与 CPU I420），rel 构建测量，Chrome 89 实测。
+
+## M2（Stage 4 orchestrator，2026-10-26 13:00）——进行中，功能项基本完成
+
+### 已完成并验证（真实链路）
+- 窗口（补丁 15 `15-remote-window`）：remote 模式浏览器窗口最大化、无标题按钮/无边框/无非客户区命中；viewer 发 `resize {w,h,dpr}`（200 ms 防抖）→ endpoint 策略
+  （DIP = w×h，DSF = min(dpr, sqrt(1080p 面积/DIP 面积))，≥1）→ Mojo `SetViewport` → `ScreenWinHeadless::SetPrimaryDisplayGeometry` + 重新最大化；
+  1280x720、1920x1080、1600x900、390x844@3 实时切换通过，无黑边，点击坐标正确（`research/m2/window.md`）。
+- 光标、IME/OSK（含中文组合只提交一次、Backspace、失焦收起、触摸点输入框弹出 OSK）、触摸（maxTouchPoints=5、pointer:coarse、tap/单指滚动/双指缩放）、
+  zh-CN/zh-TW 产品名 PRTS（chrome:// 页面已核对；仍有少量 “Chrome 应用商店” 等非产品名字符串）：全部通过（`research/m2/input-integrate.md`）。
+  代码在补丁 `16-m2-input-wip`（**待拆分**到 02/06/08/09/12 维护单元）。
+- Network Service 启动崩溃：`scripts/grant-lpac-acl.ps1`（给 out\dev 与 profile 父目录加 S-1-15-2-1/S-1-15-2-2 RX）后 3/3 干净；随后的判别任务（基线、
+  禁用 NetworkServiceSandbox、计划任务启动（脱离 Codex 进程树）、Temp 下 profile、WER/CDB）**全部无法复现**。根因：未查明（历史证据指向 LPAC 网络沙箱
+  utility 启动早期；冷启动/加载器资源访问为推断）。沙箱保留，启动导航重试保留为守卫（`research/m2/netsvc-root.md`）。复现时用其中的抓取工具取栈。
+- Widevine：EME `requestMediaKeySystemAccess('com.widevine.alpha')` 成功，Shaka 演示 Widevine 资源许可证 HTTP 200、播放时间前进（`research/m2/runtime.md`）。
+- 延迟工具：marker 自动找行；input→photon（viewer 发键 → 页面翻色 → 解码帧检测）；每级时间分解（endpoint 5 s 滚动统计 + viewer getStats/rVFC）；
+  `tools/netem/`（自写 TURN 中继 + 每方向延迟/抖动/令牌桶限速 + 字节上限 drop-tail 队列（默认为限速下 50 ms）/Gilbert-Elliott 丢包/抖动尖峰，
+  双方强制 relay，`run.mjs --netem <profile>`）；每份报告 JSON 自动记录 `pipeline` 配置块。
+
+### 延迟（全部：Chromium 157 dev/component 构建；渲染 = GPU 进程，Intel UHD 630，ANGLE D3D11，Skia Graphite；捕获 = viz FrameSinkVideoCapturer →
+D3D11 共享纹理 → endpoint 私有拷贝 → staging 回读 → libyuv I420；编码 = OpenH264 软件，1898x1068@30，start/min/max 4736/2000/12000 kbps；
+页面 = tools/latency/remote-page.html（标记页仅约 0.17 Mbps，**限速/队列在这些运行里没有起作用**）；显示点 = rVFC expectedDisplayTime（headless viewer
+无真实扫描输出/vsync，非 glass-to-glass）；60 s/次；P50/P80/P95/P99 ms）
+| 配置 | capture→display | input→decoded flip |
+|---|---|---|
+| 回环，headless Edge 156，playout-delay 0 + fluid（`research/m2/latency.md` final30） | 50.8/60.8/67.2/75.3 | 96.3/105.2/111.4/118.4 |
+| 回环，headless Edge（netem 任务基线，同设置） | 67.8/75.1/81.4/91.0 | 104.8/115.5/128.8/138.2 |
+| relay 不整形 | 85.2/92.4/99.5/110.6；重复 69.6/79.3/87.4/95.3 | 133.1/140.0/151.8/155.0；重复 106.0/118.6/133.1/138.7 |
+| d50j10-c12（单向 50±10 ms，12 Mbps） | 117.7/130.9/143.0/154.1；重复 103.5/118.1/129.3/140.4 | 227.0/242.2/255.4/264.1；重复 214.0/227.2/237.3/251.5 |
+| 回环，**有头** Edge（硬件解码：GPU VideoDecode 引擎约 6%，decoderImplementation 读不到） | 85.7/93.8/100.0/108.0 | 136.1/145.3/155.5/158.5 |
+- 同配置单次运行间差约 15-18 ms（需多次取中位）。旧的 85.7 ms 数字（m2-runtime）属于修复前设置。
+- 分解（回环，P50）：viz capture_begin→end 12.7；回读 5.5；I420 1.8；OpenH264 9.7（P95 30）；viewer 提交→预计显示 18.6；抖动缓冲约 0（playout-delay 0 生效，
+  关掉它会 +55 ms）。M3 可去掉约 17 ms（回读 + 转换 + 软件编码）。
+- 结论：d50 单向配置下 **P80 < 100 ms 不达标**（capture→display 118-131，input 227-242）；P99 < 200 ms capture→display 达标、input 不达标。d25、限速矩阵、Wi-Fi
+  变体尚未跑（需要高码率内容：滚动/视频页）。
+
+### 已知问题（新增）
+1. 一次 GPU 进程崩溃（Skia Graphite `ResourceCache.cpp:523 isInCache`）后捕获不恢复（0 fps）——需要在 GPU 重启后重建 capturer（M3 前修）。
+2. Chrome 89：`C:\src\tmp\chrome89` 是不带 H.264 的 Chromium 89 → 需要带专有编解码器的 Chrome 89（官方离线包）才能验证。
+3. 有头 viewer 比 headless 慢约 20 ms（真实合成/vsync）；有头才是真实基线。
+4. 补丁 16 是 WIP 合集，需拆分；endpoint 仍是 OpenH264 + CPU 回读。
+
+### 下一步（Codex 15:01 恢复；Claude 窗口 13:30 重置）
+1. `m3-vpl-integrate`：合入 `C:\src\tmp\m2\vpl\remotekit.diff`（已与延迟改动冲突，需 3-way；按其 NOTES vendoring libvpl 2.17），构建、冒烟、`--encoder=vpl` 测分解。
+2. `m2-netem-matrix`：加高码率场景（滚动长页、1080p 视频、canvas 游戏式动画）后跑 d25j5/d50j10 × 16/12/10 Mbps + 两个 Wi-Fi 变体，OpenH264 与 VPL 各一轮，
+   每个配置 ≥2 次，用有头 viewer；结果表写入本文件。
+3. GPU 崩溃后 capturer 恢复；Chrome 89 H.264；补丁 16 拆分；zh-CN 剩余字符串。
