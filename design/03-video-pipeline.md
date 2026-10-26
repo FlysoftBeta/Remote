@@ -92,6 +92,8 @@ D4b 成立时每个浏览器窗口只有一个源，endpoint 不做弹层合成�
 - 否决：`--fake-vsync-rate`、`--disable-frame-rate-limit`、在 viz 加 synthetic 间隔策略（理由见 01 D6）。
 
 ## 5. 测量方法
+- **验收口径（M4，用户变更）**：input→decoded 与 capture→decoded，终点 = viewer 端解码帧可用（rVFC `presentationTime`：接收 + 抖动缓冲 + 解码），
+  不含客户端呈现/显示；d25j5 上 P80 < 100 ms、P99 < 200 ms。旧的显示口径（rVFC `expectedDisplayTime`）作为 “glass 估计” 一并报告。
 - **同一时钟闭环**：端到端指标都在 viewer `performance.now()` 时钟里计算；分段时间戳（浏览器单调时钟、endpoint QPC、viewer）只用于定位，跨机映射用 data channel 往返（取最小 RTT 样本）。
 - 指标：
   1. input-to-photon：viewer 发输入记 t0 → 测试页同帧把标记块改为下一个编码值（8×8 黑白块二进制码，抗压缩）→ viewer 用 `requestVideoFrameCallback` 解码已显示帧，首次出现新值记 t1。

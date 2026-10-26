@@ -5,6 +5,9 @@ You MAY edit C:\src\chromium\src (branch prts working tree; no commits/rebase/re
 Measured fact (research/m3/trace.md t6, research/m3/stage-table.md rows 7-9): page rAF -> viz DrawAndSwap +2.25 ms, GPU CopyOutput done +3.45 ms,
 but the capturer's capture_end (OnFrameCaptured) is at +16.4 ms; the CopyOutputRequest async trace event ends at ~16.8 = Display::FrameDisplayed.
 So ~12.8 ms of every captured frame is a wait for the NEXT present/swap, not work. Renderer = Skia Graphite on ANGLE D3D11 (GPU process, UHD 630).
+0. First (small, tools/latency only): make the harness report the decoded metric next to the display one. tools/latency/measure.js marker and
+   input->flip detection use meta.expectedDisplayTime; add capture->decoded and input->decoded using meta.presentationTime of the same frame (same
+   percentiles, new report fields, printed summary line); keep the old fields unchanged. Verify on one 20 s loopback run.
 1. Find (read code at the pin, cite file:line) exactly what delays the result callback: e.g. Graphite finished-proc only checked on the next
    submit/swap (`SkiaOutputSurfaceImplOnGpu::CheckAsyncWorkCompletion`, readback-completion polling timer, `gpu::SharedContextState`
    finished procs, result posted on DidSwapBuffersComplete?), and why any <=2 ms polling does not apply to the GMB/shared-image D3D11 copy path.

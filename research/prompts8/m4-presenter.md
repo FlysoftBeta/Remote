@@ -1,4 +1,4 @@
-# Task m4-presenter (timeout 75 min): viewer presentation latency levers on real Chrome 89 (headed, real 60 Hz display)
+# Task m4-presenter (timeout 75 min; LOW PRIORITY best effort, the acceptance metric now excludes client presentation): viewer presentation latency levers on real Chrome 89 (headed, real 60 Hz display)
 Task dir C:\src\tmp\m4\presenter\. Results file: research/m4/presenter.md. You are the ONLY process that launches the chain now. You MAY edit viewer/ (behind
 URL parameters; defaults unchanged) and tools/latency/ (no commits). Chrome 89: C:\src\tmp\chrome89-google\app\chrome.exe, launch flags in
 C:\src\tmp\chrome89-google\NOTES.md and research/m4/chrome89.md (harness option --viewer-exe from the m4-chrome89 task). Headed window on the real display.

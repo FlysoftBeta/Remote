@@ -227,3 +227,11 @@ VPL@60 + 精确 vsync + pacer 试验（m3-combined）；headless Edge 156 viewer
 - Codex：5 小时窗口 20:03 重置（交接时 89%）；`scripts/codex-run.ps1` 现在用 `--dangerously-bypass-approvals-and-sandbox`；
   偶发 “Selected model is at capacity” → 用重试循环（见本阶段的后台命令写法：`for i in 1 2 3; do codex-task.sh ...; [ -s final.md ] && break; sleep 120; done`）。
 - 运行期任务必须串行（`kill.sh`/`be.sh` 会杀掉所有测试 chrome/endpoint）；草稿任务（只出 diff）可以并行。
+
+## M4（Stage 5 orchestrator，2026-10-26 19:45 起）——进行中
+- **验收口径变更（用户，2026-10-26）**：去掉客户端呈现开销，只保留解码。验收指标 = input→decoded 与 capture→decoded（viewer 端解码帧可用，
+  rVFC `presentationTime` = 接收 + 抖动缓冲 + 解码），d25j5 上 P80 < 100 ms、P99 < 200 ms。报告同时给出旧的显示口径（rVFC `expectedDisplayTime`，“glass 估计”）。
+  viewer 呈现杠杆（全屏 overlay、desynchronized canvas）降为最后做的低优先级尽力项。
+- rel 构建：后台进行（`out\rel`，chrome + prts_endpoint，-j 16），不阻塞 M4；完成时才顺带用于一次测量，正式 rel 测量移到 M5。
+- Codex 任务（提示词 `research/prompts8/`，结果 `research/m4/`）：copy-delivery（copy 结果在 GPU 完成时交付 + capture 相位）、endpoint-knobs（实验开关 + VPL 回读容差）、
+  shared-fence（共享 D3D11 fence 交接调查 + probe）、experiments（E5/E2/E3/E1/E6/E13/Wi-Fi，每配置 3 次）、chrome89、field-kit、presenter（低优先级）。

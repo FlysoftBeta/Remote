@@ -12,6 +12,9 @@ Scripts (Git Bash): `bash /c/src/tmp/m1/kill.sh` (kill test chrome/endpoint), `b
 --port 8300 --secs 60 [--netem d25j5-c12] [--remote-cdp 9333]` with ENDPOINT_PATH/ENDPOINT_ARGS/PTRACK_TMP set as in tools/latency/PRESETS.md (every report
 JSON has a `pipeline` block; P50/P80/P95/P99 for capture->display and input->flip; PRTS_TRACE=1 per-stage trace, research/m3/trace.md).
 Never run gn clean, full builds or test suites. Never use C:\src.old. Never touch out\rel.
+ACCEPTANCE METRIC (changed by the user for M4): capture->decoded and input->decoded = up to the decoded frame being available at the viewer
+(rVFC metadata.presentationTime = receive + jitter buffer + decode; client presentation/display excluded), target P80 < 100 ms and P99 < 200 ms on d25j5.
+Always report BOTH the decoded metric (primary) and the old display metric (rVFC expectedDisplayTime, "glass estimate").
 
 Rules:
 - Do ONLY your task's deliverables. Notes/evidence/drafts in your task dir C:\src\tmp\m4\<task>\ ; create NOTES.md there within 5 minutes and fill it
