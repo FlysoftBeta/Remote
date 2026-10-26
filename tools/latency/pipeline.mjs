@@ -48,23 +48,27 @@ export async function collectPipeline(ctx) {
   const ds = last(/D3D source fps=([1-9]|0\.[1-9])/);
   const activeVpl = lines.findLastIndex(l => /PRTS encoder active=vpl/.test(l));
   const fallback = lines.findLastIndex(l => /PRTS VPL .*fallback encoder=openh264/.test(l));
-  out.encoder.backend = report.sender?.backend || (fallback > activeVpl ? 'OpenH264' : out.encoder.impl);
+  out.encoder.backend = fallback > activeVpl ? 'OpenH264' : (report.sender?.backend || out.encoder.impl);
   const vpl = /^PRTS oneVPL/.test(out.encoder.backend || '');
+  out.encoder.fallbacks = lines.filter(l => /^\[/.test(l) && /PRTS VPL .*fallback encoder=openh264/.test(l)).map(strip);
+  out.encoder.mixedBackend = activeVpl >= 0 && out.encoder.fallbacks.length > 0;
   out.encoder.requested = last(/PRTS encoder requested=/)?.match(/requested=(\w+)/)?.[1];
   out.encoder.selected = last(/PRTS encoder selected=/)?.match(/selected=(\w+)/)?.[1];
-  out.encoder.vpl = vpl ? {
+  out.encoder.vpl = (vpl || out.encoder.mixedBackend) ? {
     implementation: strip(last(/PRTS VPL candidate=/) || ''),
     runtime: strip(last(/PRTS VPL runtime=/) || ''),
-    readback: strip(last(/PRTS VPL GetVideoParam/) || ''),
-    settings: Object.fromEntries([...(last(/PRTS VPL GetVideoParam/) || '').matchAll(/(\w+)=([^ ]+)/g)].map(m => [m[1], m[2]]))
+    readback: strip(last(/PRTS VPL (GetVideoParam|Reset-readback)/) || ''),
+    settings: Object.fromEntries([...(last(/PRTS VPL (GetVideoParam|Reset-readback)/) || '').matchAll(/(\w+)=([^ ]+)/g)].map(m => [m[1], m[2]]))
   } : null;
   out.capture.path = vpl
-    ? 'Viz capture -> Mojo -> D3D11 VideoProcessorBlt BGRA to native NV12 -> oneVPL D3D11 AVC (startup I420 bridge)'
+    ? 'Viz capture -> Mojo shared BGRA -> keyed CopyResource to leased private BGRA -> release mutex -> asynchronous D3D11 VideoProcessorBlt NV12 + Flush -> oneVPL AVC -> bitstream-only sync (startup I420 bridge possible)'
     : 'Viz capture -> Mojo -> D3D11 shared-texture copy -> D3D11 staging Map -> libyuv BT.709 I420 (CPU) -> OpenH264 (software)';
+  if (out.encoder.mixedBackend) out.capture.path = 'Mixed: native D3D11 VPP -> oneVPL AVC, then runtime fallback to staging Map -> CPU I420 -> OpenH264; see encoder.fallbacks';
   out.capture.lastD3dLine = ds ? strip(ds) : null;
   out.encoder.codec = report.stats?.codec;
   out.encoder.contentHint = report.hint;
   out.encoder.mode = (vpl ? 'oneVPL hardware AVC VBR LowPower=ON AsyncDepth=1' : 'OpenH264 kRealtimeVideo (camera)') + ', MAINTAIN_RESOLUTION, playout hint ' + report.hint;
+  if (out.encoder.mixedBackend) out.encoder.mode = 'Mixed oneVPL VBR LowPower=ON AsyncDepth=1 -> OpenH264 kRealtimeVideo (camera), MAINTAIN_RESOLUTION, playout hint ' + report.hint;
   out.encoder.stageLine = strip(last(/PRTS latency5s p50\/p95_ms/) || '');
   out.encoder.relayOnly = lines.some(l => /forced relay-only via TURN/.test(l)) ? 'endpoint --turn' : (ctx.netemProfile ? 'control-plane iceTransportPolicy=relay' : false);
   const inb = report.pipeline?.inbound;
@@ -84,7 +88,7 @@ export function pipelineLines(r) {
   const L = [
     `pipeline.remote: ${p.remote.browser || '?'}; GPU ${g ? g.vendor + ' / ' + g.device : 'n/a'}; gpu-process=${p.remote.gpuProcessPresent}; software=${p.remote.softwareRenderer}; ${(p.remote.gpuProcessFlags || []).filter(x => /angle|use-gl|graphite/.test(x)).join(' ')}`,
     `pipeline.capture: ${p.capture.path}`,
-    `pipeline.encoder: ${p.encoder.impl} ${p.encoder.resolution}@${p.encoder.fps} kbps start/min/max ${p.encoder.startKbps}/${p.encoder.minKbps}/${p.encoder.maxKbps} cores ${p.encoder.cores}; ${p.encoder.mode}`,
+    `pipeline.encoder: ${p.encoder.backend || p.encoder.impl}${p.encoder.mixedBackend ? ' (runtime fallback; mixed run)' : ''} ${p.encoder.resolution}@${p.encoder.fps} kbps start/min/max ${p.encoder.startKbps}/${p.encoder.minKbps}/${p.encoder.maxKbps} cores ${p.encoder.cores}; ${p.encoder.mode}`,
     `pipeline.viewer: ${p.viewer.browser} ${p.viewer.headless ? 'headless' : 'HEADED'}; decoder ${p.viewer.decoderImplementation} powerEfficient=${p.viewer.powerEfficientDecoder}`,
     `pipeline.display: ${p.display.measurementPoint}; ${p.display.note}`,
     `pipeline.network: ${p.network.kind}${p.network.profile ? ' ' + p.network.profile : ''}; pairs ${(p.network.selectedPairs || []).map(x => x.local + '/' + x.remote).join(',')}`];

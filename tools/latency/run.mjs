@@ -6,6 +6,8 @@
 //        [--netem <profile|none>: start tools/netem/relay.mjs with that profile (profiles.json), relay-only on viewer+endpoint; recorded in the report]
 //        [--netem-queue-ms N] [--netem-port 3478] [--remote-cdp <port>: remote chrome started with --cr-remote-debugging-port=<port> (GPU info)]
 //        [--endpoint-log <file>: log of the chain (encoder/capture lines), default C:/src/tmp/m1/cp1.log]
+//        [--preset m3-combined: launch real ENDPOINT_PATH/ENDPOINT_ARGS with VPL, 60 fps, precise 60 Hz vsync,
+//         hires timer and factor-2.5 pacing; requires a stopped control-plane; --scenario S|V|G selects load]
 //        Every report JSON carries "pipeline" (render/capture/encoder/viewer/display/network) and, with --netem, "netem" (relay stats).
 // Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
 import { spawn, spawnSync } from 'node:child_process';
@@ -17,10 +19,18 @@ import { collectPipeline, pipelineLines } from './pipeline.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i < 0 ? d : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true); };
+const preset = arg('preset', null);
+if (preset && preset !== 'm3-combined') throw new Error('Unknown --preset: ' + preset);
+if (preset) {
+  if (!process.env.ENDPOINT_PATH) throw new Error('--preset m3-combined requires ENDPOINT_PATH and ENDPOINT_ARGS (Chrome path and dedicated user-data-dir)');
+  if (+arg('fps', 60) !== 60) throw new Error('m3-combined requires --fps 60');
+  if (/--no-hires-timer(?:\s|$)/.test(process.env.ENDPOINT_ARGS || '')) throw new Error('m3-combined requires the default hires timer');
+  argv.push('--no-mock');
+}
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const TMP = process.env.PTRACK_TMP || 'C:/src/tmp/ptrack';
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', 30), w = +arg('w', 1920), h = +arg('h', 1080);
+const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', preset ? 60 : 30), w = +arg('w', 1920), h = +arg('h', 1080);
 const kbps = +arg('kbps', 12000), delay = arg('delay', '0');
 const viewerExe = arg('viewer-browser', EDGE), mockExe = arg('mock-browser', EDGE);
 const base = `http://127.0.0.1:${port}`;
@@ -47,8 +57,17 @@ function browser(exe, name, url, oldHeadless) {
   return p;
 }
 
-if (!(await up())) {
-  const cp = spawn(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(port)], { stdio: ['ignore', 'inherit', 'inherit'] });
+const alreadyUp = await up();
+if (preset && alreadyUp) throw new Error('--preset must launch its own control-plane; stop the existing one first');
+if (!alreadyUp) {
+  const env = { ...process.env };
+  if (preset) {
+    const scenario = arg('scenario', 'marker');
+    if (!['marker', 'S', 'V', 'G'].includes(scenario)) throw new Error('--scenario must be marker, S, V or G');
+    env.ENDPOINT_ARGS = `${env.ENDPOINT_ARGS || ''} --encoder=vpl --fps=60 --cr-fake-vsync-rate=60 --webrtc-field-trials=WebRTC-Video-Pacing/factor:2.5/WebRTC-Bwe-LimitPacingFactorByUpperLinkCapacityEstimate/Enabled/ --url=${base}/tools/latency/remote-page.html?scenario=${scenario}`;
+    console.log('preset m3-combined endpoint args: ' + env.ENDPOINT_ARGS);
+  }
+  const cp = spawn(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(port)], { env, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });
   kids.push(cp);
   for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
 }
@@ -81,6 +100,7 @@ while (Date.now() < deadline) {
 }
 if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
 report.netem = null;
+report.preset = preset;
 if (netemProfile) { try { report.netem = await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json(); } catch (e) { report.netem = { error: String(e) }; } }
 if (netemSamples.length) {
   const start = report.summary.measurementStartWall;
