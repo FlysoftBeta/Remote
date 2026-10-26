@@ -112,10 +112,10 @@ index 42aa0d183c..fa8804e67d 100644
  }  // namespace headless
 diff --git a/chrome/browser/prts/BUILD.gn b/chrome/browser/prts/BUILD.gn
 new file mode 100644
-index 0000000000..44ef61f861
+index 0000000000..dd57f2b5be
 --- /dev/null
 +++ b/chrome/browser/prts/BUILD.gn
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,60 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -161,6 +161,7 @@ index 0000000000..44ef61f861
 +      "//media/capture/mojom:video_capture",
 +      "//mojo/public/cpp/platform",
 +      "//mojo/public/cpp/system",
++      "//net",
 +      "//services/viz/privileged/mojom/compositing",
 +      "//services/viz/public/mojom",
 +      "//ui/aura",
@@ -171,6 +172,7 @@ index 0000000000..44ef61f861
 +      "//ui/gfx",
 +      "//ui/views",
 +      "//ui/wm",
++      "//url",
 +    ]
 +  }
 +}
@@ -324,10 +326,10 @@ index 0000000000..1942c997d7
 +};
 diff --git a/chrome/browser/prts/prts_capture.cc b/chrome/browser/prts/prts_capture.cc
 new file mode 100644
-index 0000000000..332c7cb8b6
+index 0000000000..53fa5fa650
 --- /dev/null
 +++ b/chrome/browser/prts/prts_capture.cc
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,369 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -412,6 +414,11 @@ index 0000000000..332c7cb8b6
 +                       const gfx::Rect& content_rect,
 +                       mojo::PendingRemote<FrameCallbacks> callbacks) override {
 +    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (captured_++ % 300 == 0) {
++      LOG(INFO) << "PRTS: captured frame #" << captured_
++                << (data && data->is_gpu_memory_buffer_handle() ? " gmb"
++                                                                 : " other");
++    }
 +    mojo::Remote<FrameCallbacks> lease(std::move(callbacks));
 +    // Moving the Remote into the reply closure retains the Viz lease until
 +    // endpoint completion. Disconnect/teardown also runs Done() via the
@@ -479,9 +486,12 @@ index 0000000000..332c7cb8b6
 +  }
 +  void OnNewCaptureVersion(const media::CaptureVersion& version) override {}
 +  void OnFrameWithEmptyRegionCapture() override {}
-+  void OnStopped() override { Disconnected(); }
++  void OnStopped() override {
++    LOG(INFO) << "PRTS: capturer stopped";
++    Disconnected();
++  }
 +  void OnLog(const std::string& message) override {
-+    VLOG(1) << "PRTS Viz: " << message;
++    LOG(INFO) << "PRTS Viz: " << message;
 +  }
 +
 + private:
@@ -509,6 +519,7 @@ index 0000000000..332c7cb8b6
 +  std::map<gfx::DXGIHandleToken, uint32_t> buffers_;
 +  uint32_t next_buffer_id_ = 1;
 +  uint64_t frame_seq_ = 0;
++  uint64_t captured_ = 0;
 +  bool warned_software_ = false;
 +  SEQUENCE_CHECKER(sequence_checker_);
 +};
@@ -523,6 +534,9 @@ index 0000000000..332c7cb8b6
 +  }
 +  auto* manager = content::GpuDataManager::GetInstance();
 +  if (!manager->IsEssentialGpuInfoAvailable()) {
++    // GPU info arrives asynchronously after startup; assume hardware unless
++    // acceleration is disabled. The endpoint then uses the default adapter.
++    info.software_compositing = !manager->HardwareAccelerationEnabled();
 +    return;
 +  }
 +  const gpu::GPUInfo gpu = manager->GetGPUInfo();
@@ -626,6 +640,8 @@ index 0000000000..332c7cb8b6
 +      !sink.is_valid()) {
 +    return;
 +  }
++  LOG(INFO) << "PRTS: StartCapture window=" << id << " size="
++            << host->GetBoundsInPixels().size().ToString();
 +  if (params->nv12) {
 +    LOG(WARNING) << "PRTS: M1 supports only ARGB capture";
 +    return;
@@ -749,10 +765,10 @@ index 0000000000..9026c6c8c8
 +#endif  // CHROME_BROWSER_PRTS_PRTS_CAPTURE_H_
 diff --git a/chrome/browser/prts/prts_controller.cc b/chrome/browser/prts/prts_controller.cc
 new file mode 100644
-index 0000000000..1662a222d7
+index 0000000000..4bd407e1db
 --- /dev/null
 +++ b/chrome/browser/prts/prts_controller.cc
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,299 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -762,13 +778,148 @@ index 0000000000..1662a222d7
 +#include <utility>
 +
 +#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/task/sequenced_task_runner.h"
 +#include "chrome/browser/prts/prts_capture.h"
 +#include "chrome/browser/prts/prts_ime_bridge.h"
 +#include "chrome/browser/prts/prts_input.h"
 +#include "chrome/browser/prts/prts_window_registry.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
 +#include "content/public/browser/browser_thread.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/network_service_instance.h"
++#include "content/public/browser/service_process_info.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
++#include "net/base/net_errors.h"
++#include "ui/base/ui_base_switches.h"
++#include "url/gurl.h"
 +
 +namespace prts {
++
++// A Network Service bootstrap crash can silently abort the startup GET, leaving
++// an initial empty document (and therefore no animation or compositor damage).
++// Retry that one navigation after the replacement service has connected. Keep
++// the usual process/sandbox configuration and never replay a committed load.
++class PrtsStartupNavigationRecovery final
++    : public content::WebContentsObserver,
++      public content::NetworkServiceProcessObserver,
++      public BrowserCollectionObserver {
++ public:
++  PrtsStartupNavigationRecovery() {
++    browser_observation_.Observe(GlobalBrowserCollection::GetInstance());
++    AttachStartupContents();
++    content::AddNetworkServiceProcessObserver(this);
++  }
++  ~PrtsStartupNavigationRecovery() override { Retire(); }
++
++ private:
++  void Retire() {
++    Observe(nullptr);
++    browser_observation_.Reset();
++    if (observing_network_) {
++      content::RemoveNetworkServiceProcessObserver(this);
++      observing_network_ = false;
++    }
++    weak_factory_.InvalidateWeakPtrs();
++  }
++  void WebContentsDestroyed() override {
++    retried_ = true;
++    Retire();
++  }
++  void OnBrowserCreated(BrowserWindowInterface* browser) override {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&PrtsStartupNavigationRecovery::AttachStartupContents,
++                       weak_factory_.GetWeakPtr()));
++  }
++  void AttachStartupContents() {
++    if (web_contents() || retried_) {
++      return;
++    }
++    GlobalBrowserCollection::GetInstance()->ForEach(
++        [this](BrowserWindowInterface* browser) {
++          auto* tabs = browser->GetTabStripModel();
++          auto* contents = tabs ? tabs->GetActiveWebContents() : nullptr;
++          if (!contents || !contents->GetController().IsInitialNavigation()) {
++            return true;
++          }
++          Observe(contents);
++          return false;
++        });
++  }
++  void DidStartNavigation(content::NavigationHandle* handle) override {
++    if (handle->IsInPrimaryMainFrame()) {
++      aborted_url_ = GURL();
++    }
++  }
++  void DidFinishNavigation(content::NavigationHandle* handle) override {
++    if (handle->IsInPrimaryMainFrame() && handle->HasCommitted()) {
++      Retire();
++      return;
++    }
++    if (handle->IsInPrimaryMainFrame() && !handle->IsRendererInitiated() &&
++        handle->IsNavigatingFromInitialEmptyDocument() &&
++        handle->GetRequestMethod() == "GET" && !handle->IsPost() &&
++        !handle->HasCommitted() && handle->GetNetErrorCode() == net::ERR_ABORTED &&
++        handle->GetURL().SchemeIsHTTPOrHTTPS()) {
++      aborted_url_ = handle->GetURL();
++      ScheduleRetry();
++    }
++  }
++  void DidStopLoading() override { ScheduleRetry(); }
++  void OnServiceCrashed(const content::ServiceProcessInfo& info) override {
++    service_ready_ = false;
++    bootstrap_crashed_ |= info.crashed_pre_ipc().value_or(false);
++    if (bootstrap_crashed_) {
++      LOG(INFO) << "PRTS: Network Service bootstrap crashed";
++    }
++  }
++  void OnServiceLaunched(const content::ServiceProcessInfo& info) override {
++    service_ready_ = true;
++    ScheduleRetry();
++  }
++  void ScheduleRetry() {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&PrtsStartupNavigationRecovery::MaybeRetry,
++                       weak_factory_.GetWeakPtr()));
++  }
++  void MaybeRetry() {
++    auto* contents = web_contents();
++    if (retried_ || !bootstrap_crashed_ || !service_ready_ ||
++        aborted_url_.is_empty() || !contents || contents->IsLoading() ||
++        !contents->GetController().IsInitialNavigation()) {
++      return;
++    }
++    // The failed initial load retains its pending entry for the omnibox. It is
++    // safe to replace that entry, but never replace a different navigation.
++    auto* pending = contents->GetController().GetPendingEntry();
++    if (pending && pending->GetURL() != aborted_url_) {
++      return;
++    }
++    retried_ = true;
++    Retire();
++    LOG(INFO) << "PRTS: retrying startup GET after Network Service bootstrap";
++    content::NavigationController::LoadURLParams params(aborted_url_);
++    contents->GetController().LoadURLWithParams(params);
++  }
++
++  GURL aborted_url_;
++  bool bootstrap_crashed_ = false;
++  bool service_ready_ = false;
++  bool retried_ = false;
++  bool observing_network_ = true;
++  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
++      browser_observation_{this};
++  base::WeakPtrFactory<PrtsStartupNavigationRecovery> weak_factory_{this};
++};
 +
 +PrtsController::PrtsController()
 +    : registry_(std::make_unique<PrtsWindowRegistry>()),
@@ -782,7 +933,12 @@ index 0000000000..1662a222d7
 +      delegates_{registry_.get(), capture_.get(), nullptr, nullptr},
 +      link_(this,
 +            base::BindOnce(&PrtsController::OnDisconnect,
-+                           base::Unretained(this))) {}
++                           base::Unretained(this))) {
++  if (ui::IsPrtsRemoteMode()) {
++    startup_navigation_recovery_ =
++        std::make_unique<PrtsStartupNavigationRecovery>();
++  }
++}
 +PrtsController::~PrtsController() {
 +  link_.Close();
 +  ime_->SetActiveHost(nullptr);
@@ -901,6 +1057,7 @@ index 0000000000..1662a222d7
 +  }
 +}
 +void PrtsController::OnDisconnect() {
++  startup_navigation_recovery_.reset();
 +  if (delegates_.windows) {
 +    delegates_.windows->SetClient(nullptr);
 +  }
@@ -913,10 +1070,10 @@ index 0000000000..1662a222d7
 +}  // namespace prts
 diff --git a/chrome/browser/prts/prts_controller.h b/chrome/browser/prts/prts_controller.h
 new file mode 100644
-index 0000000000..fdd9b6241f
+index 0000000000..796910cd35
 --- /dev/null
 +++ b/chrome/browser/prts/prts_controller.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,69 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -941,6 +1098,7 @@ index 0000000000..fdd9b6241f
 +class PrtsCapture;
 +class PrtsInput;
 +class PrtsImeBridge;
++class PrtsStartupNavigationRecovery;
 +
 +// UI-thread dispatcher; owns only the link, never the implementation delegates.
 +class PrtsController : public mojom::PrtsBrowser {
@@ -979,6 +1137,7 @@ index 0000000000..fdd9b6241f
 +  raw_ptr<aura::WindowTreeHost> active_host_ = nullptr;
 +  PrtsDelegates delegates_;
 +  PrtsLink link_;
++  std::unique_ptr<PrtsStartupNavigationRecovery> startup_navigation_recovery_;
 +};
 +
 +}  // namespace prts
@@ -1881,10 +2040,10 @@ index 0000000000..b0ad0d9779
 +}  // namespace prts
 diff --git a/chrome/browser/prts/prts_link.h b/chrome/browser/prts/prts_link.h
 new file mode 100644
-index 0000000000..bed6a3a7b9
+index 0000000000..2761dfabf7
 --- /dev/null
 +++ b/chrome/browser/prts/prts_link.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,41 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1908,7 +2067,9 @@ index 0000000000..bed6a3a7b9
 +  // Schedules invitation acceptance off UI, then binds the receiver on UI.
 +  bool Start();
 +  bool SetClient(mojo::PendingRemote<mojom::PrtsBrowserClient> client);
-+  mojom::PrtsBrowserClient* client() { return client_.get(); }
++  mojom::PrtsBrowserClient* client() {
++    return client_.is_bound() ? client_.get() : nullptr;
++  }
 +  // Cancels acceptance, closes both bindings, runs disconnected at most once.
 +  void Close();
 +
