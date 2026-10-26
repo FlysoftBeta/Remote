@@ -44,7 +44,11 @@ Other:
 
 ## Workstream C: Isolation (LOW PRIORITY, do last)
 Multi-tenant isolation with built-in Windows primitives (Job Objects, AppContainer, LPAC, ...).
-Server: Win10 24H2-level (avoid Win11-only APIs). Investigate and implement only after the full
+Server: Win10 24H2-level (avoid Win11-only APIs).
+User-chosen target (2026-10-26): Job Object + JOB_OBJECT_UILIMIT_* + LPAC, managed by the endpoint.
+Small Chromium patches are allowed; give up (fall back to job-only plus a per-tenant account) if
+it needs more than about 1k LOC or is likely to cause merge conflicts in future versions. See
+design/04-isolation.md §4. Investigate and implement only after the full
 chain runs and the experience is usable.
 
 ## Process
