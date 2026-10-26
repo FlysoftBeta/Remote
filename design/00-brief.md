@@ -34,7 +34,7 @@ Other:
 ## Workstream B: Audio/video transport
 - Hard floor: WebRTC + H.264 + Chrome 89+ on the client (a better path is OK if available, but
   this combination is the minimum).
-- Network: 50 ms latency (with jitter), 10 to 16 Mbps available (depends on concurrent users),
+- Network: 50 ms latency = RTT (confirmed by the user; i.e. about 25 ms one-way), with jitter, 10 to 16 Mbps available (depends on concurrent users),
   1080p target. Internal network; one peer is on Wi-Fi, the other is wired, same subnet.
 - Goal: end-to-end latency P80 < 100 ms, P99 < 200 ms.
 - Ideally drive the frame pace together with Chromium.
