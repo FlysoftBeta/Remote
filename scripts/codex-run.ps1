@@ -48,7 +48,7 @@ $exe = Join-Path (Split-Path $codex) 'codex.exe'
 if (Test-Path $exe) { $codex = $exe }
 
 $argList = @('exec','-m',$Model,'-c',"model_reasoning_effort=$Effort",'--skip-git-repo-check',
-  '-s','danger-full-access','-C',"`"$Dir`"",'-o',"`"$OutFile`"",'--json','--color','never','-')
+  '--dangerously-bypass-approvals-and-sandbox','-C',"`"$Dir`"",'-o',"`"$OutFile`"",'--json','--color','never','-')
 
 "[$(Get-Date -Format s)] start $Name effort=$Effort timeout=${TimeoutMin}m out=$OutFile" | Log
 $p = Start-Process -FilePath $codex -ArgumentList $argList -NoNewWindow -PassThru `
