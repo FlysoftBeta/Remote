@@ -333,8 +333,12 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
     {
       base::AutoLock lock(timing_lock_);
       timing_[frame.rtp_timestamp()] = {capture, now};
-      if (timing_.size() > 240)
-        timing_.erase(timing_.begin());
+      if (timing_.size() > 240) {
+        timing_.erase(std::min_element(
+            timing_.begin(), timing_.end(), [](const auto& a, const auto& b) {
+              return a.second.second < b.second.second;
+            }));
+      }
     }
     return encoder_->Encode(frame, types);
   }
@@ -380,6 +384,10 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
     return result;
   }
   void OnFrameDropped(uint32_t ts, int spatial, bool end) override {
+    {
+      base::AutoLock lock(timing_lock_);
+      timing_.erase(ts);
+    }
     callback_->OnFrameDropped(ts, spatial, end);
   }
 
@@ -403,19 +411,27 @@ void VplEncoderState::SetEncoderDevice(ComPtr<ID3D11Device> device) {
   std::lock_guard lock(mutex_);
   encoder_device_ = std::move(device);
 }
+void VplEncoderState::ClearEncoderDevice(ID3D11Device* device) {
+  std::lock_guard lock(mutex_);
+  if (encoder_device_.Get() == device)
+    encoder_device_.Reset();
+}
 bool VplEncoderState::NativeActive(ID3D11Device* device) const {
   std::lock_guard lock(mutex_);
   return device && encoder_device_.Get() == device &&
          capture_device_.Get() == device;
 }
 
-VplNativeFrameBuffer::VplNativeFrameBuffer(ComPtr<ID3D11Texture2D> texture,
-                                           int width,
-                                           int height,
-                                           std::shared_ptr<void> lease,
-                                           ComPtr<ID3D11Query> completion,
-                                           base::TimeTicks submitted)
+VplNativeFrameBuffer::VplNativeFrameBuffer(
+    ComPtr<ID3D11Texture2D> texture,
+    int width,
+    int height,
+    std::shared_ptr<void> lease,
+    ComPtr<ID3D11Query> completion,
+    base::TimeTicks submitted,
+    std::shared_ptr<std::atomic<bool>> pool_health)
     : texture_(std::move(texture)),
+      pool_health_(std::move(pool_health)),
       width_(width),
       height_(height),
       lease_(std::move(lease)),
@@ -461,10 +477,19 @@ const VplNativeFrameBuffer* VplNativeFrameBuffer::From(
              : nullptr;
 }
 webrtc::scoped_refptr<webrtc::I420BufferInterface>
+VplNativeFrameBuffer::ReadbackFailed() {
+  if (!pool_health_ || pool_health_->exchange(false))
+    LOG(WARNING) << "PRTS native ToI420 failed; use capture I420 bridge";
+  return nullptr;
+}
+webrtc::scoped_refptr<webrtc::I420BufferInterface>
 VplNativeFrameBuffer::ToI420() {
-  LOG(INFO) << "PRTS native ToI420 slow readback";
+  std::lock_guard lock(readback_mutex_);
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true))
+    LOG(INFO) << "PRTS native ToI420 slow readback";
   if (!lease_ || !ValidNv12(texture_.Get(), width_, height_))
-    return nullptr;
+    return ReadbackFailed();
   ComPtr<ID3D11Device> device;
   texture_->GetDevice(&device);
   ComPtr<ID3D11DeviceContext> context;
@@ -474,16 +499,15 @@ VplNativeFrameBuffer::ToI420() {
   desc.Usage = D3D11_USAGE_STAGING;
   desc.BindFlags = desc.MiscFlags = 0;
   desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-  ComPtr<ID3D11Texture2D> staging;
-  if (FAILED(device->CreateTexture2D(&desc, nullptr, &staging)))
-    return nullptr;
-  context->CopyResource(staging.Get(), texture_.Get());
+  if (!staging_ && FAILED(device->CreateTexture2D(&desc, nullptr, &staging_)))
+    return ReadbackFailed();
+  context->CopyResource(staging_.Get(), texture_.Get());
   D3D11_MAPPED_SUBRESOURCE mapped{};
-  if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
-    return nullptr;
+  if (FAILED(context->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+    return ReadbackFailed();
   if (mapped.RowPitch < desc.Width || mapped.RowPitch > INT_MAX) {
-    context->Unmap(staging.Get(), 0);
-    return nullptr;
+    context->Unmap(staging_.Get(), 0);
+    return ReadbackFailed();
   }
   auto i420 = webrtc::I420Buffer::Create(width_, height_);
   const auto* y = static_cast<const uint8_t*>(mapped.pData);
@@ -492,9 +516,9 @@ VplNativeFrameBuffer::ToI420() {
       y + static_cast<size_t>(mapped.RowPitch) * desc.Height, mapped.RowPitch,
       i420->MutableDataY(), i420->StrideY(), i420->MutableDataU(),
       i420->StrideU(), i420->MutableDataV(), i420->StrideV(), width_, height_);
-  context->Unmap(staging.Get(), 0);
+  context->Unmap(staging_.Get(), 0);
   if (result != 0)
-    return nullptr;
+    return ReadbackFailed();
   return i420;
 }
 
@@ -528,6 +552,17 @@ class VplEncoder::Impl {
   bool OpenDevice(ComPtr<ID3D11Device> supplied = nullptr) {
     device_ =
         supplied ? supplied : (state_ ? state_->capture_device() : nullptr);
+    // Non-Intel capture uses the I420 bridge to our own Intel encoder device.
+    if (device_) {
+      ComPtr<IDXGIDevice> dxgi;
+      ComPtr<IDXGIAdapter> adapter;
+      DXGI_ADAPTER_DESC desc{};
+      if (!(device_->GetCreationFlags() & D3D11_CREATE_DEVICE_VIDEO_SUPPORT) ||
+          FAILED(device_.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter)) ||
+          FAILED(adapter->GetDesc(&desc)) || desc.VendorId != 0x8086) {
+        device_.Reset();
+      }
+    }
     if (!device_) {
       ComPtr<IDXGIFactory1> factory;
       if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
@@ -665,6 +700,7 @@ class VplEncoder::Impl {
     kbps_ = kbps;
     fps_ = fps;
     frames_ = 0;
+    consecutive_errors_ = 0;
     last_reset_ = base::TimeTicks::Now();
     check_reset_idr_ = false;
     if (!OpenDevice(std::move(supplied)) || !OpenSession())
@@ -756,7 +792,7 @@ class VplEncoder::Impl {
 
   void Close() {
     if (state_)
-      state_->SetEncoderDevice(nullptr);
+      state_->ClearEncoderDevice(device_.Get());
     // MFX must release its surface references before pool leases and MemIds
     // die.
     if (initialized_)
@@ -765,6 +801,7 @@ class VplEncoder::Impl {
     if (session_)
       MFXClose(session_);
     session_ = nullptr;
+    pending_sync_ = nullptr;
     slots_.clear();
     if (inputs_.mids)
       TextureAllocator::Free(allocator_.get(), &inputs_);
@@ -815,14 +852,17 @@ class VplEncoder::Impl {
   }
 
   void ResetRate(int kbps) {
+    pending_kbps_ = kbps;
+    if (pending_sync_)
+      return;
     if (hold_max_)
       kbps = max_kbps_;
     const auto now = base::TimeTicks::Now();
-    // Startup GCC churn must not interrupt the first pictures. Even on legacy
-    // drivers, limit accepted rate changes to >=20% and one every two seconds.
-    if (frames_ < static_cast<uint64_t>(2 * fps_) ||
-        now - last_reset_ < base::Seconds(2) || kbps == kbps_ ||
-        (!hold_max_ && std::abs(kbps - kbps_) * 5 < kbps_)) {
+    // Keep the latest request until cooldown expires, including small changes.
+    // Large decreases can immediately relieve congestion.
+    const bool large_decrease = kbps * 10 <= kbps_ * 7;
+    if (kbps == kbps_ ||
+        (!large_decrease && now - last_reset_ < base::Seconds(2))) {
       ++rate_ignored_;
       return;
     }
@@ -855,11 +895,12 @@ class VplEncoder::Impl {
     if (!available)
       return nullptr;
     auto buffer = frame.video_frame_buffer();
-    if (const auto* native = VplNativeFrameBuffer::From(*buffer)) {
-      ComPtr<ID3D11Device> owner;
+    const auto* native = VplNativeFrameBuffer::From(*buffer);
+    ComPtr<ID3D11Device> owner;
+    if (native)
       native->texture()->GetDevice(&owner);
-      if (!ValidNv12(native->texture(), width_, height_) ||
-          owner.Get() != device_.Get()) {
+    if (native && owner.Get() == device_.Get()) {
+      if (!ValidNv12(native->texture(), width_, height_)) {
         return nullptr;
       }
       available->native_memory.texture = native->texture();
@@ -914,33 +955,45 @@ class VplEncoder::Impl {
         frame.rotation() != webrtc::kVideoRotation_0) {
       return Fail("unsupported frame geometry");
     }
+    // A timed-out operation still owns its bitstream and input surface. Drain
+    // it before reset, upload, or buffer reuse; its picture was already dropped.
+    if (pending_sync_) {
+      const auto status =
+          MFXVideoCORE_SyncOperation(session_, pending_sync_, 100);
+      if (status != MFX_ERR_NONE)
+        return Drop(frame, "pending SyncOperation", status, true);
+      pending_sync_ = nullptr;
+    }
     auto capture_device = state_ ? state_->capture_device() : nullptr;
+    ComPtr<ID3D11Device> native_device;
     if (const auto* native =
             VplNativeFrameBuffer::From(*frame.video_frame_buffer())) {
-      // A frame queued before capture rebind still belongs to its old device.
-      // Do not adopt the new device and then reject that valid queued surface.
-      native->texture()->GetDevice(capture_device.ReleaseAndGetAddressOf());
+      native->texture()->GetDevice(&native_device);
     }
-    if (frame.width() != width_ || frame.height() != height_ ||
-        (capture_device && capture_device.Get() != device_.Get())) {
+    const bool adopt_native = native_device && capture_device &&
+                             native_device.Get() == capture_device.Get() &&
+                             native_device.Get() != device_.Get();
+    if (frame.width() != width_ || frame.height() != height_ || adopt_native) {
       // WebRTC normally calls InitEncode on resize. Also handle a direct
       // resize/device generation transition, and force new SPS/PPS + IDR.
-      if (!Start(frame.width(), frame.height(), kbps_, fps_, capture_device))
+      if (!Start(frame.width(), frame.height(), kbps_, fps_,
+                 adopt_native ? native_device : device_))
         return Fail("resize/device reinit");
     }
-    if (hold_max_ && kbps_ != max_kbps_) {
-      ResetRate(max_kbps_);
+    if (pending_kbps_ > 0) {
+      ResetRate(pending_kbps_);
       if (failed_)
         return WEBRTC_VIDEO_CODEC_FALLBACK_SOFTWARE;
     }
     Slot* slot = Prepare(frame);
     if (!slot)
-      return Fail("input surface");
+      return Drop(frame, "input surface");
     mfxEncodeCtrl control{};
     if (force_idr_)
       control.FrameType =
           MFX_FRAMETYPE_I | MFX_FRAMETYPE_IDR | MFX_FRAMETYPE_REF;
-    mfxBitstream bits{};
+    bits_ = {};
+    auto& bits = bits_;
     mfxSyncPoint sync = nullptr;
     auto started = SteadyClock::now();
     int64_t encode_start_ms = webrtc::TimeMillis();
@@ -959,25 +1012,31 @@ class VplEncoder::Impl {
       if (status != MFX_WRN_DEVICE_BUSY)
         break;
       if (SteadyClock::now() - started > kBusyTimeout)
-        return Fail("device busy timeout");
+        return Drop(frame, "device busy timeout", status);
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     // No B frames and depth one are mandatory. Reject buffering/skips instead
     // of associating a delayed AU with the wrong capture metadata.
     if (status < 0 || !sync)
-      return Fail("EncodeFrameAsync", status);
+      return Drop(frame, "EncodeFrameAsync", status, true);
     // Never hold ID3D10Multithread::Enter or an application mutex here.
-    status = MFXVideoCORE_SyncOperation(session_, sync, 1000);
+    pending_sync_ = sync;
+    status = MFXVideoCORE_SyncOperation(session_, sync, 100);
     if (status != MFX_ERR_NONE)
-      return Fail("SyncOperation", status);
-    if (const auto* native =
-            VplNativeFrameBuffer::From(*frame.video_frame_buffer()))
-      native->RecordVppCompletion(context_.Get());
-    if (!bits.DataLength || bits.TimeStamp != slot->surface.Data.TimeStamp ||
+      return Drop(frame, "SyncOperation", status, true);
+    pending_sync_ = nullptr;
+    if (slot->lease) {
+      VplNativeFrameBuffer::From(*slot->lease)
+          ->RecordVppCompletion(context_.Get());
+    }
+    if (!bits.DataLength)
+      return Drop(frame, "empty output", MFX_ERR_MORE_DATA, true);
+    if (bits.TimeStamp != slot->surface.Data.TimeStamp ||
         bits.DataOffset > bits.MaxLength ||
         bits.DataLength > bits.MaxLength - bits.DataOffset ||
         (bits.FrameType & MFX_FRAMETYPE_B)) {
-      return Fail("unexpected buffered/invalid output");
+      return Drop(frame, "unexpected buffered/invalid output",
+                  MFX_ERR_UNDEFINED_BEHAVIOR, true);
     }
     auto bytes =
         std::span<const uint8_t>(bits.Data + bits.DataOffset, bits.DataLength);
@@ -1004,6 +1063,7 @@ class VplEncoder::Impl {
     if (idr && (!sps || !pps))
       return Fail("IDR without SPS/PPS");
     ++frames_;
+    consecutive_errors_ = 0;
     encoded_bytes_ += bits.DataLength;
     if (idr)
       ++idrs_;
@@ -1075,6 +1135,23 @@ class VplEncoder::Impl {
                : WEBRTC_VIDEO_CODEC_ERROR;
   }
 
+  int Drop(const webrtc::VideoFrame& frame,
+           const char* operation,
+           mfxStatus status = MFX_ERR_UNKNOWN,
+           bool reference_lost = false) {
+    if (status == MFX_ERR_DEVICE_LOST || status == MFX_ERR_DEVICE_FAILED ||
+        status == MFX_ERR_GPU_HANG || status == MFX_ERR_NOT_INITIALIZED ||
+        ++consecutive_errors_ >= 8) {
+      return Fail(operation, status);
+    }
+    force_idr_ |= reference_lost;
+    if (consecutive_errors_ == 1)
+      LOG(WARNING) << "PRTS VPL transient " << operation << " status=" << status
+                   << "; drop raw frame";
+    callback_->OnFrameDropped(frame.rtp_timestamp(), 0, true);
+    return WEBRTC_VIDEO_CODEC_OK;
+  }
+
   int Fail(const char* operation, mfxStatus status = MFX_ERR_UNKNOWN) {
     RTC_LOG(LS_ERROR) << "PRTS VPL " << operation << " status=" << status
                       << "; fallback encoder=openh264";
@@ -1099,6 +1176,8 @@ class VplEncoder::Impl {
   int width_ = 0;
   int height_ = 0;
   int kbps_ = 0;
+  int pending_kbps_ = 0;
+  int consecutive_errors_ = 0;
   int fps_ = 0;
   int max_kbps_ = 12000;
   int min_kbps_ = 2000;
@@ -1114,6 +1193,8 @@ class VplEncoder::Impl {
   mfxU64 next_timestamp_ = 0;
   mfxU32 next_order_ = 0;
   uint64_t cap_violations_ = 0;
+  mfxBitstream bits_{};
+  mfxSyncPoint pending_sync_ = nullptr;
 };
 
 VplEncoder::VplEncoder(std::shared_ptr<VplEncoderState> state)
@@ -1134,11 +1215,17 @@ int VplEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings&) {
     return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
   }
   impl_->max_kbps_ =
-      static_cast<int>(std::clamp(codec->maxBitrate, 1u, 20000u));
+      std::clamp(codec->maxBitrate ? static_cast<int>(codec->maxBitrate)
+                                 : impl_->state_->max_bitrate_bps.load() / 1000,
+                 1, 20000);
   impl_->min_kbps_ =
       std::min(static_cast<int>(codec->minBitrate), impl_->max_kbps_);
-  // Prefer the negotiated VBR ceiling until the runtime accepts seamless rates.
+  // Legacy runtimes size internal BRC resources from the initial target and
+  // reject later increases above it. Keep the negotiated ceiling at Init;
+  // retain GCC's startup target for a deferred seamless decrease.
   int kbps = impl_->max_kbps_;
+  impl_->pending_kbps_ = std::clamp(static_cast<int>(codec->startBitrate),
+                                  std::max(1, impl_->min_kbps_), kbps);
   impl_->hold_max_ = impl_->check_reset_idr_ = false;
   impl_->paused_ = codec->startBitrate == 0;
   if (!impl_->Start(codec->width, codec->height, kbps, codec->maxFramerate)) {

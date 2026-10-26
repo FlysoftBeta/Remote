@@ -126,6 +126,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
               if (!self->device_ || self->luid_ != luid) {
                 self->CreateDevice(luid);
               }
+              self->RebuildNativePool();
               self->receiver_ =
                   std::make_unique<mojo::Receiver<mojom::PrtsFrameSink>>(
                       self, std::move(receiver));
@@ -251,12 +252,19 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       std::move(reply).Run();
       return;
     }
+    if (native_pool_ && !native_pool_->healthy() &&
+        received - native_pool_retry_ >= base::Seconds(2)) {
+      RebuildNativePool();
+    }
     if (native_pool_ && native_pool_->healthy() &&
         encoder_state_->NativeActive(device_.Get())) {
       const RECT rect{visible.x(), visible.y(), visible.right(), visible.bottom()};
+      bool discard_source = false;
       job->native = native_pool_->Convert(
           buffer.texture.Get(), buffer.mutex.Get(), rect,
-          encoder_state_->native_pool_limit.load());
+          encoder_state_->native_pool_limit.load(), &discard_source);
+      if (discard_source)
+        buffers_.erase(it);
       job->copied = base::TimeTicks::Now();
       latency.Add("native_vpp", received, job->copied);
       std::move(reply).Run();  // Private copy submitted, shared key 0 released.
@@ -274,6 +282,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       // WAIT_TIMEOUT and WAIT_ABANDONED are nonnegative: SUCCEEDED is wrong.
       if (HRESULT hr = buffer.mutex->AcquireSync(0, 20); hr != S_OK) {
         LOG(WARNING) << "PRTS AcquireSync failed: " << hr;
+        if (hr != WAIT_TIMEOUT)
+          buffers_.erase(it);
         std::move(reply).Run();
         return;
       }
@@ -309,8 +319,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   }
   void Reset() override {
     buffers_.clear();
-    if (native_pool_)
-      native_pool_->ClearImports();
+    RebuildNativePool();
     {
       base::AutoLock lock(mutex_);
       if (bound_epoch_ != epoch_) {
@@ -329,6 +338,15 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   }
 
  private:
+  void RebuildNativePool() {
+    native_pool_.reset();
+    native_pool_retry_ = base::TimeTicks::Now();
+    if (device_) {
+      native_pool_ = std::make_unique<D3DNativeFramePool>(device_, fps_);
+      LOG(INFO) << "PRTS native pool rebuilt";
+    }
+  }
+
   void Drain() {
     base::WaitableEvent done;
     convert_runner_->PostTask(
@@ -530,6 +548,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   std::shared_ptr<VplEncoderState> encoder_state_;
   const int fps_;
   std::unique_ptr<D3DNativeFramePool> native_pool_;
+  base::TimeTicks native_pool_retry_;
   uint64_t luid_ = 0, bound_epoch_ = 0;
   base::TimeTicks stats_at_ = base::TimeTicks::Now();
   base::TimeTicks latency_at_ = stats_at_;

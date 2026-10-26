@@ -21,7 +21,8 @@ class D3DNativeFramePool {
       ID3D11Texture2D* shared_texture,
       IDXGIKeyedMutex* keyed_mutex,
       const RECT& visible,
-      int pool_limit);
+      int pool_limit,
+      bool* discard_source);
   bool healthy() const;
   void ClearImports();
 

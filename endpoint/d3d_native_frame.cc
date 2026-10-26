@@ -36,7 +36,7 @@ class D3DNativeFramePool::Impl {
   Impl(ComPtr<ID3D11Device> device, int fps)
       : device_(std::move(device)), fps_(fps) {
     device_->GetImmediateContext(&context_);
-    healthy_ = SUCCEEDED(device_.As(&video_)) &&
+    *healthy_ = SUCCEEDED(device_.As(&video_)) &&
                SUCCEEDED(context_.As(&video_context_));
   }
 
@@ -51,7 +51,7 @@ class D3DNativeFramePool::Impl {
   bool Fail(const char* operation, HRESULT hr) {
     RTC_LOG(LS_ERROR) << "PRTS native VPP " << operation << " hr=" << hr
                       << "; use I420 bridge on subsequent frames";
-    healthy_ = false;
+    *healthy_ = false;
     return false;
   }
 
@@ -167,8 +167,10 @@ class D3DNativeFramePool::Impl {
       ID3D11Texture2D* texture,
       IDXGIKeyedMutex* mutex,
       const RECT& visible,
-      int limit) {
-    if (!healthy_ || !texture || !mutex)
+      int limit,
+      bool* discard_source) {
+    *discard_source = false;
+    if (!healthy_->load() || !texture || !mutex)
       return nullptr;
     ComPtr<ID3D11Device> owner;
     texture->GetDevice(&owner);
@@ -181,7 +183,7 @@ class D3DNativeFramePool::Impl {
         visible.top < 0 || width <= 0 || height <= 0 || (width & 1) ||
         (height & 1) || visible.right > static_cast<LONG>(desc.Width) ||
         visible.bottom > static_cast<LONG>(desc.Height)) {
-      Fail("source descriptor", E_INVALIDARG);
+      *discard_source = true;
       return nullptr;
     }
     if (!Configure(desc, width, height))
@@ -193,8 +195,11 @@ class D3DNativeFramePool::Impl {
     const auto started = base::TimeTicks::Now();
     HRESULT hr = mutex->AcquireSync(0, 20);
     if (hr != S_OK) {
-      if (hr != WAIT_TIMEOUT)
-        Fail("AcquireSync", hr);
+      if (hr != WAIT_TIMEOUT) {
+        *discard_source = true;
+        LOG(WARNING) << "PRTS native AcquireSync hr=" << hr
+                     << "; discard shared buffer";
+      }
       return nullptr;
     }
     const auto acquired = base::TimeTicks::Now();
@@ -205,7 +210,9 @@ class D3DNativeFramePool::Impl {
     latency.Add("native_mutex_acquire", started, acquired);
     latency.Add("native_mutex_hold", acquired, copied);
     if (released != S_OK) {
-      Fail("ReleaseSync", released);
+      *discard_source = true;
+      LOG(WARNING) << "PRTS native ReleaseSync hr=" << released
+                   << "; discard shared buffer";
       return nullptr;
     }
     // Same immediate context/device orders private-copy -> VPP -> encode.
@@ -235,7 +242,7 @@ class D3DNativeFramePool::Impl {
                 << " pool=" << slots_.size() << " limit=" << limit;
     }
     return webrtc::make_ref_counted<VplNativeFrameBuffer>(
-        slot->texture, width, height, slot, slot->done, copied);
+        slot->texture, width, height, slot, slot->done, copied, healthy_);
   }
 
   // Shared textures are never retained; leased private slots survive resets.
@@ -251,7 +258,8 @@ class D3DNativeFramePool::Impl {
   int fps_;
   int width_ = 0, height_ = 0;
   UINT source_width_ = 0, source_height_ = 0;
-  bool healthy_ = false;
+  std::shared_ptr<std::atomic<bool>> healthy_ =
+      std::make_shared<std::atomic<bool>>(false);
   uint64_t frames_ = 0, pool_drops_ = 0;
 };
 
@@ -262,11 +270,12 @@ webrtc::scoped_refptr<webrtc::VideoFrameBuffer> D3DNativeFramePool::Convert(
     ID3D11Texture2D* texture,
     IDXGIKeyedMutex* mutex,
     const RECT& visible,
-    int limit) {
-  return impl_->Convert(texture, mutex, visible, limit);
+    int limit,
+    bool* discard_source) {
+  return impl_->Convert(texture, mutex, visible, limit, discard_source);
 }
 bool D3DNativeFramePool::healthy() const {
-  return impl_->healthy_;
+  return impl_->healthy_->load();
 }
 void D3DNativeFramePool::ClearImports() {
   impl_->ClearImports();

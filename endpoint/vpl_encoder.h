@@ -30,6 +30,7 @@ class VplEncoderState {
   void SetCaptureDevice(Microsoft::WRL::ComPtr<ID3D11Device> device);
   Microsoft::WRL::ComPtr<ID3D11Device> capture_device() const;
   void SetEncoderDevice(Microsoft::WRL::ComPtr<ID3D11Device> device);
+  void ClearEncoderDevice(ID3D11Device* device);
   bool NativeActive(ID3D11Device* capture_device) const;
   std::atomic<int> native_pool_limit{8};
   std::atomic<int> min_bitrate_bps{2000000};
@@ -54,7 +55,8 @@ class VplNativeFrameBuffer : public webrtc::VideoFrameBuffer {
                        int height,
                        std::shared_ptr<void> lease,
                        Microsoft::WRL::ComPtr<ID3D11Query> completion = nullptr,
-                       base::TimeTicks submitted = {});
+                       base::TimeTicks submitted = {},
+                       std::shared_ptr<std::atomic<bool>> pool_health = nullptr);
   Type type() const override;
   int width() const override;
   int height() const override;
@@ -81,7 +83,11 @@ class VplNativeFrameBuffer : public webrtc::VideoFrameBuffer {
   ~VplNativeFrameBuffer() override;
 
  private:
+  webrtc::scoped_refptr<webrtc::I420BufferInterface> ReadbackFailed();
   Microsoft::WRL::ComPtr<ID3D11Texture2D> texture_;
+  std::mutex readback_mutex_;
+  Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
+  std::shared_ptr<std::atomic<bool>> pool_health_;
   int width_;
   int height_;
   std::shared_ptr<void> lease_;
