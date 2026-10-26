@@ -5,13 +5,13 @@
   including `codex exec`). `codex exec --json` stdout does NOT carry rate_limits in CLI 0.163.
 #>
 $files = Get-ChildItem "$env:USERPROFILE\.codex\sessions" -Recurse -Filter '*.jsonl' |
-  Sort-Object LastWriteTime -Descending | Select-Object -First 5
+  Sort-Object LastWriteTime -Descending | Select-Object -First 30
 foreach ($f in $files) {
   $m = Select-String -Path $f.FullName -Pattern '"rate_limits":\{.*?"credits"' | Select-Object -Last 1
   if (-not $m) { continue }
   $j = ($m.Line | ConvertFrom-Json)
   $rl = $j.payload.rate_limits
-  if (-not $rl) { continue }
+  if (-not $rl -or -not $rl.primary) { continue }  # snapshots written at the limit can lack the windows
   $epoch = [DateTime]'1970-01-01Z'
   foreach ($w in 'primary','secondary') {
     $x = $rl.$w
