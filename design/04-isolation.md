@@ -34,7 +34,7 @@
 
 **用户定的目标方案（2026-10-26，优先于下文旧决策）**：Job Object + `JOB_OBJECT_UILIMIT_*` + LPAC，由 endpoint 管理（endpoint 负责创建 job、LPAC profile/capability、ACL，以 LPAC token 启动整棵 PRTS 浏览器树）。
 - 允许对 Chromium 做小补丁让它在 外层 Job(UILIMIT) + LPAC 下工作（例如沙箱嵌套 job / alternate desktop / window station 访问、Crashpad 管道、GPU/D3D11 访问）。
-- 放弃条件：所需 Chromium 改动超过约 1k 行，或很可能在未来版本中造成合并冲突（侵入核心沙箱/IPC 热点文件）。放弃时退回到 I0/I1 并记录原因。
+- 放弃条件：所需 Chromium 改动超过约 1k 行，或很可能在未来版本中造成合并冲突（侵入核心沙箱/IPC 热点文件）。放弃时退回到 Job(+UILIMIT 若可行) + 普通 AppContainer（不用 per-tenant 账户，太重），并记录原因。
 - M6 第一步：逐位受控实验（每次只开一个 UILIMIT 位，再叠加 LPAC），记录哪个子进程、哪个调用、什么错误码失败，以及能否出帧；上一节“任何 UILIMIT 位都会失败”的结论来自 prior art、未经本项目验证。
 
 1. MVP 只做 I0（已有代码可复用到 endpoint 的 launcher 中）。
