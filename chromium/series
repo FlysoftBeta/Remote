@@ -10,3 +10,5 @@
 09-prts-web-prefs.patch
 02-prts-browser.patch
 14-prts-endpoint-target.patch
+17-remote-vsync.patch
+18-prts-capture-recovery.patch

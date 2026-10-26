@@ -8,6 +8,7 @@
 #include "prts_endpoint/vpl_encoder.h"
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,7 @@
 #include "third_party/webrtc/api/make_ref_counted.h"
 #include "third_party/webrtc/api/set_local_description_observer_interface.h"
 #include "third_party/webrtc/api/set_remote_description_observer_interface.h"
+#include "third_party/webrtc/api/stats/rtc_stats_collector_callback.h"
 #include "third_party/webrtc/api/video/adapted_video_track_source.h"
 #include "third_party/webrtc/api/video/encoded_image.h"
 #include "third_party/webrtc/api/video_codecs/builtin_video_decoder_factory.h"
@@ -41,6 +43,17 @@
 
 namespace prts {
 namespace {
+class SenderStats : public webrtc::RTCStatsCollectorCallback {
+ public:
+  void OnStatsDelivered(
+      const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report)
+      override {
+    for (const auto& stats : *report) {
+      if (std::string_view(stats.type()) == "outbound-rtp")
+        LOG(INFO) << "PRTS sender stats [" << stats.ToJson() << "]";
+    }
+  }
+};
 std::string String(const base::DictValue& m, const char* key) {
   const auto* s = m.FindString(key);
   return s ? *s : std::string();
@@ -168,6 +181,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       return;
     }
     pc_ = result.MoveValue();
+    PollStats();
     track_source_ = webrtc::make_ref_counted<TrackSource>();
     auto track = owner_.factory_->CreateVideoTrack(track_source_, "screen");
     // Fluid reduced latency in repeated 1080p30 trials. Keep the encoder in
@@ -537,6 +551,15 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
                   s->failure_epoch_ == epoch) s->Fail("connection failed");
             }, webrtc::TimeDelta::Seconds(10));
     });
+  }
+  void PollStats() {
+    pc_->GetStats(webrtc::make_ref_counted<SenderStats>().get());
+    owner_.signaling_thread_->PostDelayedTask(
+        [weak = weak_from_this()] {
+          if (auto s = weak.lock(); s && !s->closed_)
+            s->PollStats();
+        },
+        webrtc::TimeDelta::Seconds(5));
   }
   Peer& owner_;
   const std::string sid_;

@@ -47,8 +47,8 @@ int main(int argc, char** argv) {
   logging::LoggingSettings settings;
   settings.logging_dest = logging::LOG_TO_STDERR;
   CHECK(logging::InitLogging(settings));
-  // OpenH264 at 1080p delivers about 51 fps for --fps=60 in the dev build;
-  // retain 30 by default for consistent input latency until GPU encoding.
+  // Retain 30 fps: VPL can fall back during 60 fps startup or rate changes on
+  // the current driver. --fps=60 plus --cr-fake-vsync-rate=60 is opt-in.
   int fps = 30;
   if (command.HasSwitch("fps") &&
       (!base::StringToInt(command.GetSwitchValueASCII("fps"), &fps) ||
@@ -57,7 +57,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   const std::string encoder = command.GetSwitchValueASCII("encoder");
-  if (command.HasSwitch("encoder") && encoder != "vpl" && encoder != "openh264") {
+  if (command.HasSwitch("encoder") && encoder != "vpl" &&
+      encoder != "openh264") {
     LOG(ERROR) << "--encoder must be vpl or openh264";
     return 1;
   }
@@ -86,7 +87,10 @@ int main(int argc, char** argv) {
     throttling.StateMask = 0;
     ::SetProcessInformation(::GetCurrentProcess(), ProcessPowerThrottling,
                             &throttling, sizeof(throttling));
+    base::Time::EnableHighResolutionTimer(true);
     base::Time::ActivateHighResolutionTimer(true);
+    LOG(INFO) << "PRTS hires timer active="
+              << base::Time::IsHighResolutionTimerInUse();
   }
   base::SingleThreadTaskExecutor executor;
   base::FieldTrialList field_trials;
@@ -123,8 +127,9 @@ int main(int argc, char** argv) {
       prts::Clock clock;
       prts::Signaling signaling;
       auto encoder_state = std::make_shared<prts::VplEncoderState>();
-      auto source = synthetic ? nullptr :
-          std::make_shared<prts::D3DFrameSource>(encoder_state, fps);
+      auto source = synthetic ? nullptr
+                              : std::make_shared<prts::D3DFrameSource>(
+                                    encoder_state, fps);
       std::unique_ptr<prts::BrowserSession> browser;
       if (!synthetic) {
         browser = std::make_unique<prts::BrowserSession>(
@@ -218,5 +223,9 @@ int main(int argc, char** argv) {
   io.Stop();
   webrtc::CleanupSSL();
   base::ThreadPoolInstance::Get()->Shutdown();
+  if (!command.HasSwitch("no-hires-timer")) {
+    base::Time::ActivateHighResolutionTimer(false);
+    base::Time::EnableHighResolutionTimer(false);
+  }
   return result;
 }

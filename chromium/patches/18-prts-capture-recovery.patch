@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 16:39:45 +0800
+Subject: [PATCH] prts: recreate captures after a GPU/viz restart
+
+Disconnect handlers keep the capture sessions and locks, reconnect the
+capturer and ask the endpoint to drop texture caches and send an IDR.
+(To be folded into 02-prts-browser at the next split.)
+
+Patch-Name: 18-prts-capture-recovery
+
+diff --git a/chrome/browser/prts/prts_capture.cc b/chrome/browser/prts/prts_capture.cc
+index 53fa5fa650..9c5f4204f1 100644
+--- a/chrome/browser/prts/prts_capture.cc
++++ b/chrome/browser/prts/prts_capture.cc
+@@ -25,6 +25,7 @@
+ #include "base/win/scoped_handle.h"
+ #include "chrome/browser/prts/prts_switches.h"
+ #include "components/viz/common/surfaces/video_capture_target.h"
++#include "components/viz/host/client_frame_sink_video_capturer.h"
+ #include "components/viz/host/host_frame_sink_manager.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/gpu_data_manager.h"
+@@ -155,8 +156,14 @@ class FrameConsumer final : public viz::mojom::FrameSinkVideoConsumer {
+   void OnNewCaptureVersion(const media::CaptureVersion& version) override {}
+   void OnFrameWithEmptyRegionCapture() override {}
+   void OnStopped() override {
+-    LOG(INFO) << "PRTS: capturer stopped";
+-    Disconnected();
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    // PRTS: This is a pool boundary, not the end of the endpoint session.
++    // The reconnecting client replays Start() after a Viz process crash.
++    LOG(INFO) << "PRTS: capture pool reset";
++    buffers_.clear();
++    if (sink_) {
++      sink_->Reset();
++    }
+   }
+   void OnLog(const std::string& message) override {
+     LOG(INFO) << "PRTS Viz: " << message;
+@@ -232,16 +239,27 @@ class PrtsCapture::Session {
+       : generation_(generation),
+         size_(host->GetBoundsInPixels().size()),
+         capture_lock_(host->CreateVideoCaptureLock()) {
+-    mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumer> consumer;
+     consumer_.emplace(
+-        frame_runner, consumer.InitWithNewPipeAndPassReceiver(),
++        frame_runner, consumer_remote_.BindNewPipeAndPassReceiver(),
+         std::move(sink), size_,
+         base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
+                            std::move(stopped)));
+     auto* compositor = host->compositor();
+-    compositor->context_factory()
+-        ->GetHostFrameSinkManager()
+-        ->CreateVideoCapturer(capturer_.BindNewPipeAndPassReceiver());
++    // PRTS: Keep the UI-owned client and capture lock across Viz restarts.
++    // Use one persistent forwarding pipe so a pool reset is ordered after old
++    // frames and before replacement frames on the non-UI consumer sequence.
++    auto* manager = compositor->context_factory()->GetHostFrameSinkManager();
++    auto establish = base::BindRepeating(
++        [](viz::HostFrameSinkManager* manager,
++           viz::mojom::FrameSinkVideoConsumer* consumer,
++           mojo::PendingReceiver<viz::mojom::FrameSinkVideoCapturer> receiver) {
++          LOG(INFO) << "PRTS: establishing Viz capturer";
++          consumer->OnStopped();
++          manager->CreateVideoCapturer(std::move(receiver));
++        },
++        base::Unretained(manager), base::Unretained(consumer_remote_.get()));
++    capturer_ = std::make_unique<viz::ClientFrameSinkVideoCapturer>(
++        std::move(establish));
+     capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
+     capturer_->SetMinCapturePeriod(base::Seconds(1) / fps);
+     capturer_->SetMinSizeChangePeriod(base::TimeDelta());
+@@ -251,14 +269,15 @@ class PrtsCapture::Session {
+     capturer_->ChangeTarget(
+         viz::VideoCaptureTarget(compositor->frame_sink_id()), 0);
+     capturer_->Start(
+-        std::move(consumer),
++        consumer_remote_.get(),
+         software
+             ? viz::mojom::BufferFormatPreference::kDefault
+             : viz::mojom::BufferFormatPreference::kPreferMappableSharedImage);
+   }
+   ~Session() {
+-    capturer_->Stop();
++    capturer_->StopAndResetConsumer();
+     capturer_.reset();
++    consumer_remote_.reset();
+     consumer_.Reset();
+   }
+   void Resize(const gfx::Size& size) {
+@@ -274,11 +293,12 @@ class PrtsCapture::Session {
+   }
+ 
+   const uint64_t generation_;
+-  mojo::Remote<viz::mojom::FrameSinkVideoCapturer> capturer_;
++  std::unique_ptr<viz::ClientFrameSinkVideoCapturer> capturer_;
+ 
+  private:
+   gfx::Size size_;
+   std::unique_ptr<aura::WindowTreeHost::VideoCaptureLock> capture_lock_;
++  mojo::Remote<viz::mojom::FrameSinkVideoConsumer> consumer_remote_;
+   base::SequenceBound<FrameConsumer> consumer_;
+ };
+ 
+@@ -331,7 +351,6 @@ void PrtsCapture::StartCapture(uint32_t id,
+   auto session = std::make_unique<Session>(host, fps, generation, frame_runner_,
+                                            std::move(sink), stopped,
+                                            hello->software_compositing);
+-  session->capturer_.set_disconnect_handler(stopped);
+   sessions_.emplace(id, std::move(session));
+ }
+ void PrtsCapture::StopCapture(uint32_t id) {
