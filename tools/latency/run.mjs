@@ -1,6 +1,6 @@
 // Glass-to-glass harness runner: control-plane + mock endpoint (headless Edge/Chrome) + viewer (headless, any Chromium
 // incl. Chrome 89) on this machine; prints P50/P80/P95/P99 and writes the per-frame CSV.
-//   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off]
+//   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off] [--mock-my <source px>] [--my <viewer override px>]
 //        [--no-mock: use the real endpoint started by the CP via ENDPOINT_PATH/ENDPOINT_ARGS] [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
 // Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
 import { spawn, spawnSync } from 'node:child_process';
@@ -17,6 +17,8 @@ const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', 30),
 const kbps = +arg('kbps', 12000), delay = arg('delay', '0');
 const viewerExe = arg('viewer-browser', EDGE), mockExe = arg('mock-browser', EDGE);
 const base = `http://127.0.0.1:${port}`;
+const mockMy = arg('mock-my', null), my = arg('my', null);
+const markerQuery = value => value == null ? '' : '&my=' + encodeURIComponent(value);
 fs.mkdirSync(TMP, { recursive: true });
 const kids = [];
 const cleanup = () => { for (const k of kids) { try { spawnSync('taskkill', ['/PID', String(k.pid), '/T', '/F'], { stdio: 'ignore' }); } catch {} } };
@@ -43,9 +45,9 @@ if (!(await up())) {
   for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
 }
 const before = (await (await fetch(base + '/api/report')).json()).length;
-if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}`);
+if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
-browser(viewerExe, 'viewer', `${base}/?measure=1&autoinput=1&report=${secs}&delay=${delay}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&autoinput=1&report=${secs}&delay=${delay}${markerQuery(my)}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -65,6 +67,7 @@ fs.writeFileSync(csv.replace(/\.csv$/, '.json'), JSON.stringify(report, null, 2)
 console.log(`viewer UA: ${report.ua}`);
 console.log(`hint: ${report.hint}; codec ${report.stats?.codec} ${report.stats?.decoder} ${report.stats?.frameWidth}x${report.stats?.frameHeight}; sender ${report.sender?.backend}`);
 console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}, dupes ${s.dupes}, skipped ${s.skipped}; clock offset ${f(s.offset)} ms, min RTT ${s.minRtt?.toFixed(2)} ms`);
+console.log(`marker row ${s.markerY ?? 'unknown'} source px; alignment scans ${s.markerScans ?? 'unknown'}`);
 console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
 if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n})`);

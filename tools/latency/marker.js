@@ -8,6 +8,9 @@
   else root.RKMarker = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
+  // Source fixture hook: /mock?my=87 (or remote-page.html?my=87) shifts the drawn marker.
+  var my = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('my') : null;
+  var drawY = my != null && my.trim() !== '' && Number.isFinite(+my) && +my >= 0 ? Math.floor(+my) : 0;
   var SYNC = 2, BITS = 72, CELLS = SYNC + BITS, TWO32 = 4294967296;
   function cellFor(frameWidth) { return Math.max(4, Math.round(frameWidth / 160)); }
   function crc8(bytes, n) {
@@ -29,11 +32,11 @@
   // Draw onto a 2D context. m = {frameId, t (ms, any magnitude; low 32 bits kept), inputSeq}.
   function draw(ctx, frameWidth, m) {
     var cell = cellFor(frameWidth), b = pack({ frameId: m.frameId & 0xffff, t: m.t % TWO32, inputSeq: m.inputSeq & 0xffff });
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, CELLS * cell + cell, cell * 2);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, drawY, CELLS * cell + cell, cell * 2);
     for (var i = 0; i < CELLS; i++) {
       var bit = i === 0 ? 1 : i === 1 ? 0 : (b[(i - SYNC) >> 3] >> (7 - ((i - SYNC) & 7))) & 1;
       ctx.fillStyle = bit ? '#fff' : '#000';
-      ctx.fillRect(i * cell, 0, cell, cell);
+      ctx.fillRect(i * cell, drawY, cell, cell);
     }
     return cell;
   }
@@ -62,6 +65,24 @@
     if (crc8(b, 8) !== b[8]) return null;
     return { frameId: (b[0] << 8) | b[1], t: ((b[2] << 24) | (b[3] << 16) | (b[4] << 8) | b[5]) >>> 0, inputSeq: (b[6] << 8) | b[7] };
   }
+  // Search candidate origins in source pixels. decode rejects the two sync cells first, then CRC.
+  // Pick the middle of a valid vertical run to avoid locking onto a marker's antialiased edge.
+  function findRow(data, stride, cell, maxY) {
+    if (!data || !Number.isInteger(stride) || stride <= 0 || !Number.isFinite(cell) || cell <= 0 ||
+        !Number.isFinite(maxY) || maxY < 0) return null;
+    maxY = Math.min(Math.floor(maxY), Math.floor(data.length / (stride * 4) - cell));
+    var first = -1, last = -1;
+    for (var y = 0; y <= maxY; y++) {
+      var m = decode(data.subarray(y * stride * 4), stride, cell);
+      // Preserve the original sampling exactly when the marker is already at the frame origin.
+      if (m && y === 0) return { y: 0, marker: m };
+      if (m) { if (first < 0) first = y; last = y; }
+      else if (first >= 0) break;
+    }
+    if (first < 0) return null;
+    var row = Math.floor((first + last) / 2);
+    return { y: row, marker: decode(data.subarray(row * stride * 4), stride, cell) };
+  }
   // Unwrap a 32-bit ms value to the full value nearest to `ref` (ms).
   function unwrap(t32, ref) {
     var base = ref - (ref % TWO32), v = base + t32;
@@ -76,5 +97,5 @@
     out.max = a.length ? a[a.length - 1] : null; out.n = a.length;
     return out;
   }
-  return { CELLS: CELLS, cellFor: cellFor, crc8: crc8, pack: pack, draw: draw, decode: decode, unwrap: unwrap, percentiles: percentiles };
+  return { CELLS: CELLS, cellFor: cellFor, crc8: crc8, pack: pack, draw: draw, decode: decode, findRow: findRow, unwrap: unwrap, percentiles: percentiles };
 });

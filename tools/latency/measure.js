@@ -8,6 +8,11 @@
     this.video = video; this.clock = clock; this.senderWidth = null; // Unknown sender width defaults to videoWidth.
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
     this.inputSent = {}; this.lastInputSeq = -1; this.lastFrameId = -1; this.dupes = 0; this.skipped = 0;
+    // my is a marker origin in decoded source pixels; absent/invalid means auto-detect.
+    var my = new URLSearchParams(location.search).get('my');
+    this.markerOverride = my != null && my.trim() !== '' && Number.isFinite(+my) && +my >= 0 ? Math.floor(+my) : null;
+    this.markerY = this.markerOverride; this.markerFailures = 0; this.markerScans = 0;
+    this.markerWidth = 0; this.markerHeight = 0; this.markerCell = 0;
     this.canvas = document.createElement('canvas');
     // Chrome 89 ignores this newer dictionary hint; ordinary 2D readback remains the fallback.
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -38,10 +43,32 @@
     if (!Number.isFinite(senderWidth) || senderWidth <= 0) return;
     var cell = RKMarker.cellFor(senderWidth) * w / senderWidth, cw = Math.ceil(RKMarker.CELLS * cell) + 2, ch = Math.ceil(cell) + 1;
     if (cw > w || ch > v.videoHeight) { this.failed++; return; }
-    if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
-    this.ctx.drawImage(v, 0, 0, cw, ch, 0, 0, cw, ch);
-    var m = RKMarker.decode(this.ctx.getImageData(0, 0, cw, ch).data, cw, cell);
-    if (!m) { this.failed++; return; }
+    if (w !== this.markerWidth || v.videoHeight !== this.markerHeight || cell !== this.markerCell) {
+      this.markerWidth = w; this.markerHeight = v.videoHeight; this.markerCell = cell;
+      this.markerY = this.markerOverride; this.markerFailures = 0;
+    }
+    var m = null;
+    if (this.markerY == null) {
+      // Only search while unlocked. decode checks x < 2 cells for sync before reading data/CRC.
+      var maxY = Math.floor(Math.min(200, v.videoHeight / 4, v.videoHeight - ch));
+      var scanHeight = maxY + ch;
+      if (this.canvas.width !== cw || this.canvas.height !== scanHeight) { this.canvas.width = cw; this.canvas.height = scanHeight; }
+      this.ctx.drawImage(v, 0, 0, cw, scanHeight, 0, 0, cw, scanHeight);
+      var found = RKMarker.findRow(this.ctx.getImageData(0, 0, cw, scanHeight).data, cw, cell, maxY);
+      this.markerScans++;
+      if (found) { this.markerY = found.y; m = found.marker; }
+    } else if (this.markerY + ch <= v.videoHeight) {
+      if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
+      this.ctx.drawImage(v, 0, this.markerY, cw, ch, 0, 0, cw, ch);
+      m = RKMarker.decode(this.ctx.getImageData(0, 0, cw, ch).data, cw, cell);
+    }
+    if (!m) {
+      this.failed++;
+      // Five consecutive invalid decodes drop the automatic lock; an explicit override stays fixed.
+      if (++this.markerFailures >= 5 && this.markerOverride == null) this.markerY = null;
+      return;
+    }
+    this.markerFailures = 0;
     this.decoded++;
     if (m.frameId === this.lastFrameId) { this.dupes++; return; }
     if (this.lastFrameId >= 0) { var gap = (m.frameId - this.lastFrameId) & 0xffff; if (gap > 1 && gap < 1000) this.skipped += gap - 1; }
@@ -67,6 +94,7 @@
   RKMeasure.prototype.summary = function () {
     return {
       precise: this.precise, frames: this.frames, decoded: this.decoded, failed: this.failed, dupes: this.dupes, skipped: this.skipped,
+      markerY: this.markerY, markerScans: this.markerScans,
       offset: this.clock.offset, minRtt: this.clock.minRtt,
       lat: RKMarker.percentiles(this.lat, [50, 80, 95, 99]), rx: RKMarker.percentiles(this.rx, [50, 80, 95, 99]), i2p: RKMarker.percentiles(this.i2p, [50, 80, 95, 99])
     };

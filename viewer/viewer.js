@@ -1,5 +1,6 @@
 // remotekit viewer (D13, design/06-protocol.md). Must run on Chrome 89+: newer APIs only behind feature detection.
 // URL params: instance, token, measure=1 (pixel-marker latency), report=<s> (POST summary to /api/report after s seconds),
+//             my=<source px> (fixed marker row; default auto-detect),
 //             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=0 (hide overlay), cp=<host:port>.
 (function () {
   'use strict';
