@@ -3,7 +3,7 @@
      top-left of the page every animation frame with the sender wall clock (same machine as the endpoint).
      Use with prts_endpoint --app so the page origin is the video frame origin. -->
 <meta charset="utf-8"><title>PRTS latency page</title>
-<style>html,body{margin:0;height:100%;overflow:hidden;background:#246}canvas{display:block}</style>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#246}canvas{display:block;width:100vw;height:100vh}</style>
 <canvas id="c"></canvas>
 <script src="marker.js"></script>
 <script>
@@ -16,6 +16,9 @@ function tick() {
   frameId++; x = (x + 8) % c.width;
   ctx.fillStyle = '#246'; ctx.fillRect(0, 0, c.width, c.height);
   ctx.fillStyle = '#fc0'; ctx.fillRect(x, c.height / 3, 60, c.height / 3);
+  // A large, compression-tolerant target for real input-to-photon sampling.
+  ctx.fillStyle = inputs % 2 ? '#d020d0' : '#20d020';
+  ctx.fillRect(c.width / 2, c.height / 4, c.width / 2, c.height / 2);
   ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
   ctx.fillText('PRTS remote latency page  frame ' + frameId + '  inputs ' + inputs, 20, c.height - 40);
   RKMarker.draw(ctx, c.width, { frameId, t: performance.timeOrigin + performance.now(), inputSeq: inputs });

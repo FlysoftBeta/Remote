@@ -47,7 +47,8 @@ if (!(await up())) {
 const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
-browser(viewerExe, 'viewer', `${base}/?measure=1&autoinput=1&report=${secs}&delay=${delay}${markerQuery(my)}`, !!arg('old-headless'));
+const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
+browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}${markerQuery(my)}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -70,7 +71,7 @@ console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}
 console.log(`marker row ${s.markerY ?? 'unknown'} source px; alignment scans ${s.markerScans ?? 'unknown'}`);
 console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
-if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n})`);
+if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
 console.log(`csv: ${csv}`);
 process.exit(0);

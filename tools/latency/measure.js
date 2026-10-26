@@ -13,11 +13,28 @@
     this.markerOverride = my != null && my.trim() !== '' && Number.isFinite(+my) && +my >= 0 ? Math.floor(+my) : null;
     this.markerY = this.markerOverride; this.markerFailures = 0; this.markerScans = 0;
     this.markerWidth = 0; this.markerHeight = 0; this.markerCell = 0;
+    this.colorInput = new URLSearchParams(location.search).get('i2p') === 'colour';
+    this.colorState = null; this.colorPending = null;
+    this.colorAttempts = 0; this.colorTimeouts = 0; this.colorRows = [];
+    if (this.colorInput) {
+      this.colorCanvas = document.createElement('canvas');
+      this.colorCanvas.width = this.colorCanvas.height = 1;
+      this.colorCtx = this.colorCanvas.getContext('2d', { willReadFrequently: true });
+    }
     this.canvas = document.createElement('canvas');
     // Chrome 89 ignores this newer dictionary hint; ordinary 2D readback remains the fallback.
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.precise = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
     var self = this;
+    if (this.colorInput) setInterval(function () {
+      var input = root.rk && root.rk.input;
+      if (!input || !input.enabled || self.colorState == null || self.colorPending != null) return;
+      // sendKey uses the viewer's normal binary input DataChannel path. One
+      // outstanding key avoids attributing multiple inputs to one decoded flip.
+      self.colorPending = performance.now(); self.colorAttempts++;
+      input.sendKey({ key: 'i', code: 'KeyI', keyCode: 73, location: 0 }, 0);
+      input.sendKey({ key: 'i', code: 'KeyI', keyCode: 73, location: 0 }, 1);
+    }, 500);
     if (this.precise) {
       var cb = function (now, meta) { self.onFrame(meta.expectedDisplayTime || now, meta); video.requestVideoFrameCallback(cb); };
       video.requestVideoFrameCallback(cb);
@@ -32,12 +49,31 @@
     Object.keys(pending).forEach(function (seq) { if (now - pending[seq] > 5000) delete pending[seq]; });
   };
   RKMeasure.prototype.noteInput = function (seq) {
+    if (this.colorInput) return;
     var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
   };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
     this.expireInputs(RKClock.wall());
     var v = this.video, w = v.videoWidth;
     if (!w || this.clock.offset == null) return;
+    if (this.colorInput) {
+      // This point is inside the fixture's right-hand colour block in tab mode,
+      // including its browser UI inset. Read decoded video, never the source DOM.
+      this.colorCtx.drawImage(v, Math.floor(w * 0.75), Math.floor(v.videoHeight * 0.5), 1, 1, 0, 0, 1, 1);
+      var pixel = this.colorCtx.getImageData(0, 0, 1, 1).data;
+      var state = pixel[1] - pixel[0] > 60 ? 0 : pixel[0] - pixel[1] > 60 ? 1 : null;
+      var detected = performance.now();
+      if (state != null && this.colorState != null && state !== this.colorState && this.colorPending != null) {
+        var elapsed = detected - this.colorPending;
+        this.i2p.push(elapsed);
+        this.colorRows.push({ sent: this.colorPending, detected: detected, latency: elapsed, state: state });
+        this.colorPending = null;
+      }
+      if (state != null) this.colorState = state;
+      if (this.colorPending != null && detected - this.colorPending > 5000) {
+        this.colorTimeouts++; this.colorPending = null;
+      }
+    }
     this.frames++;
     var senderWidth = this.senderWidth == null ? w : this.senderWidth;
     if (!Number.isFinite(senderWidth) || senderWidth <= 0) return;
@@ -79,7 +115,8 @@
     this.lat.push(lat);
     // rVFC receiveTime (WebRTC sources): sender draw -> last packet received, i.e. without decode/render/display.
     if (meta && meta.receiveTime) this.rx.push(performance.timeOrigin + meta.receiveTime - this.clock.toLocal(sentRemote));
-    var row = { fid: m.frameId, lat: +lat.toFixed(2), rtt: this.clock.minRtt != null ? +this.clock.minRtt.toFixed(2) : '' , i2p: '' };
+    var row = { fid: m.frameId, lat: +lat.toFixed(2), rtt: this.clock.minRtt != null ? +this.clock.minRtt.toFixed(2) : '' ,
+      i2p: this.colorInput && elapsed != null ? +elapsed.toFixed(2) : '' };
     var self = this;
     Object.keys(this.inputSent).forEach(function (seq) {
       // Half-range comparison orders 16-bit seqs across wrap; pending entries expire after five seconds.
@@ -95,6 +132,8 @@
     return {
       precise: this.precise, frames: this.frames, decoded: this.decoded, failed: this.failed, dupes: this.dupes, skipped: this.skipped,
       markerY: this.markerY, markerScans: this.markerScans,
+      inputMethod: this.colorInput ? 'DataChannel keydown to decoded colour flip' : 'marker sequence',
+      inputAttempts: this.colorAttempts, inputTimeouts: this.colorTimeouts, inputSamples: this.colorRows,
       offset: this.clock.offset, minRtt: this.clock.minRtt,
       lat: RKMarker.percentiles(this.lat, [50, 80, 95, 99]), rx: RKMarker.percentiles(this.rx, [50, 80, 95, 99]), i2p: RKMarker.percentiles(this.i2p, [50, 80, 95, 99])
     };
@@ -103,6 +142,7 @@
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {};
     this.lastInputSeq = this.lastFrameId = -1;
     this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0;
+    this.colorPending = null; this.colorAttempts = this.colorTimeouts = 0; this.colorRows = [];
   };
   RKMeasure.prototype.csv = function () {
     return 'fid,lat_ms,min_rtt_ms,i2p_ms\n' + this.rows.map(function (r) { return [r.fid, r.lat, r.rtt, r.i2p].join(','); }).join('\n') + '\n';
