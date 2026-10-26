@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <chrono>
 #include <climits>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -231,15 +230,16 @@ struct Parameters {
   mfxExtBuffer* extensions[3]{};
 };
 
-void SetRateFields(Parameters& params, int kbps, int fps) {
+void SetRateFields(Parameters& params, int kbps, int max_kbps, int fps) {
   auto& m = params.p.mfx;
-  m.TargetKbps = m.MaxKbps = static_cast<mfxU16>(kbps);
+  m.TargetKbps = static_cast<mfxU16>(kbps);
+  m.MaxKbps = static_cast<mfxU16>(max_kbps);
   m.FrameInfo.FrameRateExtN = fps;
   m.FrameInfo.FrameRateExtD = 1;
-  // Request one nominal frame of VBV; Query normally raises to driver minimum.
-  m.BufferSizeInKB = static_cast<mfxU16>((kbps + 8 * fps - 1) / (8 * fps));
+  // Allocate once for the negotiated maximum; rate resets never change VBV.
+  m.BufferSizeInKB = static_cast<mfxU16>((max_kbps + 8 * fps - 1) / (8 * fps));
   m.InitialDelayInKB = m.BufferSizeInKB / 2;
-  params.co2.MaxFrameSize = static_cast<mfxU32>(kbps * 1000 / (8 * fps));
+  params.co2.MaxFrameSize = static_cast<mfxU32>(max_kbps * 1000 / (8 * fps));
 }
 
 void LogParameters(const char* phase, mfxStatus status, const Parameters& p) {
@@ -412,11 +412,28 @@ bool VplEncoderState::NativeActive(ID3D11Device* device) const {
 VplNativeFrameBuffer::VplNativeFrameBuffer(ComPtr<ID3D11Texture2D> texture,
                                            int width,
                                            int height,
-                                           std::shared_ptr<void> lease)
+                                           std::shared_ptr<void> lease,
+                                           ComPtr<ID3D11Query> completion,
+                                           base::TimeTicks submitted)
     : texture_(std::move(texture)),
       width_(width),
       height_(height),
-      lease_(std::move(lease)) {}
+      lease_(std::move(lease)),
+      completion_(std::move(completion)),
+      submitted_(submitted) {}
+void VplNativeFrameBuffer::RecordVppCompletion(
+    ID3D11DeviceContext* context) const {
+  if (!completion_ || submitted_.is_null())
+    return;
+  BOOL complete = FALSE;
+  if (context->GetData(completion_.Get(), &complete, sizeof(complete),
+                       D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+      complete) {
+    // Upper bound: includes queue handoff and the bitstream synchronization.
+    LatencyStats::Get().Add("vpp_complete_observed", submitted_,
+                            base::TimeTicks::Now());
+  }
+}
 VplNativeFrameBuffer::~VplNativeFrameBuffer() = default;
 webrtc::VideoFrameBuffer::Type VplNativeFrameBuffer::type() const {
   return Type::kNative;
@@ -647,6 +664,9 @@ class VplEncoder::Impl {
     height_ = height;
     kbps_ = kbps;
     fps_ = fps;
+    frames_ = 0;
+    last_reset_ = base::TimeTicks::Now();
+    check_reset_idr_ = false;
     if (!OpenDevice(std::move(supplied)) || !OpenSession())
       return false;
     Parameters requested;
@@ -656,7 +676,7 @@ class VplEncoder::Impl {
     m.CodecId = MFX_CODEC_AVC;
     m.CodecProfile = MFX_PROFILE_AVC_CONSTRAINED_BASELINE;
     // Keep the true SPS level despite nominal 42e01f SDP offer.
-    m.CodecLevel = AvcLevel(width, height, fps, kbps);
+    m.CodecLevel = AvcLevel(width, height, fps, max_kbps_);
     if (!m.CodecLevel)
       return false;
     m.LowPower = MFX_CODINGOPTION_ON;
@@ -679,7 +699,7 @@ class VplEncoder::Impl {
     requested.vui.ColourDescriptionPresent = 1;
     requested.vui.ColourPrimaries = requested.vui.TransferCharacteristics =
         requested.vui.MatrixCoefficients = 1;
-    SetRateFields(requested, kbps, fps);
+    SetRateFields(requested, kbps, max_kbps_, fps);
     Parameters queried(requested);
     mfxStatus status = MFXVideoENCODE_Query(session_, &requested.p, &queried.p);
     LogParameters("Query", status, queried);
@@ -756,66 +776,63 @@ class VplEncoder::Impl {
     device_.Reset();
   }
 
-  bool TryReset(Parameters wanted) {
+  bool TryReset(int kbps, bool with_option) {
+    Parameters wanted(parameters_);
+    // These are the only fields allowed to change during seamless reset.
+    wanted.p.mfx.TargetKbps = static_cast<mfxU16>(kbps);
+    wanted.p.mfx.MaxKbps = static_cast<mfxU16>(max_kbps_);
     mfxExtEncoderResetOption reset{};
     reset.Header = {MFX_EXTBUFF_ENCODER_RESET_OPTION, sizeof(reset)};
     reset.StartNewSequence = MFX_CODINGOPTION_OFF;
     mfxExtBuffer* extensions[] = {wanted.extensions[0], wanted.extensions[1],
                                   wanted.extensions[2],
                                   reinterpret_cast<mfxExtBuffer*>(&reset)};
-    wanted.p.ExtParam = extensions;
-    wanted.p.NumExtParam = 4;
-    Parameters queried(wanted);
-    mfxExtEncoderResetOption query_reset = reset;
-    mfxExtBuffer* query_extensions[] = {
-        queried.extensions[0], queried.extensions[1], queried.extensions[2],
-        reinterpret_cast<mfxExtBuffer*>(&query_reset)};
-    queried.p.ExtParam = query_extensions;
-    queried.p.NumExtParam = 4;
-    mfxStatus status = MFXVideoENCODE_Query(session_, &wanted.p, &queried.p);
-    if (status < 0 || query_reset.StartNewSequence != MFX_CODINGOPTION_OFF ||
-        !Compatible(wanted, queried)) {
-      return false;
+    if (with_option) {
+      wanted.p.ExtParam = extensions;
+      wanted.p.NumExtParam = 4;
     }
-    status = MFXVideoENCODE_Reset(session_, &queried.p);
-    LogParameters("Reset-no-IDR", status, queried);
+    ++reset_attempts_;
+    const mfxStatus status = MFXVideoENCODE_Reset(session_, &wanted.p);
+    LogParameters(with_option ? "Reset-no-IDR" : "Reset-plain", status, wanted);
     Parameters actual;
-    if (status < 0 ||
-        MFXVideoENCODE_GetVideoParam(session_, &actual.p) != MFX_ERR_NONE ||
-        !Compatible(wanted, actual)) {
+    const mfxStatus readback =
+        MFXVideoENCODE_GetVideoParam(session_, &actual.p);
+    LogParameters("Reset-readback", readback, actual);
+    if (status < 0)
+      return false;
+    ++resets_;
+    if (readback != MFX_ERR_NONE || !Compatible(wanted, actual) ||
+        actual.p.mfx.BufferSizeInKB != parameters_.p.mfx.BufferSizeInKB ||
+        actual.p.mfx.InitialDelayInKB != parameters_.p.mfx.InitialDelayInKB) {
+      // A successful but incompatible reset cannot safely keep streaming.
+      Fail("reset readback mismatch", readback);
       return false;
     }
     parameters_ = actual;
+    kbps_ = actual.p.mfx.TargetKbps;
+    check_reset_idr_ = true;
     return true;
   }
 
-  bool ResetRate(int kbps, int fps) {
-    if (kbps == kbps_ && fps == fps_)
-      return true;
-    Parameters wanted(parameters_);
-    SetRateFields(wanted, kbps, fps);
-    wanted.p.mfx.BufferSizeInKB = parameters_.p.mfx.BufferSizeInKB;
-    wanted.p.mfx.InitialDelayInKB = parameters_.p.mfx.InitialDelayInKB;
-    wanted.p.mfx.CodecLevel = AvcLevel(width_, height_, fps, kbps);
-    if (wanted.p.mfx.CodecLevel == parameters_.p.mfx.CodecLevel) {
-      // Changing caps/VBV is not guaranteed to support seamless reset. Retry
-      // with only TargetKbps/MaxKbps changed before considering a new sequence.
-      if (TryReset(wanted)) {
-        kbps_ = kbps;
-        fps_ = fps;
-        return true;
-      }
-      Parameters bitrate_only(parameters_);
-      bitrate_only.p.mfx.TargetKbps = bitrate_only.p.mfx.MaxKbps =
-          static_cast<mfxU16>(kbps);
-      if (fps == fps_ && TryReset(bitrate_only)) {
-        kbps_ = kbps;
-        return true;
-      }
+  void ResetRate(int kbps) {
+    if (hold_max_)
+      kbps = max_kbps_;
+    const auto now = base::TimeTicks::Now();
+    // Startup GCC churn must not interrupt the first pictures. Even on legacy
+    // drivers, limit accepted rate changes to >=20% and one every two seconds.
+    if (frames_ < static_cast<uint64_t>(2 * fps_) ||
+        now - last_reset_ < base::Seconds(2) || kbps == kbps_ ||
+        (!hold_max_ && std::abs(kbps - kbps_) * 5 < kbps_)) {
+      ++rate_ignored_;
+      return;
     }
-    RTC_LOG(LS_WARNING) << "PRTS VPL seamless reset unavailable; reinit + IDR"
-                        << " kbps=" << kbps << " fps=" << fps;
-    return Start(width_, height_, kbps, fps);
+    last_reset_ = now;
+    if (!TryReset(kbps, true) && !failed_ && !TryReset(kbps, false)) {
+      // Keep the initialized maximum-rate VBR encoder if the runtime rejects
+      // seamless changes. Never rebuild merely because GCC changed its rate.
+      hold_max_ = true;
+      LOG(WARNING) << "PRTS VPL rate reset rejected; retain VBR kbps=" << kbps_;
+    }
   }
 
   struct Slot {
@@ -911,6 +928,11 @@ class VplEncoder::Impl {
       if (!Start(frame.width(), frame.height(), kbps_, fps_, capture_device))
         return Fail("resize/device reinit");
     }
+    if (hold_max_ && kbps_ != max_kbps_) {
+      ResetRate(max_kbps_);
+      if (failed_)
+        return WEBRTC_VIDEO_CODEC_FALLBACK_SOFTWARE;
+    }
     Slot* slot = Prepare(frame);
     if (!slot)
       return Fail("input surface");
@@ -948,6 +970,9 @@ class VplEncoder::Impl {
     status = MFXVideoCORE_SyncOperation(session_, sync, 1000);
     if (status != MFX_ERR_NONE)
       return Fail("SyncOperation", status);
+    if (const auto* native =
+            VplNativeFrameBuffer::From(*frame.video_frame_buffer()))
+      native->RecordVppCompletion(context_.Get());
     if (!bits.DataLength || bits.TimeStamp != slot->surface.Data.TimeStamp ||
         bits.DataOffset > bits.MaxLength ||
         bits.DataLength > bits.MaxLength - bits.DataOffset ||
@@ -978,6 +1003,31 @@ class VplEncoder::Impl {
     }
     if (idr && (!sps || !pps))
       return Fail("IDR without SPS/PPS");
+    ++frames_;
+    encoded_bytes_ += bits.DataLength;
+    if (idr)
+      ++idrs_;
+    if (check_reset_idr_) {
+      if (idr && !force_idr_) {
+        hold_max_ = true;
+        LOG(WARNING)
+            << "PRTS VPL runtime inserted IDR after reset; hold max VBR";
+      }
+      check_reset_idr_ = false;
+    }
+    const auto stats_now = base::TimeTicks::Now();
+    if (stats_now - stats_start_ >= base::Seconds(5)) {
+      LOG(INFO) << "PRTS VPL stats5s frames=" << frames_
+                << " resets=" << resets_ << " attempts=" << reset_attempts_
+                << " IDRs=" << idrs_ << " ignored=" << rate_ignored_
+                << " send_kbps="
+                << encoded_bytes_ * 8 /
+                       (stats_now - stats_start_).InMillisecondsF()
+                << " target_kbps=" << kbps_ << " max_kbps=" << max_kbps_
+                << " hold_max=" << hold_max_;
+      resets_ = reset_attempts_ = idrs_ = rate_ignored_ = encoded_bytes_ = 0;
+      stats_start_ = stats_now;
+    }
     if (idr) {
       LOG(INFO) << "PRTS VPL IDR " << width_ << "x" << height_
                 << " bytes=" << bits.DataLength << " SPS=" << sps
@@ -1050,7 +1100,13 @@ class VplEncoder::Impl {
   int height_ = 0;
   int kbps_ = 0;
   int fps_ = 0;
-  int max_fps_ = 60;
+  int max_kbps_ = 12000;
+  int min_kbps_ = 2000;
+  uint64_t frames_ = 0, resets_ = 0, reset_attempts_ = 0, idrs_ = 0;
+  uint64_t rate_ignored_ = 0, encoded_bytes_ = 0;
+  bool hold_max_ = false, check_reset_idr_ = false;
+  base::TimeTicks last_reset_;
+  base::TimeTicks stats_start_ = base::TimeTicks::Now();
   bool initialized_ = false;
   bool force_idr_ = true;
   bool failed_ = false;
@@ -1077,8 +1133,13 @@ int VplEncoder::InitEncode(const webrtc::VideoCodec* codec, const Settings&) {
         << "PRTS VPL unsupported configuration; fallback encoder=openh264";
     return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
   }
-  impl_->max_fps_ = codec->maxFramerate;
-  int kbps = static_cast<int>(std::clamp(codec->startBitrate, 1u, 20000u));
+  impl_->max_kbps_ =
+      static_cast<int>(std::clamp(codec->maxBitrate, 1u, 20000u));
+  impl_->min_kbps_ =
+      std::min(static_cast<int>(codec->minBitrate), impl_->max_kbps_);
+  // Prefer the negotiated VBR ceiling until the runtime accepts seamless rates.
+  int kbps = impl_->max_kbps_;
+  impl_->hold_max_ = impl_->check_reset_idr_ = false;
   impl_->paused_ = codec->startBitrate == 0;
   if (!impl_->Start(codec->width, codec->height, kbps, codec->maxFramerate)) {
     return impl_->Fail("InitEncode");
@@ -1105,18 +1166,13 @@ void VplEncoder::SetRates(const RateControlParameters& parameters) {
   impl_->paused_ = bps == 0;
   if (impl_->paused_)
     return;  // Zero-rate is pause, never reset an encoder to TargetKbps=0.
-  int fps = impl_->max_fps_;
-  if (std::isfinite(parameters.framerate_fps) && parameters.framerate_fps > 0) {
-    fps = std::clamp(
-        static_cast<int>(std::lround(std::min(parameters.framerate_fps, 60.0))),
-        1, impl_->max_fps_);
-  }
-  // Use the media allocation directly. Physical-link headroom belongs upstream;
-  // never reapply a hardcoded 10/12 factor to GCC's already allocated bitrate.
-  int kbps =
-      static_cast<int>(std::clamp((bps + 999ull) / 1000, 1ull, 20000ull));
-  if (!impl_->ResetRate(kbps, fps))
-    impl_->Fail("rate reset and rebuild");
+  // Keep the initialized frame-rate and buffer contract. GCC's rate updates
+  // must not change FrameRateExtN, MaxFrameSize, or SPS level.
+  int kbps = static_cast<int>(
+      std::clamp((bps + 999ull) / 1000,
+                 static_cast<unsigned long long>(std::max(1, impl_->min_kbps_)),
+                 static_cast<unsigned long long>(impl_->max_kbps_)));
+  impl_->ResetRate(kbps);
 }
 webrtc::VideoEncoder::EncoderInfo VplEncoder::GetEncoderInfo() const {
   EncoderInfo info;
@@ -1125,6 +1181,15 @@ webrtc::VideoEncoder::EncoderInfo VplEncoder::GetEncoderInfo() const {
   info.supports_native_handle = true;
   info.supports_simulcast = false;
   info.has_trusted_rate_controller = false;  // T1 demonstrates real overshoot.
+  // One ceiling entry avoids WebRTC interpolation replacing the minimum
+  // with 30 kbps. Untrusted QP still disables QP-based scaling; use the same
+  // negotiated bitrate limits as the software path, at every supported size.
+  if (impl_->state_) {
+    const int min_bps = impl_->state_->min_bitrate_bps.load();
+    const int max_bps = impl_->state_->max_bitrate_bps.load();
+    info.resolution_bitrate_limits.emplace_back(1920 * 1080, min_bps, min_bps,
+                                                max_bps);
+  }
   info.is_qp_trusted = false;
   info.scaling_settings = ScalingSettings::kOff;
   info.requested_resolution_alignment = 2;

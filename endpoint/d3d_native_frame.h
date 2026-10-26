@@ -8,7 +8,7 @@
 namespace prts {
 
 // Used only on the import queue. Owns a bounded pool, VP/enumerator, and
-// imported input views. Old output slots survive resize through each native
+// private BGRA input views. Old output slots survive resize through each native
 // buffer lease.
 class D3DNativeFramePool {
  public:

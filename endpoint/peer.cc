@@ -236,6 +236,10 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     }
     parameters.encodings[0].min_bitrate_bps = 2000000;
     parameters.encodings[0].max_bitrate_bps = 12000000;
+    owner_.encoder_state_->min_bitrate_bps.store(
+        *parameters.encodings[0].min_bitrate_bps);
+    owner_.encoder_state_->max_bitrate_bps.store(
+        *parameters.encodings[0].max_bitrate_bps);
     parameters.encodings[0].max_framerate = owner_.fps_;
     parameters.degradation_preference =
         base::CommandLine::ForCurrentProcess()->HasSwitch(

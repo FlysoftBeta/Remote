@@ -11,13 +11,11 @@
 #include <dxgi1_4.h>
 
 #include <algorithm>
-#include <chrono>
-#include <map>
-#include <thread>
 #include <utility>
 #include <vector>
 
 #include "base/logging.h"
+#include "prts_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/make_ref_counted.h"
 #include "third_party/webrtc_overrides/rtc_base/logging.h"
 
@@ -44,6 +42,9 @@ class D3DNativeFramePool::Impl {
 
   struct Slot {
     ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11Texture2D> bgra;
+    ComPtr<ID3D11VideoProcessorInputView> input;
+    ComPtr<ID3D11Query> done;
     ComPtr<ID3D11VideoProcessorOutputView> view;
   };
 
@@ -62,11 +63,11 @@ class D3DNativeFramePool::Impl {
     slots_.clear();  // Outstanding buffers retain the old slots/resources.
     processor_.Reset();
     enumerator_.Reset();
-    done_.Reset();
     width_ = width;
     height_ = height;
     source_width_ = source.Width;
     source_height_ = source.Height;
+    source_desc_ = source;
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC content{};
     content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
     content.InputFrameRate = {static_cast<UINT>(fps_), 1};
@@ -91,10 +92,6 @@ class D3DNativeFramePool::Impl {
     if (FAILED(hr = video_->CreateVideoProcessor(enumerator_.Get(), 0,
                                                  &processor_)))
       return Fail("CreateVideoProcessor", hr);
-    D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
-    if (FAILED(hr = device_->CreateQuery(&query, &done_)))
-      return Fail("CreateQuery", hr);
-
     RECT target{0, 0, Align16(width), Align16(height)};
     RECT destination{0, 0, width, height};
     video_context_->VideoProcessorSetOutputTargetRect(processor_.Get(), TRUE,
@@ -147,6 +144,21 @@ class D3DNativeFramePool::Impl {
       Fail("NV12 output slot", hr);
       return nullptr;
     }
+    desc = source_desc_;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    desc.CPUAccessFlags = desc.MiscFlags = 0;
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input{};
+    input.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    D3D11_QUERY_DESC query{D3D11_QUERY_EVENT, 0};
+    if (FAILED(hr = device_->CreateTexture2D(&desc, nullptr, &slot->bgra)) ||
+        FAILED(
+            hr = video_->CreateVideoProcessorInputView(
+                slot->bgra.Get(), enumerator_.Get(), &input, &slot->input)) ||
+        FAILED(hr = device_->CreateQuery(&query, &slot->done))) {
+      Fail("private BGRA slot", hr);
+      return nullptr;
+    }
     slots_.push_back(slot);
     return slot;
   }
@@ -177,86 +189,64 @@ class D3DNativeFramePool::Impl {
     auto slot = GetSlot(limit);
     if (!slot)
       return nullptr;  // Drop raw input, never an encoded reference picture.
-    auto it = inputs_.find(texture);
-    if (it == inputs_.end()) {
-      if (inputs_.size() >= 64)
-        ClearImports();
-      ComPtr<ID3D11VideoProcessorInputView> view;
-      D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input{};
-      input.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-      HRESULT hr = video_->CreateVideoProcessorInputView(
-          texture, enumerator_.Get(), &input, &view);
-      if (FAILED(hr)) {
-        Fail("shared BGRA input view", hr);
-        return nullptr;
-      }
-      it = inputs_.emplace(texture, std::move(view)).first;
-    }
-    // Allocate resources/views before acquiring the cross-process mutex.
-    auto started = std::chrono::steady_clock::now();
+    // All resources/views exist before acquiring the cross-process mutex.
+    const auto started = base::TimeTicks::Now();
     HRESULT hr = mutex->AcquireSync(0, 20);
-    if (hr != S_OK) {  // WAIT_TIMEOUT/WAIT_ABANDONED are nonnegative.
+    if (hr != S_OK) {
       if (hr != WAIT_TIMEOUT)
         Fail("AcquireSync", hr);
       return nullptr;
     }
-    auto acquired = std::chrono::steady_clock::now();
+    const auto acquired = base::TimeTicks::Now();
+    context_->CopyResource(slot->bgra.Get(), texture);
+    const HRESULT released = mutex->ReleaseSync(0);
+    const auto copied = base::TimeTicks::Now();
+    auto& latency = LatencyStats::Get();
+    latency.Add("native_mutex_acquire", started, acquired);
+    latency.Add("native_mutex_hold", acquired, copied);
+    if (released != S_OK) {
+      Fail("ReleaseSync", released);
+      return nullptr;
+    }
+    // Same immediate context/device orders private-copy -> VPP -> encode.
+    // ReleaseSync orders the shared source read before another process writes.
     video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE,
                                                       &visible);
     D3D11_VIDEO_PROCESSOR_STREAM stream{};
     stream.Enable = TRUE;
-    stream.pInputSurface = it->second.Get();
+    stream.pInputSurface = slot->input.Get();
     hr = video_context_->VideoProcessorBlt(processor_.Get(), slot->view.Get(),
                                            0, 1, &stream);
-    if (SUCCEEDED(hr)) {
-      // Conservative draft synchronization: wait for ONLY the source read/CSC
-      // before releasing key 0. No MFX wait occurs with this mutex held.
-      context_->End(done_.Get());
-      context_->Flush();
-      const auto deadline = acquired + std::chrono::milliseconds(20);
-      BOOL complete = FALSE;
-      for (;;) {
-        hr = context_->GetData(done_.Get(), &complete, sizeof(complete),
-                               D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        if (FAILED(hr) || (hr == S_OK && complete))
-          break;
-        if (std::chrono::steady_clock::now() >= deadline) {
-          hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      }
-    }
-    HRESULT released = mutex->ReleaseSync(0);
-    if (FAILED(hr) || released != S_OK) {
-      Fail("Blt/completion/ReleaseSync", FAILED(hr) ? hr : released);
+    context_->End(slot->done.Get());
+    // Submit the VP command buffer before the runtime consumes its output.
+    // Flush submits work and does not wait for GPU completion.
+    context_->Flush();
+    const auto submitted = base::TimeTicks::Now();
+    latency.Add("vpp_submit", copied, submitted);
+    if (FAILED(hr)) {
+      Fail("VideoProcessorBlt", hr);
       return nullptr;
     }
     if (++frames_ % 120 == 0) {
-      auto now = std::chrono::steady_clock::now();
-      LOG(INFO) << "PRTS native VPP frames=" << frames_ << " acquire_us="
-                << std::chrono::duration_cast<std::chrono::microseconds>(
-                       acquired - started)
-                       .count()
-                << " mutex_hold_us="
-                << std::chrono::duration_cast<std::chrono::microseconds>(
-                       now - acquired)
-                       .count()
+      LOG(INFO) << "PRTS native VPP frames=" << frames_
+                << " acquire_us=" << (acquired - started).InMicroseconds()
+                << " mutex_hold_us=" << (copied - acquired).InMicroseconds()
+                << " submit_us=" << (submitted - copied).InMicroseconds()
                 << " pool=" << slots_.size() << " limit=" << limit;
     }
-    return webrtc::make_ref_counted<VplNativeFrameBuffer>(slot->texture, width,
-                                                          height, slot);
+    return webrtc::make_ref_counted<VplNativeFrameBuffer>(
+        slot->texture, width, height, slot, slot->done, copied);
   }
 
-  void ClearImports() { inputs_.clear(); }
+  // Shared textures are never retained; leased private slots survive resets.
+  void ClearImports() {}
   ComPtr<ID3D11Device> device_;
   ComPtr<ID3D11DeviceContext> context_;
   ComPtr<ID3D11VideoDevice> video_;
   ComPtr<ID3D11VideoContext1> video_context_;
   ComPtr<ID3D11VideoProcessorEnumerator> enumerator_;
   ComPtr<ID3D11VideoProcessor> processor_;
-  ComPtr<ID3D11Query> done_;
-  std::map<ID3D11Texture2D*, ComPtr<ID3D11VideoProcessorInputView>> inputs_;
+  D3D11_TEXTURE2D_DESC source_desc_{};
   std::vector<std::shared_ptr<Slot>> slots_;
   int fps_;
   int width_ = 0, height_ = 0;

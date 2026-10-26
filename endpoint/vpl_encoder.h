@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "base/time/time.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
 #include "third_party/webrtc/api/video/video_frame_buffer.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder.h"
@@ -31,6 +32,8 @@ class VplEncoderState {
   void SetEncoderDevice(Microsoft::WRL::ComPtr<ID3D11Device> device);
   bool NativeActive(ID3D11Device* capture_device) const;
   std::atomic<int> native_pool_limit{8};
+  std::atomic<int> min_bitrate_bps{2000000};
+  std::atomic<int> max_bitrate_bps{12000000};
 
  private:
   mutable std::mutex mutex_;
@@ -49,7 +52,9 @@ class VplNativeFrameBuffer : public webrtc::VideoFrameBuffer {
   VplNativeFrameBuffer(Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
                        int width,
                        int height,
-                       std::shared_ptr<void> lease);
+                       std::shared_ptr<void> lease,
+                       Microsoft::WRL::ComPtr<ID3D11Query> completion = nullptr,
+                       base::TimeTicks submitted = {});
   Type type() const override;
   int width() const override;
   int height() const override;
@@ -66,6 +71,7 @@ class VplNativeFrameBuffer : public webrtc::VideoFrameBuffer {
       std::span<Type> types) override;
 
   ID3D11Texture2D* texture() const { return texture_.Get(); }
+  void RecordVppCompletion(ID3D11DeviceContext* context) const;
   // Valid only for endpoint-owned buffers. Other kNative buffers are converted
   // through ToI420(), never blindly downcast. Chromium builds without RTTI.
   static const VplNativeFrameBuffer* From(
@@ -79,6 +85,8 @@ class VplNativeFrameBuffer : public webrtc::VideoFrameBuffer {
   int width_;
   int height_;
   std::shared_ptr<void> lease_;
+  Microsoft::WRL::ComPtr<ID3D11Query> completion_;
+  base::TimeTicks submitted_;
 };
 
 // All methods except construction/destruction run on WebRTC's encoder queue.

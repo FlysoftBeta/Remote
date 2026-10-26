@@ -259,7 +259,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
           encoder_state_->native_pool_limit.load());
       job->copied = base::TimeTicks::Now();
       latency.Add("native_vpp", received, job->copied);
-      std::move(reply).Run();  // VPP source read completed, key 0 released.
+      std::move(reply).Run();  // Private copy submitted, shared key 0 released.
       if (!job->native)
         return;  // Raw pool pressure/timeout; failed VPP uses CPU next frame.
     } else {
