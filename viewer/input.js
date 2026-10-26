@@ -65,7 +65,7 @@
       if (pid == null) return; // touch/pen not down on the stage
       var p = mapPoint(video, e.clientX, e.clientY); if (!p) return;
       positions[pid] = p;
-      var previous = buttons[pid] || 0, changed = previous ^ e.buttons;
+      var previous = buttons[pid] || 0, changed = e.pointerType === 'mouse' ? previous ^ e.buttons : 0;
       // Additional chord presses/releases arrive as pointermove. Keep each transition discrete.
       [1, 2, 4, 8, 16].forEach(function (bit, i) {
         if (!(changed & bit)) return;
@@ -84,7 +84,7 @@
       if (!self.enabled) return;
       var pid = e.pointerType === 'mouse' ? 0 : slots[e.pointerId];
       if (pid == null) return;
-      var p = mapPoint(video, e.clientX, e.clientY) || positions[pid] || { x: 0, y: 0 };
+      var p = (cancel ? positions[pid] : mapPoint(video, e.clientX, e.clientY)) || positions[pid] || { x: 0, y: 0 };
       delete captures[e.pointerId];
       buttons[pid] = cancel ? 0 : e.buttons;
       discrete(pointerMsg(e, cancel ? RK.PA.CANCEL : RK.PA.UP, p, pid));

@@ -7,6 +7,8 @@
   var q = new URLSearchParams(location.search);
   var video = document.getElementById('video'), stage = document.getElementById('stage');
   var overlay = document.getElementById('overlay'), statusEl = document.getElementById('status');
+  var touchOnly = (navigator.maxTouchPoints || 0) > 0 && matchMedia('(pointer: coarse)').matches &&
+    !matchMedia('(any-pointer: fine)').matches && !matchMedia('(any-hover: hover)').matches;
   var isTouch = (navigator.maxTouchPoints || 0) > 0 && matchMedia('(pointer: coarse)').matches;
   var pc = null, ch = null, sid = null, ws = null, clock = null, measure = null, epHello = null, epStats = null, hintInfo = 'n/a';
   var session = null, generation = 0, retryTimer = null, retryDelay = 1000, terminal = false;
@@ -36,7 +38,7 @@
     ws.onopen = function () {
       if (ws !== socket) return;
       sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent,
-        caps: { touch: navigator.maxTouchPoints || 0, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
+        caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
       status('waiting for endpoint');
     };
     ws.onmessage = function (e) { if (ws === socket) { try { onSignal(JSON.parse(e.data)); } catch (err) { console.warn('signalling', err); } } };
@@ -67,7 +69,8 @@
     if (pc) { var old = pc; pc = null; old.close(); }
     if (clock) { clock.close(); clock = null; }
     if (measure) { measure.reset(); measure.clock = { offset: null }; measure.inputSent = {}; measure.lastInputSeq = measure.lastFrameId = -1; }
-    ch = null; epHello = null; epStats = null; prev = null; statsSamples = []; window.rk.last = null; video.srcObject = null; stage.style.cursor = 'default';
+    ch = null; epHello = null; epStats = null; prev = null; statsSamples = []; window.rk.last = null; video.srcObject = null;
+    stage.style.cursor = video.style.cursor = 'default';
   }
   function current(s, p) { return session === s && generation === s.generation && pc === p; }
   function h264Caps() {
@@ -126,7 +129,7 @@
     var channels = ch;
     ch.ctl.onopen = function () {
       if (!current(s, p)) return;
-      sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, osk: isTouch, dpr: devicePixelRatio },
+      sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, osk: isTouch, dpr: devicePixelRatio },
         view: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio } });
       sendViewport();
       sendCtl({ t: 'focus', focused: document.hasFocus() && !document.hidden });
@@ -134,7 +137,7 @@
     ch.ctl.onmessage = function (e) { if (current(s, p)) { try { onCtl(JSON.parse(e.data)); } catch (err) { console.warn('ctl', err); } } };
     ch.probe.onopen = function () { if (!current(s, p)) return; clock = new RKClock(channels.probe); if (q.get('measure') === '1' && !measure) measure = new RKMeasure(video, clock); else if (measure) measure.clock = clock; };
     ch.probe.onmessage = function (e) { if (current(s, p) && clock) { try { clock.onMessage(JSON.parse(e.data)); } catch (err) { console.warn('probe', err); } } };
-    ch.input.onopen = function () { if (current(s, p)) input.enabled = !!epHello; };
+    ch.input.onopen = function () { if (current(s, p)) { input.enabled = !!epHello; ime.refresh(); } };
     ch.input.bufferedAmountLowThreshold = 1024;
     ch.input.onbufferedamountlow = function () { if (current(s, p) && input.enabled) input.flush(); };
     pc.ontrack = function (e) {
@@ -181,12 +184,17 @@
   function onCtl(m) {
     if (m.t === 'hello') {
       if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); closePc(); status('session ended: protocol version mismatch'); return; }
-      epHello = m; input.enabled = ch.input.readyState === 'open';
+      epHello = m; input.enabled = ch.input.readyState === 'open'; ime.refresh();
     }
     else if (!epHello) return;
     else if (ime.onCtl(m)) return;
     else if (m.t === 'stats') epStats = m;
-    else if (m.t === 'cursor') stage.style.cursor = /^[a-z-]+$/.test(m.css) ? m.css : 'default';
+    else if (m.t === 'cursor') {
+      // Only named cursors or the browser's bounded inline PNG format; no URLs.
+      var css = typeof m.css === 'string' && m.css.length <= 61000 &&
+        (/^[a-z-]+$/.test(m.css) || /^url\(data:image\/png;base64,[A-Za-z0-9+/]+={0,2}\) (?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7]) (?:[0-9]|[1-9][0-9]|1[01][0-9]|12[0-7]), auto$/.test(m.css)) ? m.css : 'default';
+      stage.style.cursor = video.style.cursor = css;
+    }
     else if (m.t === 'frame') epHello = Object.assign({}, epHello, { frame: { w: m.w, h: m.h }, dsf: m.dsf });
   }
 

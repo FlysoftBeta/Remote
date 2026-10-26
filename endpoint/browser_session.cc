@@ -154,6 +154,16 @@ void BrowserSession::Select(uint32_t id) {
   Refresh();
 }
 void BrowserSession::Send(base::DictValue message) {
+  const auto* type = message.FindString("t");
+  const std::string name = type ? *type : "";
+  // A replay must also be newer than the last delivered state. The endpoint
+  // owns the ctl sequence; browser sequence values belong to the Mojo stream.
+  if (name == "ime.state" || name == "ime.vk") {
+    message.Set("seq", static_cast<double>(++ime_seq_));
+  }
+  if (name == "cursor" || name == "ime.state" || name == "ime.vk") {
+    state_messages_.insert_or_assign(name, message.Clone());
+  }
   if (send_) {
     send_.Run(std::move(message));
   }
@@ -179,6 +189,8 @@ void BrowserSession::ImeStateChanged(mojom::ImeStatePtr s) {
            .Set("mode", s->mode)
            .Set("flags", static_cast<double>(s->flags))
            .Set("reason", s->reason)
+           .Set("composing", s->composing)
+           .Set("context", static_cast<double>(s->context))
            .Set("rect", base::DictValue()
                             .Set("x", r.x() * 65535.0)
                             .Set("y", r.y() * 65535.0)
@@ -282,7 +294,23 @@ void BrowserSession::OnControl(base::DictValue m) {
   if (!type) {
     return;
   }
-  if (*type == "keyframe") {
+  if (*type == "hello") {
+    for (const char* name : {"cursor", "ime.state", "ime.vk"}) {
+      auto it = state_messages_.find(name);
+      if (send_ && it != state_messages_.end()) {
+        Send(it->second.Clone());
+      }
+    }
+    const auto* caps = m.FindDict("caps");
+    int points = caps ? caps->FindInt("touch").value_or(0) : 0;
+    if (points < 0) {
+      points = 0;
+    } else if (points > 10) {
+      points = 10;
+    }
+    const bool touch_only = caps && caps->FindBool("touchOnly").value_or(false);
+    browser->SetTouchCapabilities(static_cast<uint8_t>(points), touch_only);
+  } else if (*type == "keyframe") {
     // Peer already asks the encoder for an IDR on this ctl message and hello.
     if (active_) {
       browser->RequestRefreshFrame(active_);
@@ -334,18 +362,20 @@ void BrowserSession::OnControl(base::DictValue m) {
       return;
     }
     if (*type == "ime.commit") {
-      browser->ImeCommit(*text);
+      browser->ImeCommit(*text, m.FindInt("context").value_or(0));
     } else if (auto cursor = m.FindInt("cursor");
                cursor && *cursor >= 0 &&
                static_cast<size_t>(*cursor) <= utf16.size()) {
-      browser->ImeCompose(*text, *cursor);
+      browser->ImeCompose(*text, *cursor, m.FindInt("context").value_or(0));
     }
   } else if (*type == "ime.delete") {
     auto before = m.FindInt("before"), after = m.FindInt("after");
     if (active_ && before && after && *before >= 0 && *before <= 4096 &&
         *after >= 0 && *after <= 4096) {
-      browser->ImeDelete(*before, *after);
+      browser->ImeDelete(*before, *after, m.FindInt("context").value_or(0));
     }
+  } else if (*type == "ime.hidden" && active_) {
+    browser->ImeHidden(m.FindInt("context").value_or(0));
   } else if (*type == "ime.key" && active_) {
     const std::string* key = m.FindString("key");
     if (!key) {
@@ -363,6 +393,11 @@ void BrowserSession::OnControl(base::DictValue m) {
     auto p = mojom::KeyInput::New();
     p->down = true;
     p->key_code = code;
+    const int mods = m.FindInt("mods").value_or(0);
+    if (mods < 0 || mods > 127) {
+      return;
+    }
+    p->mods = static_cast<uint8_t>(mods);
     p->code = *key;
     p->key = *key;
     p->timestamp = base::TimeTicks::Now();

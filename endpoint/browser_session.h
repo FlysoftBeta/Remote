@@ -59,6 +59,9 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
   scoped_refptr<base::SingleThreadTaskRunner> main_runner_;
   prts_endpoint::EndpointLink link_{this};
   std::map<uint32_t, mojom::WindowInfoPtr> windows_;
+  // Latest browser state is replayed after each viewer ctl hello.
+  std::map<std::string, base::DictValue> state_messages_;
+  uint32_t ime_seq_ = 0;
   uint32_t active_ = 0, wanted_ = 0;
   uint64_t luid_ = 0;
   bool hello_ = false, closed_ = false;

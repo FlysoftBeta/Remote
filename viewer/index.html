@@ -7,7 +7,7 @@
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
   #stage { position: fixed; inset: 0; top: 0; left: 0; right: 0; bottom: 0; touch-action: none; user-select: none;
            -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; outline: none; }
-  #video { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; background: #000; }
+  #video { touch-action: none; width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; background: #000; }
   #overlay { position: fixed; top: 6px; left: 6px; padding: 6px 8px; background: rgba(0,0,0,.65); color: #8f8;
              font: 12px/1.35 monospace; white-space: pre; pointer-events: none; z-index: 3; border-radius: 4px; }
   #status { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); color: #ccc; font: 13px sans-serif;

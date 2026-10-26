@@ -579,12 +579,14 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         Fail("version"); return;
       }
       handshaken_ = true;
+      owner_.input_.Control(*message);
       auto g = source_->geometry();
       channels_[1]->Send(base::DictValue().Set("t", "hello").Set("v", 1)
           .Set("input", 1).Set("frame", base::DictValue()
               .Set("w", g.width).Set("h", g.height))
           .Set("dsf", g.dsf).Set("name", "prts-endpoint"));
       RequestKeyFrame();
+      owner_.input_.Control(*message);
       owner_.input_.Control(base::DictValue().Set("t", "keyframe"));
     } else if (id == 1 && handshaken_ &&
                (t.starts_with("ime.") || t == "focus" ||
