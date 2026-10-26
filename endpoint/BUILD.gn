@@ -5,6 +5,8 @@ executable("prts_endpoint") {
     "browser_session.h",
     "d3d_frame_source.cc",
     "d3d_frame_source.h",
+    "d3d_native_frame.cc",
+    "d3d_native_frame.h",
     "endpoint_link.cc",
     "endpoint_link.h",
     "frame_source.h",
@@ -18,8 +20,11 @@ executable("prts_endpoint") {
     "signaling.h",
     "synthetic_source.cc",
     "synthetic_source.h",
+    "vpl_encoder.cc",
+    "vpl_encoder.h",
   ]
   deps = [
+    "third_party/libvpl:dispatcher",
     "//base",
     "//chrome/browser/prts:switches",
     "//chrome/browser/prts/mojom",

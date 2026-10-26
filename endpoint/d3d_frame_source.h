@@ -13,13 +13,14 @@
 #include "prts_endpoint/frame_source.h"
 
 namespace prts {
+class VplEncoderState;
 // Construct/destroy and BindCapture on main. Start/Stop on RTC signaling;
 // geometry is thread safe. Mojo import and CPU conversion have separate
 // threads.
 class D3DFrameSource : public FrameSource,
                        public std::enable_shared_from_this<D3DFrameSource> {
  public:
-  D3DFrameSource();
+  D3DFrameSource(std::shared_ptr<VplEncoderState> encoder_state, int fps);
   ~D3DFrameSource() override;
   mojo::PendingRemote<mojom::PrtsFrameSink> BindCapture(uint64_t gpu_luid,
                                                         FrameGeometry geometry);

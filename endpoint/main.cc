@@ -32,6 +32,7 @@
 #include "prts_endpoint/browser_session.h"
 #include "prts_endpoint/peer.h"
 #include "prts_endpoint/synthetic_source.h"
+#include "prts_endpoint/vpl_encoder.h"
 #include "third_party/webrtc/rtc_base/ssl_adapter.h"
 #include "third_party/webrtc/rtc_base/win32_socket_init.h"  // nogncheck
 #include "third_party/webrtc_overrides/init_webrtc.h"
@@ -52,6 +53,13 @@ int main(int argc, char** argv) {
     LOG(ERROR) << "--fps must be in [1,120]";
     return 1;
   }
+  const std::string encoder = command.GetSwitchValueASCII("encoder");
+  if (command.HasSwitch("encoder") && encoder != "vpl" && encoder != "openh264") {
+    LOG(ERROR) << "--encoder must be vpl or openh264";
+    return 1;
+  }
+  const bool prefer_vpl = encoder != "openh264";
+  LOG(INFO) << "PRTS encoder requested=" << (prefer_vpl ? "vpl" : "openh264");
   const bool synthetic = command.HasSwitch("synthetic");
   auto chrome_path = command.GetSwitchValuePath("chrome");
   auto profile = command.GetSwitchValuePath("user-data-dir");
@@ -85,8 +93,9 @@ int main(int argc, char** argv) {
     {
       prts::Clock clock;
       prts::Signaling signaling;
-      auto source =
-          synthetic ? nullptr : std::make_shared<prts::D3DFrameSource>();
+      auto encoder_state = std::make_shared<prts::VplEncoderState>();
+      auto source = synthetic ? nullptr :
+          std::make_shared<prts::D3DFrameSource>(encoder_state, fps);
       std::unique_ptr<prts::BrowserSession> browser;
       if (!synthetic) {
         browser = std::make_unique<prts::BrowserSession>(
@@ -108,7 +117,7 @@ int main(int argc, char** argv) {
             }
             return std::make_unique<prts::SyntheticSource>(fps, clock);
           },
-          fps);
+          fps, encoder_state, prefer_vpl);
       bool ready = peer.Initialize();
       if (ready && browser) {
         browser->SetPeerCallbacks(

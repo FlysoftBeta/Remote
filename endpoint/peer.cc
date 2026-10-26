@@ -5,7 +5,7 @@
 
 #include "prts_endpoint/peer.h"
 
-#include <map>
+#include "prts_endpoint/vpl_encoder.h"
 #include <span>
 #include <string>
 #include <utility>
@@ -50,119 +50,6 @@ webrtc::SdpVideoFormat H264Format() {
                    {"packetization-mode", "1"},
                    {"level-asymmetry-allowed", "1"}}};
 }
-
-// Decorate the stock encoder's output, as remoting does. VideoFrame has no
-// playout delay setter at this pin; it belongs on EncodedImage.
-class LowDelayEncoder : public webrtc::VideoEncoder,
-                        public webrtc::EncodedImageCallback {
- public:
-  explicit LowDelayEncoder(std::unique_ptr<webrtc::VideoEncoder> encoder)
-      : encoder_(std::move(encoder)) {}
-  int InitEncode(const webrtc::VideoCodec* codec,
-                 const Settings& settings) override {
-    LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x"
-              << codec->height << " max_fps=" << codec->maxFramerate
-              << " start_kbps=" << codec->startBitrate
-              << " min_kbps=" << codec->minBitrate
-              << " max_kbps=" << codec->maxBitrate
-              << " cores=" << settings.number_of_cores
-              << " impl=" << encoder_->GetEncoderInfo().implementation_name;
-    auto screenshare = *codec;
-    screenshare.mode = webrtc::VideoCodecMode::kScreensharing;
-    return encoder_->InitEncode(&screenshare, settings);
-  }
-  int32_t RegisterEncodeCompleteCallback(
-      webrtc::EncodedImageCallback* callback) override {
-    callback_ = callback;
-    return encoder_->RegisterEncodeCompleteCallback(callback ? this : nullptr);
-  }
-  int32_t Release() override { return encoder_->Release(); }
-  int32_t Encode(const webrtc::VideoFrame& frame,
-                 const std::vector<webrtc::VideoFrameType>* types) override {
-    const auto now = base::TimeTicks::Now();
-    const auto capture =
-        base::TimeTicks() + base::Microseconds(frame.timestamp_us());
-    LatencyStats::Get().Add("capture_to_encode", capture, now);
-    LatencyStats::Get().EncodeStart(frame.timestamp_us(), now);
-    {
-      base::AutoLock lock(timing_lock_);
-      timing_[frame.rtp_timestamp()] = {capture, now};
-      if (timing_.size() > 240)
-        timing_.erase(timing_.begin());
-    }
-    return encoder_->Encode(frame, types);
-  }
-  void SetRates(const RateControlParameters& p) override { encoder_->SetRates(p); }
-  void SetFecControllerOverride(webrtc::FecControllerOverride* f) override {
-    encoder_->SetFecControllerOverride(f);
-  }
-  void OnPacketLossRateUpdate(float loss) override {
-    encoder_->OnPacketLossRateUpdate(loss);
-  }
-  void OnRttUpdate(int64_t rtt) override { encoder_->OnRttUpdate(rtt); }
-  void OnLossNotification(const LossNotification& n) override {
-    encoder_->OnLossNotification(n);
-  }
-  EncoderInfo GetEncoderInfo() const override { return encoder_->GetEncoderInfo(); }
-  Result OnEncodedImage(const webrtc::EncodedImage& image,
-                         const webrtc::CodecSpecificInfo* info) override {
-    const auto encoded = base::TimeTicks::Now();
-    {
-      base::AutoLock lock(timing_lock_);
-      auto it = timing_.find(image.RtpTimestamp());
-      if (it != timing_.end()) {
-        LatencyStats::Get().Add("encode", it->second.second, encoded);
-        LatencyStats::Get().Add("capture_to_encoded", it->second.first, encoded);
-        timing_.erase(it);
-      }
-    }
-    auto output = image;  // Encoded buffer is refcounted, no payload copy.
-    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-            "latency-no-playout-delay")) {
-      output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
-    }
-    output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
-    const auto handed = base::TimeTicks::Now();
-    LatencyStats::Get().Add("encoded_to_handoff", encoded, handed);
-    auto result = callback_->OnEncodedImage(output, info);
-    LatencyStats::Get().Add("handoff_callback", handed, base::TimeTicks::Now());
-    return result;
-  }
-  void OnFrameDropped(uint32_t ts, int spatial, bool end) override {
-    callback_->OnFrameDropped(ts, spatial, end);
-  }
-
- private:
-  std::unique_ptr<webrtc::VideoEncoder> encoder_;
-  raw_ptr<webrtc::EncodedImageCallback> callback_ = nullptr;
-  base::Lock timing_lock_;
-  std::map<uint32_t, std::pair<base::TimeTicks, base::TimeTicks>> timing_;
-};
-
-class EncoderFactory : public webrtc::VideoEncoderFactory {
- public:
-  EncoderFactory()
-      : builtin_(std::make_unique<webrtc::InternalEncoderFactory>()) {}
-  std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override {
-    // Fail initialization if the build has no compatible OpenH264 encoder.
-    for (const auto& f : builtin_->GetSupportedFormats()) {
-      if (f.name == "H264" && f.parameters == H264Format().parameters)
-        return {H264Format()};
-    }
-    return {};
-  }
-  std::unique_ptr<webrtc::VideoEncoder> Create(
-      const webrtc::Environment& env,
-      const webrtc::SdpVideoFormat& format) override {
-    auto encoder = builtin_->Create(env, format);
-    if (!encoder)
-      return nullptr;
-    return std::make_unique<LowDelayEncoder>(std::move(encoder));
-  }
-
- private:
-  std::unique_ptr<webrtc::VideoEncoderFactory> builtin_;
-};
 
 class TrackSource : public webrtc::AdaptedVideoTrackSource {
  public:
@@ -673,9 +560,11 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
 };
 
 Peer::Peer(Signaling& signaling, InputSink& input, const Clock& clock,
-           SourceFactory source_factory, int fps)
+           SourceFactory source_factory, int fps,
+           std::shared_ptr<VplEncoderState> encoder_state, bool prefer_vpl)
     : signaling_(signaling), input_(input), clock_(clock),
-      source_factory_(std::move(source_factory)), fps_(fps) {}
+      source_factory_(std::move(source_factory)), fps_(fps),
+      encoder_state_(std::move(encoder_state)), prefer_vpl_(prefer_vpl) {}
 Peer::~Peer() {
   if (signaling_thread_) {
     signaling_thread_->BlockingCall([this] {
@@ -710,7 +599,8 @@ bool Peer::Initialize() {
         webrtc::CreateAudioEncoderFactory<webrtc::AudioEncoderOpus>();
     deps.audio_decoder_factory =
         webrtc::CreateAudioDecoderFactory<webrtc::AudioDecoderOpus>();
-    auto encoder = std::make_unique<EncoderFactory>();
+    auto encoder = std::make_unique<VplEncoderFactory>(encoder_state_,
+                                                     prefer_vpl_);
     if (encoder->GetSupportedFormats().empty()) {
       LOG(ERROR) << "OpenH264 constrained baseline 42e01f unavailable";
       return false;

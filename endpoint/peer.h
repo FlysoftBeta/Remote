@@ -12,13 +12,15 @@
 #include "third_party/webrtc/rtc_base/thread.h"
 
 namespace prts {
+class VplEncoderState;
 // All session state lives on signaling_thread_. Main/reader call Handle/Close;
 // neither is a WebRTC callback. Inject a fresh source for each session.
 class Peer {
  public:
   using SourceFactory = std::function<std::unique_ptr<FrameSource>()>;
   Peer(Signaling& signaling, InputSink& input, const Clock& clock,
-       SourceFactory source_factory, int fps);
+       SourceFactory source_factory, int fps,
+       std::shared_ptr<VplEncoderState> encoder_state, bool prefer_vpl);
   ~Peer();
   bool Initialize();
   void Handle(base::DictValue message);
@@ -34,6 +36,8 @@ class Peer {
   const Clock& clock_;
   SourceFactory source_factory_;
   const int fps_;
+  std::shared_ptr<VplEncoderState> encoder_state_;
+  const bool prefer_vpl_;
   std::unique_ptr<webrtc::Thread> network_thread_;
   std::unique_ptr<webrtc::Thread> signaling_thread_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;

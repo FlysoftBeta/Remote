@@ -10,6 +10,8 @@
 #include "prts_endpoint/d3d_frame_source.h"
 #include "prts_endpoint/latency_stats.h"
 
+#include "prts_endpoint/d3d_native_frame.h"
+
 #include <d3d11_4.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
@@ -30,6 +32,8 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
+#include "third_party/libyuv/include/libyuv/convert_from_argb.h"
+#include "third_party/webrtc/api/video/color_space.h"
 #include "third_party/webrtc/api/video/i420_buffer.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -63,7 +67,9 @@ class Lease final : public FrameSource {
 
 class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
  public:
-  Impl() : import_("PrtsD3DImport"), convert_("PrtsI420") {
+  Impl(std::shared_ptr<VplEncoderState> state, int fps)
+      : import_("PrtsD3DImport"), convert_("PrtsI420"),
+        encoder_state_(std::move(state)), fps_(fps) {
     CHECK(base::TimeTicks::IsConsistentAcrossProcesses());
     CHECK(import_.Start());
     CHECK(convert_.Start());
@@ -81,6 +87,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                        [](Impl* self, base::WaitableEvent* done) {
                          self->receiver_.reset();
                          self->Reset();
+                         self->native_pool_.reset();
+                         self->encoder_state_->SetCaptureDevice(nullptr);
                          self->context_.Reset();
                          self->device_.Reset();
                          done->Signal();
@@ -110,6 +118,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                mojo::PendingReceiver<mojom::PrtsFrameSink> receiver) {
               self->receiver_.reset();
               self->buffers_.clear();
+              if (self->native_pool_)
+                self->native_pool_->ClearImports();
               self->bound_epoch_ = epoch;
               if (!self->device_ || self->luid_ != luid) {
                 self->CreateDevice(luid);
@@ -133,6 +143,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                                             [](Impl* self) {
                                               self->receiver_.reset();
                                               self->buffers_.clear();
+                                              if (self->native_pool_)
+                                                self->native_pool_->ClearImports();
                                             },
                                             base::Unretained(this)));
   }
@@ -162,6 +174,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                  mojo::PlatformHandle handle,
                  const gfx::Size& size) override {
     buffers_.erase(id);
+    if (native_pool_)
+      native_pool_->ClearImports();
     if (!device_ || !handle.is_valid() || size.IsEmpty() ||
         size.width() > 8192 || size.height() > 8192 || buffers_.size() >= 64) {
       return;
@@ -235,29 +249,42 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       std::move(reply).Run();
       return;
     }
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = 0;
-    desc.CPUAccessFlags = 0;
-    desc.MiscFlags = 0;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &job->texture))) {
-      std::move(reply).Run();
-      return;
-    }
-    // WAIT_TIMEOUT and WAIT_ABANDONED are nonnegative: SUCCEEDED is wrong.
-    if (HRESULT hr = buffer.mutex->AcquireSync(0, 20); hr != S_OK) {
-      LOG(WARNING) << "PRTS AcquireSync failed: " << hr;
-      std::move(reply).Run();
-      return;
-    }
-    context_->CopyResource(job->texture.Get(), buffer.texture.Get());
-    job->copied = base::TimeTicks::Now();
-    latency.Add("import_copy_submit", received, job->copied);
-    HRESULT released = buffer.mutex->ReleaseSync(0);
-    std::move(reply).Run();  // Browser can call Done before staging/Map/encode.
-    if (released != S_OK) {
-      LOG(ERROR) << "ReleaseSync failed: " << released;
-      buffers_.erase(it);
-      return;
+    if (native_pool_ && native_pool_->healthy() &&
+        encoder_state_->NativeActive(device_.Get())) {
+      const RECT rect{visible.x(), visible.y(), visible.right(), visible.bottom()};
+      job->native = native_pool_->Convert(
+          buffer.texture.Get(), buffer.mutex.Get(), rect,
+          encoder_state_->native_pool_limit.load());
+      job->copied = base::TimeTicks::Now();
+      latency.Add("native_vpp", received, job->copied);
+      std::move(reply).Run();  // VPP source read completed, key 0 released.
+      if (!job->native)
+        return;  // Raw pool pressure/timeout; failed VPP uses CPU next frame.
+    } else {
+      desc.Usage = D3D11_USAGE_DEFAULT;
+      desc.BindFlags = 0;
+      desc.CPUAccessFlags = 0;
+      desc.MiscFlags = 0;
+      if (FAILED(device_->CreateTexture2D(&desc, nullptr, &job->texture))) {
+        std::move(reply).Run();
+        return;
+      }
+      // WAIT_TIMEOUT and WAIT_ABANDONED are nonnegative: SUCCEEDED is wrong.
+      if (HRESULT hr = buffer.mutex->AcquireSync(0, 20); hr != S_OK) {
+        LOG(WARNING) << "PRTS AcquireSync failed: " << hr;
+        std::move(reply).Run();
+        return;
+      }
+      context_->CopyResource(job->texture.Get(), buffer.texture.Get());
+      job->copied = base::TimeTicks::Now();
+      latency.Add("import_copy_submit", received, job->copied);
+      HRESULT released = buffer.mutex->ReleaseSync(0);
+      std::move(reply).Run();  // Browser can call Done before staging/Map/encode.
+      if (released != S_OK) {
+        LOG(ERROR) << "ReleaseSync failed: " << released;
+        buffers_.erase(it);
+        return;
+      }
     }
     job->device = device_;
     job->context = context_;
@@ -269,7 +296,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         return;
       }
       job->serial = ++latest_;
-      pending_ = std::move(job);  // Replace the older pending private texture.
+      pending_ = std::move(job);  // Replace the older pending raw-frame lease.
       if (scheduled_) {
         return;
       }
@@ -280,6 +307,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   }
   void Reset() override {
     buffers_.clear();
+    if (native_pool_)
+      native_pool_->ClearImports();
     base::AutoLock lock(mutex_);
     if (bound_epoch_ != epoch_) {
       return;
@@ -303,6 +332,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   };
   struct Job {
     ComPtr<ID3D11Texture2D> texture;
+    webrtc::scoped_refptr<webrtc::VideoFrameBuffer> native;
     ComPtr<ID3D11Device1> device;
     ComPtr<ID3D11DeviceContext> context;
     mojom::FrameInfoPtr info;
@@ -310,6 +340,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     uint64_t epoch = 0, consumer_epoch = 0, serial = 0;
   };
   void CreateDevice(uint64_t luid) {
+    native_pool_.reset();
+    encoder_state_->SetCaptureDevice(nullptr);
     device_.Reset();
     context_.Reset();
     ComPtr<IDXGIFactory1> factory;
@@ -333,6 +365,10 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         }
       }
     }
+    if (luid && !adapter) {
+      LOG(ERROR) << "PRTS capture adapter LUID not found: " << luid;
+      return;
+    }
     ComPtr<ID3D11Device> device;
     const UINT flags =
         D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -343,21 +379,18 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
           flags, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context_);
     };
     HRESULT hr = create();
-    if (FAILED(hr) && adapter) {
-      adapter.Reset();
-      device.Reset();
-      context_.Reset();
-      hr = create();
-    }
+
     ComPtr<ID3D11Multithread> multithread;
     if (FAILED(hr) || FAILED(device.As(&device_)) ||
-        FAILED(device.As(&multithread))) {
+        FAILED(context_.As(&multithread))) {
       LOG(ERROR) << "D3D11 hardware device creation failed: " << hr;
       device_.Reset();
       context_.Reset();
       return;
     }
     multithread->SetMultithreadProtected(TRUE);
+    encoder_state_->SetCaptureDevice(device);
+    native_pool_ = std::make_unique<D3DNativeFramePool>(device, fps_);
     luid_ = luid;
     LOG(INFO) << "D3D import requested LUID=" << luid
               << " matched=" << static_cast<bool>(adapter);
@@ -375,48 +408,53 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     auto begin = base::TimeTicks::Now();
     auto& latency = LatencyStats::Get();
     latency.Add("convert_queue", job->copied, begin);
-    D3D11_TEXTURE2D_DESC desc;
-    job->texture->GetDesc(&desc);
-    desc.Usage = D3D11_USAGE_STAGING;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(job->device->CreateTexture2D(&desc, nullptr, &staging))) {
-      return;
-    }
-    job->context->CopyResource(staging.Get(), job->texture.Get());
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(
-            job->context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
-      return;
-    }
-    if (mapped.RowPitch < desc.Width * 4 ||
-        mapped.RowPitch > static_cast<UINT>(std::numeric_limits<int>::max())) {
+    webrtc::scoped_refptr<webrtc::VideoFrameBuffer> output = job->native;
+    if (!output) {
+      D3D11_TEXTURE2D_DESC desc;
+      job->texture->GetDesc(&desc);
+      desc.Usage = D3D11_USAGE_STAGING;
+      desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+      ComPtr<ID3D11Texture2D> staging;
+      if (FAILED(job->device->CreateTexture2D(&desc, nullptr, &staging))) {
+        return;
+      }
+      job->context->CopyResource(staging.Get(), job->texture.Get());
+      D3D11_MAPPED_SUBRESOURCE mapped;
+      if (FAILED(
+              job->context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+        return;
+      }
+      if (mapped.RowPitch < desc.Width * 4 ||
+          mapped.RowPitch > static_cast<UINT>(std::numeric_limits<int>::max())) {
+        job->context->Unmap(staging.Get(), 0);
+        return;
+      }
+      const auto mapped_at = base::TimeTicks::Now();
+      latency.Add("staging_map", begin, mapped_at);
+      const gfx::Rect& r = job->info->visible_rect;
+      auto i420 = webrtc::I420Buffer::Create(r.width(), r.height());
+      // SAFETY: Map exposes Height rows of RowPitch bytes. visible_rect was
+      // checked inside coded_size, and the row pitch covers all coded pixels.
+      const auto* bytes = UNSAFE_BUFFERS(
+          static_cast<const uint8_t*>(mapped.pData) +
+          static_cast<size_t>(r.y()) * mapped.RowPitch + r.x() * 4);
+      // DXGI B8G8R8A8 is libyuv ARGB in little-endian memory (B,G,R,A).
+      int result = libyuv::ARGBToI420Matrix(
+          bytes, static_cast<int>(mapped.RowPitch), i420->MutableDataY(),
+          i420->StrideY(), i420->MutableDataU(), i420->StrideU(),
+          i420->MutableDataV(), i420->StrideV(),
+          &libyuv::kArgbH709Constants, r.width(), r.height());
       job->context->Unmap(staging.Get(), 0);
-      return;
+      latency.Add("argb_i420", mapped_at, base::TimeTicks::Now());
+      if (result != 0) {
+        return;
+      }
+      convert_ms_ += (base::TimeTicks::Now() - begin).InMillisecondsF();
+      ++converted_;
+      output = i420;
     }
-    const auto mapped_at = base::TimeTicks::Now();
-    latency.Add("staging_map", begin, mapped_at);
-    const gfx::Rect& r = job->info->visible_rect;
-    auto i420 = webrtc::I420Buffer::Create(r.width(), r.height());
-    // SAFETY: Map exposes Height rows of RowPitch bytes. visible_rect was
-    // checked inside coded_size, and the row pitch covers all coded pixels.
-    const auto* bytes = UNSAFE_BUFFERS(
-        static_cast<const uint8_t*>(mapped.pData) +
-        static_cast<size_t>(r.y()) * mapped.RowPitch + r.x() * 4);
-    // DXGI B8G8R8A8 is libyuv ARGB in little-endian memory (B,G,R,A).
-    int result = libyuv::ARGBToI420(
-        bytes, static_cast<int>(mapped.RowPitch), i420->MutableDataY(),
-        i420->StrideY(), i420->MutableDataU(), i420->StrideU(),
-        i420->MutableDataV(), i420->StrideV(), r.width(), r.height());
-    job->context->Unmap(staging.Get(), 0);
     const auto converted_at = base::TimeTicks::Now();
-    latency.Add("argb_i420", mapped_at, converted_at);
     latency.Add("receive_to_converted", job->received, converted_at);
-    if (result != 0) {
-      return;
-    }
-    convert_ms_ += (base::TimeTicks::Now() - begin).InMillisecondsF();
-    ++converted_;
     Consumer consumer;
     {
       base::AutoLock lock(mutex_);
@@ -432,20 +470,27 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
           (job->info->capture_end - base::TimeTicks()).InMicroseconds());
       consumer(
           webrtc::VideoFrame::Builder()
-              .set_video_frame_buffer(i420)
+              .set_video_frame_buffer(output)
+              .set_color_space(webrtc::ColorSpace(
+                  webrtc::ColorSpace::PrimaryID::kBT709,
+                  webrtc::ColorSpace::TransferID::kBT709,
+                  webrtc::ColorSpace::MatrixID::kBT709,
+                  webrtc::ColorSpace::RangeID::kLimited))
               .set_timestamp_us(
                   (job->info->capture_end - base::TimeTicks()).InMicroseconds())
               .set_rotation(webrtc::kVideoRotation_0)
               .build());
       ++frames_;
+      native_frames_ += job->native ? 1 : 0;
     }
   }
   void LogStats() {
     auto now = base::TimeTicks::Now();
     LOG(INFO) << "D3D source fps=" << frames_ / (now - stats_at_).InSecondsF()
+              << " native=" << native_frames_ << " i420=" << converted_
               << " convert_ms=" << (converted_ ? convert_ms_ / converted_ : 0);
     stats_at_ = now;
-    frames_ = converted_ = 0;
+    frames_ = converted_ = native_frames_ = 0;
     convert_ms_ = 0;
     if (now - latency_at_ >= base::Seconds(5)) {
       LatencyStats::Get().Log();
@@ -470,14 +515,18 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   std::map<uint32_t, Buffer> buffers_;
   ComPtr<ID3D11Device1> device_;
   ComPtr<ID3D11DeviceContext> context_;
+  std::shared_ptr<VplEncoderState> encoder_state_;
+  const int fps_;
+  std::unique_ptr<D3DNativeFramePool> native_pool_;
   uint64_t luid_ = 0, bound_epoch_ = 0;
   base::TimeTicks stats_at_ = base::TimeTicks::Now();
   base::TimeTicks latency_at_ = stats_at_;
-  int frames_ = 0, converted_ = 0;
+  int frames_ = 0, converted_ = 0, native_frames_ = 0;
   double convert_ms_ = 0;
 };
 
-D3DFrameSource::D3DFrameSource() : impl_(std::make_unique<Impl>()) {}
+D3DFrameSource::D3DFrameSource(std::shared_ptr<VplEncoderState> state, int fps)
+    : impl_(std::make_unique<Impl>(std::move(state), fps)) {}
 D3DFrameSource::~D3DFrameSource() = default;
 mojo::PendingRemote<mojom::PrtsFrameSink> D3DFrameSource::BindCapture(
     uint64_t luid,

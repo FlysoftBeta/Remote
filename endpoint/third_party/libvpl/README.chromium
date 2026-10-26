@@ -1,0 +1,16 @@
+Name: Intel oneVPL dispatcher
+Short Name: libvpl
+URL: https://github.com/intel/libvpl
+Version: 2.17.0
+Revision: d77f9195cf495b937631607333288fd917ae8939
+License: MIT
+License File: LICENSE
+Security Critical: yes
+Shipped: yes
+
+Description:
+Windows x64 dispatcher and API headers. No GPU runtime is redistributed.
+
+Local Modifications:
+BUILD.gn only. Copy the SHA256-checked files staged by task vendor-libvpl.ps1
+beside this file before building. See task libvpl-manifest.json.
