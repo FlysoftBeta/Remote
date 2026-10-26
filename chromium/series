@@ -6,7 +6,7 @@
 13-chrome-web-identity.patch
 06-aura-views-remote-input.patch
 08-remote-ime.patch
+15-remote-window.patch
+09-prts-web-prefs.patch
 02-prts-browser.patch
 14-prts-endpoint-target.patch
-15-remote-window.patch
-16-m2-input-wip.patch

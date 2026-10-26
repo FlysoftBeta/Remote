@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
-Date: Mon, 26 Oct 2026 03:34:38 +0800
+Date: Mon, 26 Oct 2026 13:44:13 +0800
 Subject: [PATCH] prts: keep popups inside the browser root in remote mode
 
 Patch-Name: 11-remote-popups-in-root

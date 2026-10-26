@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
-Date: Mon, 26 Oct 2026 03:35:08 +0800
+Date: Mon, 26 Oct 2026 13:44:22 +0800
 Subject: [PATCH] aura/views: remote-mode input state, logical capture, cursor
  sink
 
@@ -79,7 +79,7 @@ index cf9cd3a0f2..0d681ecaa1 100644
    if (desktop_host_->IsInNativeMoveResizeLoop()) {
      return ui::PreferredDragOperation(
 diff --git a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
-index 228f4a8ff9..3d2bddc0f2 100644
+index 228f4a8ff9..f834c19bd8 100644
 --- a/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
 +++ b/ui/views/widget/desktop_aura/desktop_window_tree_host_win.cc
 @@ -41,6 +41,9 @@
@@ -175,10 +175,10 @@ index 228f4a8ff9..3d2bddc0f2 100644
  }
  
  void DesktopWindowTreeHostWin::SetCursorNative(gfx::NativeCursor cursor) {
-+  // PRTS: export the logical type before touching a platform cursor handle.
++  // PRTS: export the logical cursor, including custom pixels and hotspot.
 +  if (ui::IsPrtsRemoteMode()) {
 +    if (auto* sink = RemoteCursorSink::GetInstance())
-+      sink->OnCursorChanged(window(), cursor.type());
++      sink->OnCursorChanged(window(), cursor);
 +    return;
 +  }
    TRACE_EVENT1("ui,input", "DesktopWindowTreeHostWin::SetCursorNative",
@@ -206,7 +206,7 @@ index 228f4a8ff9..3d2bddc0f2 100644
    ::SetCursorPos(cursor_location.x, cursor_location.y);
 diff --git a/ui/views/widget/desktop_aura/remote_cursor_sink.h b/ui/views/widget/desktop_aura/remote_cursor_sink.h
 new file mode 100644
-index 0000000000..86edb024e5
+index 0000000000..1389c6a86e
 --- /dev/null
 +++ b/ui/views/widget/desktop_aura/remote_cursor_sink.h
 @@ -0,0 +1,28 @@
@@ -216,7 +216,7 @@ index 0000000000..86edb024e5
 +#ifndef UI_VIEWS_WIDGET_DESKTOP_AURA_REMOTE_CURSOR_SINK_H_
 +#define UI_VIEWS_WIDGET_DESKTOP_AURA_REMOTE_CURSOR_SINK_H_
 +
-+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
++#include "ui/base/cursor/cursor.h"
 +#include "ui/views/views_export.h"
 +
 +namespace aura {
@@ -225,13 +225,13 @@ index 0000000000..86edb024e5
 +namespace views {
 +// UI sequence only. Register before remote hosts are shown; clear before
 +// teardown. The embedder maps cursor types to CSS, filtering roots by the
-+// active window.
++// active window. The full logical cursor preserves custom pixels and hotspot.
 +class VIEWS_EXPORT RemoteCursorSink {
 + public:
 +  static void SetInstance(RemoteCursorSink* sink);
 +  static RemoteCursorSink* GetInstance();
 +  virtual void OnCursorChanged(aura::Window* root,
-+                               ui::mojom::CursorType type) = 0;
++                               const ui::Cursor& cursor) = 0;
 +
 + protected:
 +  virtual ~RemoteCursorSink() = default;

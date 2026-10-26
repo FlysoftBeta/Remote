@@ -1,14 +1,29 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
-Date: Mon, 26 Oct 2026 03:45:30 +0800
+Date: Mon, 26 Oct 2026 13:44:39 +0800
 Subject: [PATCH] prts: browser controller, Mojo link, window registry,
  capture, input, IME bridge
 
 Bootstraps chrome/browser/prts from the headless extra parts in remote mode
 (patches 02/03/05/07 + chrome side of 08 of design/02).
 
+M2: viewport (SetViewport), cursor bridge, IME/OSK fixes, touch capabilities.
+
 Patch-Name: 02-prts-browser
 
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 814b9d649a..82a3ab8d1e 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1607,6 +1607,8 @@ source_set("core") {
+   }
+ 
+   if (is_win) {
++    # PRTS: Registered only when ui::IsPrtsRemoteMode() is true.
++    deps += [ "//chrome/browser/prts:web_prefs" ]
+     sources += [
+       "chrome_browser_main_win.cc",
+       "chrome_browser_main_win.h",
 diff --git a/chrome/browser/headless/BUILD.gn b/chrome/browser/headless/BUILD.gn
 index f5601a3192..3476463a73 100644
 --- a/chrome/browser/headless/BUILD.gn
@@ -112,10 +127,10 @@ index 42aa0d183c..fa8804e67d 100644
  }  // namespace headless
 diff --git a/chrome/browser/prts/BUILD.gn b/chrome/browser/prts/BUILD.gn
 new file mode 100644
-index 0000000000..dd57f2b5be
+index 0000000000..7ec75a6a82
 --- /dev/null
 +++ b/chrome/browser/prts/BUILD.gn
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,82 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -128,12 +143,29 @@ index 0000000000..dd57f2b5be
 +}
 +
 +if (is_win) {
++  # PRTS: Only registered/used when ui::IsPrtsRemoteMode() is true.
++  source_set("web_prefs") {
++    sources = [
++      "prts_content_browser_client_part.cc",
++      "prts_content_browser_client_part.h",
++    ]
++    public_deps = [ "//chrome/browser:chrome_content_browser_client_parts" ]
++    deps = [
++      "//base",
++      "//content/public/browser",
++      "//third_party/blink/public/common",
++      "//ui/base",
++    ]
++  }
++
 +  source_set("prts") {
 +    sources = [
 +      "prts_capture.cc",
 +      "prts_capture.h",
 +      "prts_controller.cc",
 +      "prts_controller.h",
++      "prts_cursor_bridge.cc",
++      "prts_cursor_bridge.h",
 +      "prts_delegates.h",
 +      "prts_ime_bridge.cc",
 +      "prts_ime_bridge.h",
@@ -151,9 +183,10 @@ index 0000000000..dd57f2b5be
 +      "//mojo/public/cpp/bindings",
 +    ]
 +    deps = [
++      ":web_prefs",
 +      "//chrome/browser/profiles:profile",
-+      "//chrome/browser/ui/views/frame:browser_view_header",
 +      "//chrome/browser/ui/browser_window",
++      "//chrome/browser/ui/views/frame:browser_view_header",
 +      "//components/viz/common",
 +      "//components/viz/host",
 +      "//content/public/browser",
@@ -164,12 +197,16 @@ index 0000000000..dd57f2b5be
 +      "//net",
 +      "//services/viz/privileged/mojom/compositing",
 +      "//services/viz/public/mojom",
++      "//skia",
 +      "//ui/aura",
 +      "//ui/base",
++      "//ui/base/cursor",
 +      "//ui/base/ime",
 +      "//ui/compositor",
++      "//ui/display",
 +      "//ui/events",
 +      "//ui/gfx",
++      "//ui/gfx/codec",
 +      "//ui/views",
 +      "//ui/wm",
 +      "//url",
@@ -197,10 +234,10 @@ index 0000000000..8245e4bf36
 +}
 diff --git a/chrome/browser/prts/mojom/prts.mojom b/chrome/browser/prts/mojom/prts.mojom
 new file mode 100644
-index 0000000000..1942c997d7
+index 0000000000..489e1a8878
 --- /dev/null
 +++ b/chrome/browser/prts/mojom/prts.mojom
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,128 @@
 +// DRAFT contract (Stage 3 / M1). Final home: chrome/browser/prts/mojom/prts.mojom (patch 02),
 +// shared by chrome/browser/prts (browser side) and //prts_endpoint (endpoint side).
 +// Codex tasks may propose changes in their NOTES but must keep names unless a compile reason forces it.
@@ -293,6 +330,8 @@ index 0000000000..1942c997d7
 +  uint32 flags;
 +  gfx.mojom.RectF caret_norm; // normalized 0..1 in root
 +  string reason;
++  bool composing;
++  uint32 context;            // changes on focused-client switch or cancellation
 +};
 +
 +// Implemented by the endpoint (browser -> endpoint).
@@ -318,11 +357,14 @@ index 0000000000..1942c997d7
 +  Wheel(uint32 window_id, WheelInput input);
 +  Key(uint32 window_id, KeyInput input);
 +  ResetInput();                        // release held keys/buttons, cancel touches
-+  ImeCommit(string text);
-+  ImeCompose(string text, int32 cursor);
-+  ImeDelete(int32 before, int32 after);
++  ImeCommit(string text, uint32 context);
++  ImeCompose(string text, int32 cursor, uint32 context);
++  ImeDelete(int32 before, int32 after, uint32 context);
 +  Focus(bool focused);
 +  NewWindow(string url);               // debug helper; empty = NTP
++  SetViewport(gfx.mojom.Size dip, float dsf);
++  ImeHidden(uint32 context);           // local OSK dismissed; preserve remote focus
++  SetTouchCapabilities(uint8 touch_points, bool touch_only);
 +};
 diff --git a/chrome/browser/prts/prts_capture.cc b/chrome/browser/prts/prts_capture.cc
 new file mode 100644
@@ -765,16 +807,17 @@ index 0000000000..9026c6c8c8
 +#endif  // CHROME_BROWSER_PRTS_PRTS_CAPTURE_H_
 diff --git a/chrome/browser/prts/prts_controller.cc b/chrome/browser/prts/prts_controller.cc
 new file mode 100644
-index 0000000000..4bd407e1db
+index 0000000000..ee82ad9563
 --- /dev/null
 +++ b/chrome/browser/prts/prts_controller.cc
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,347 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
 +
 +#include "chrome/browser/prts/prts_controller.h"
 +
++#include <cmath>
 +#include <utility>
 +
 +#include "base/functional/bind.h"
@@ -783,6 +826,8 @@ index 0000000000..4bd407e1db
 +#include "base/scoped_observation.h"
 +#include "base/task/sequenced_task_runner.h"
 +#include "chrome/browser/prts/prts_capture.h"
++#include "chrome/browser/prts/prts_cursor_bridge.h"
++#include "chrome/browser/prts/prts_content_browser_client_part.h"
 +#include "chrome/browser/prts/prts_ime_bridge.h"
 +#include "chrome/browser/prts/prts_input.h"
 +#include "chrome/browser/prts/prts_window_registry.h"
@@ -799,6 +844,7 @@ index 0000000000..4bd407e1db
 +#include "content/public/browser/web_contents_observer.h"
 +#include "net/base/net_errors.h"
 +#include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
 +#include "url/gurl.h"
 +
 +namespace prts {
@@ -930,6 +976,9 @@ index 0000000000..4bd407e1db
 +                              base::Unretained(this)),
 +          base::BindRepeating(&PrtsController::OnVirtualKeyboard,
 +                              base::Unretained(this)))),
++      cursor_(std::make_unique<PrtsCursorBridge>(
++          base::BindRepeating(&PrtsController::OnCursor,
++                              base::Unretained(this)))),
 +      delegates_{registry_.get(), capture_.get(), nullptr, nullptr},
 +      link_(this,
 +            base::BindOnce(&PrtsController::OnDisconnect,
@@ -942,6 +991,13 @@ index 0000000000..4bd407e1db
 +PrtsController::~PrtsController() {
 +  link_.Close();
 +  ime_->SetActiveHost(nullptr);
++  cursor_->SetActiveHost(nullptr);
++}
++
++void PrtsController::OnCursor(const std::string& css) {
++  if (link_.client()) {
++    link_.client()->CursorChanged(css);
++  }
 +}
 +
 +void PrtsController::OnImeState(mojom::ImeStatePtr state) {
@@ -962,6 +1018,7 @@ index 0000000000..4bd407e1db
 +    input_->ResetInput();
 +    active_host_ = host;
 +    ime_->SetActiveHost(host);
++    cursor_->SetActiveHost(host);
 +  }
 +}
 +bool PrtsController::Start() {
@@ -985,6 +1042,22 @@ index 0000000000..4bd407e1db
 +  if (delegates_.windows) {
 +    delegates_.windows->SetClient(link_.client());
 +  }
++}
++
++void PrtsController::SetTouchCapabilities(uint8_t touch_points, bool touch_only) {
++  if (!PrtsContentBrowserClientPart::SetTouchCapabilities(touch_points,
++                                                        touch_only)) {
++    return;
++  }
++  // The initial page can exist before ctl hello; also refresh background tabs.
++  GlobalBrowserCollection::GetInstance()->ForEach(
++      [](BrowserWindowInterface* browser) {
++        auto* tabs = browser->GetTabStripModel();
++        for (int i = 0; tabs && i < tabs->count(); ++i) {
++          tabs->GetWebContentsAt(i)->OnWebPreferencesChanged();
++        }
++        return true;
++      });
 +}
 +
 +void PrtsController::StartCapture(
@@ -1034,14 +1107,21 @@ index 0000000000..4bd407e1db
 +void PrtsController::ResetInput() {
 +  input_->ResetInput();
 +}
-+void PrtsController::ImeCommit(const std::string& text) {
-+  ime_->ImeCommit(text);
++void PrtsController::ImeCommit(const std::string& text, uint32_t context) {
++  ime_->ImeCommit(text, context);
 +}
-+void PrtsController::ImeCompose(const std::string& text, int32_t cursor) {
-+  ime_->ImeCompose(text, cursor);
++void PrtsController::ImeCompose(const std::string& text,
++                                int32_t cursor,
++                                uint32_t context) {
++  ime_->ImeCompose(text, cursor, context);
 +}
-+void PrtsController::ImeDelete(int32_t before, int32_t after) {
-+  ime_->ImeDelete(before, after);
++void PrtsController::ImeDelete(int32_t before,
++                               int32_t after,
++                               uint32_t context) {
++  ime_->ImeDelete(before, after, context);
++}
++void PrtsController::ImeHidden(uint32_t context) {
++  ime_->ImeHidden(context);
 +}
 +void PrtsController::Focus(bool focused) {
 +  if (!focused) {
@@ -1051,6 +1131,16 @@ index 0000000000..4bd407e1db
 +    delegates_.windows->Focus(focused);
 +  }
 +}
++void PrtsController::SetViewport(const gfx::Size& dip, float dsf) {
++  if (!ui::IsPrtsRemoteMode() || dip.IsEmpty() || dip.width() > 8192 ||
++      dip.height() > 8192 || !std::isfinite(dsf) || dsf < 1.0f || dsf > 4.0f) {
++    return;
++  }
++  auto* screen = display::win::GetScreenWinHeadless();
++  screen->SetPrimaryDisplayGeometry(dip, dsf);
++  registry_->MaximizeAll();
++}
++
 +void PrtsController::NewWindow(const std::string& url) {
 +  if (delegates_.windows) {
 +    delegates_.windows->NewWindow(url);
@@ -1070,10 +1160,10 @@ index 0000000000..4bd407e1db
 +}  // namespace prts
 diff --git a/chrome/browser/prts/prts_controller.h b/chrome/browser/prts/prts_controller.h
 new file mode 100644
-index 0000000000..796910cd35
+index 0000000000..2aac078481
 --- /dev/null
 +++ b/chrome/browser/prts/prts_controller.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,77 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1098,6 +1188,7 @@ index 0000000000..796910cd35
 +class PrtsCapture;
 +class PrtsInput;
 +class PrtsImeBridge;
++class PrtsCursorBridge;
 +class PrtsStartupNavigationRecovery;
 +
 +// UI-thread dispatcher; owns only the link, never the implementation delegates.
@@ -1118,14 +1209,20 @@ index 0000000000..796910cd35
 +  void Wheel(uint32_t window_id, mojom::WheelInputPtr input) override;
 +  void Key(uint32_t window_id, mojom::KeyInputPtr input) override;
 +  void ResetInput() override;
-+  void ImeCommit(const std::string& text) override;
-+  void ImeCompose(const std::string& text, int32_t cursor) override;
-+  void ImeDelete(int32_t before, int32_t after) override;
++  void ImeCommit(const std::string& text, uint32_t context) override;
++  void ImeCompose(const std::string& text,
++                  int32_t cursor,
++                  uint32_t context) override;
++  void ImeDelete(int32_t before, int32_t after, uint32_t context) override;
++  void ImeHidden(uint32_t context) override;
 +  void Focus(bool focused) override;
++  void SetTouchCapabilities(uint8_t touch_points, bool touch_only) override;
 +  void NewWindow(const std::string& url) override;
++  void SetViewport(const gfx::Size& dip, float dsf) override;
 +
 + private:
 +  void OnDisconnect();
++  void OnCursor(const std::string& css);
 +  void OnImeState(mojom::ImeStatePtr state);
 +  void OnVirtualKeyboard(bool show, uint32_t seq);
 +  void SetActiveWindow(uint32_t window_id);
@@ -1134,6 +1231,7 @@ index 0000000000..796910cd35
 +  std::unique_ptr<PrtsCapture> capture_;
 +  std::unique_ptr<PrtsInput> input_;
 +  std::unique_ptr<PrtsImeBridge> ime_;
++  std::unique_ptr<PrtsCursorBridge> cursor_;
 +  raw_ptr<aura::WindowTreeHost> active_host_ = nullptr;
 +  PrtsDelegates delegates_;
 +  PrtsLink link_;
@@ -1143,6 +1241,267 @@ index 0000000000..796910cd35
 +}  // namespace prts
 +
 +#endif  // CHROME_BROWSER_PRTS_PRTS_CONTROLLER_H_
+diff --git a/chrome/browser/prts/prts_cursor_bridge.cc b/chrome/browser/prts/prts_cursor_bridge.cc
+new file mode 100644
+index 0000000000..f2ddcf0dd7
+--- /dev/null
++++ b/chrome/browser/prts/prts_cursor_bridge.cc
+@@ -0,0 +1,209 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/prts/prts_cursor_bridge.h"
++
++#include <algorithm>
++#include <cmath>
++#include <utility>
++
++#include "base/base64.h"
++#include "base/strings/string_number_conversions.h"
++#include "skia/ext/image_operations.h"
++#include "ui/aura/client/cursor_client.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/gfx/codec/png_codec.h"
++
++namespace prts {
++namespace {
++
++std::string CustomCss(const ui::Cursor& cursor) {
++  const SkBitmap& source = cursor.custom_bitmap();
++  if (source.drawsNothing()) {
++    return "default";
++  }
++  // CSS cursor images and hotspots use CSS pixels, not source image pixels.
++  const float image_scale = cursor.image_scale_factor();
++  if (!std::isfinite(image_scale) || image_scale <= 0) {
++    return "default";
++  }
++  float scale = std::min(1.0f / image_scale,
++                         128.0f / std::max(source.width(), source.height()));
++  // Keep the complete JSON message below 64 KiB, including base64 overhead.
++  for (int attempt = 0; attempt < 2; ++attempt, scale *= 0.5f) {
++    const int width = std::clamp(
++        static_cast<int>(std::lround(source.width() * scale)), 1, 128);
++    const int height = std::clamp(
++        static_cast<int>(std::lround(source.height() * scale)), 1, 128);
++    SkBitmap bitmap = skia::ImageOperations::Resize(
++        source, skia::ImageOperations::RESIZE_BEST, width, height);
++    auto png = gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false);
++    if (!png) {
++      return "default";
++    }
++    if (png->size() > 45000) {
++      continue;
++    }
++    const auto& hotspot = cursor.custom_hotspot();
++    const int x = std::clamp(
++        static_cast<int>(std::lround(hotspot.x() * static_cast<float>(width) /
++                                     source.width())),
++        0, width - 1);
++    const int y = std::clamp(
++        static_cast<int>(std::lround(hotspot.y() * static_cast<float>(height) /
++                                     source.height())),
++        0, height - 1);
++    return "url(data:image/png;base64," + base::Base64Encode(*png) + ") " +
++           base::NumberToString(x) + " " + base::NumberToString(y) + ", auto";
++  }
++  return "default";
++}
++
++std::string CursorCss(const ui::Cursor& cursor) {
++  using Type = ui::mojom::CursorType;
++  switch (cursor.type()) {
++    case Type::kNull:
++    case Type::kPointer:
++      return "default";
++    case Type::kCross:
++      return "crosshair";
++    case Type::kHand:
++      return "pointer";
++    case Type::kIBeam:
++      return "text";
++    case Type::kWait:
++      return "wait";
++    case Type::kHelp:
++      return "help";
++    case Type::kEastResize:
++    case Type::kEastPanning:
++      return "e-resize";
++    case Type::kNorthResize:
++    case Type::kNorthPanning:
++      return "n-resize";
++    case Type::kNorthEastResize:
++    case Type::kNorthEastPanning:
++      return "ne-resize";
++    case Type::kNorthWestResize:
++    case Type::kNorthWestPanning:
++      return "nw-resize";
++    case Type::kSouthResize:
++    case Type::kSouthPanning:
++      return "s-resize";
++    case Type::kSouthEastResize:
++    case Type::kSouthEastPanning:
++      return "se-resize";
++    case Type::kSouthWestResize:
++    case Type::kSouthWestPanning:
++      return "sw-resize";
++    case Type::kWestResize:
++    case Type::kWestPanning:
++      return "w-resize";
++    case Type::kNorthSouthResize:
++    case Type::kMiddlePanningVertical:
++      return "ns-resize";
++    case Type::kEastWestResize:
++    case Type::kMiddlePanningHorizontal:
++      return "ew-resize";
++    case Type::kNorthEastSouthWestResize:
++      return "nesw-resize";
++    case Type::kNorthWestSouthEastResize:
++      return "nwse-resize";
++    case Type::kColumnResize:
++      return "col-resize";
++    case Type::kRowResize:
++      return "row-resize";
++    case Type::kMiddlePanning:
++    case Type::kMove:
++    case Type::kDndMove:
++      return "move";
++    case Type::kVerticalText:
++      return "vertical-text";
++    case Type::kCell:
++      return "cell";
++    case Type::kContextMenu:
++      return "context-menu";
++    case Type::kAlias:
++    case Type::kDndLink:
++      return "alias";
++    case Type::kProgress:
++      return "progress";
++    case Type::kNoDrop:
++    case Type::kDndNone:
++      return "no-drop";
++    case Type::kCopy:
++    case Type::kDndCopy:
++      return "copy";
++    case Type::kNone:
++      return "none";
++    case Type::kNotAllowed:
++    case Type::kEastWestNoResize:
++    case Type::kNorthSouthNoResize:
++    case Type::kNorthEastSouthWestNoResize:
++    case Type::kNorthWestSouthEastNoResize:
++      return "not-allowed";
++    case Type::kZoomIn:
++      return "zoom-in";
++    case Type::kZoomOut:
++      return "zoom-out";
++    case Type::kGrab:
++      return "grab";
++    case Type::kGrabbing:
++      return "grabbing";
++    case Type::kCustom:
++      return CustomCss(cursor);
++  }
++  return "default";
++}
++
++}  // namespace
++
++PrtsCursorBridge::PrtsCursorBridge(
++    base::RepeatingCallback<void(const std::string&)> send)
++    : send_(std::move(send)) {
++  if (ui::IsPrtsRemoteMode()) {
++    views::RemoteCursorSink::SetInstance(this);
++  }
++}
++
++PrtsCursorBridge::~PrtsCursorBridge() {
++  if (views::RemoteCursorSink::GetInstance() == this) {
++    views::RemoteCursorSink::SetInstance(nullptr);
++  }
++}
++
++void PrtsCursorBridge::SetActiveHost(aura::WindowTreeHost* host) {
++  host_ = host ? host->GetWeakPtr() : nullptr;
++  last_cursor_.reset();
++  last_css_.clear();
++  if (host_) {
++    auto* client = aura::client::GetCursorClient(host_->window());
++    ui::Cursor cursor(ui::mojom::CursorType::kPointer);
++    if (client) {
++      cursor = client->IsCursorVisible()
++                   ? client->GetCursor()
++                   : ui::Cursor(ui::mojom::CursorType::kNone);
++    }
++    OnCursorChanged(host_->window(), cursor);
++  }
++}
++
++void PrtsCursorBridge::OnCursorChanged(aura::Window* root,
++                                       const ui::Cursor& cursor) {
++  if (!ui::IsPrtsRemoteMode() || !host_ || root != host_->window() ||
++      (last_cursor_ && *last_cursor_ == cursor)) {
++    return;
++  }
++  last_cursor_ = cursor;
++  std::string css = CursorCss(cursor);
++  if (css == last_css_) {
++    return;
++  }
++  last_css_ = css;
++  auto send = send_;
++  send.Run(css);
++}
++
++}  // namespace prts
+diff --git a/chrome/browser/prts/prts_cursor_bridge.h b/chrome/browser/prts/prts_cursor_bridge.h
+new file mode 100644
+index 0000000000..669f12ba8a
+--- /dev/null
++++ b/chrome/browser/prts/prts_cursor_bridge.h
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_PRTS_PRTS_CURSOR_BRIDGE_H_
++#define CHROME_BROWSER_PRTS_PRTS_CURSOR_BRIDGE_H_
++
++#include <optional>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "ui/base/cursor/cursor.h"
++#include "ui/views/widget/desktop_aura/remote_cursor_sink.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++
++namespace prts {
++
++// UI sequence only. Owns the Views sink registration for the controller's life.
++class PrtsCursorBridge : public views::RemoteCursorSink {
++ public:
++  explicit PrtsCursorBridge(
++      base::RepeatingCallback<void(const std::string&)> send);
++  ~PrtsCursorBridge() override;
++  void SetActiveHost(aura::WindowTreeHost* host);
++  void OnCursorChanged(aura::Window* root, const ui::Cursor& cursor) override;
++
++ private:
++  base::RepeatingCallback<void(const std::string&)> send_;
++  base::WeakPtr<aura::WindowTreeHost> host_;
++  std::optional<ui::Cursor> last_cursor_;
++  std::string last_css_;
++};
++
++}  // namespace prts
++
++#endif  // CHROME_BROWSER_PRTS_PRTS_CURSOR_BRIDGE_H_
 diff --git a/chrome/browser/prts/prts_delegates.h b/chrome/browser/prts/prts_delegates.h
 new file mode 100644
 index 0000000000..52bf7e133d
@@ -1226,10 +1585,10 @@ index 0000000000..52bf7e133d
 +#endif  // CHROME_BROWSER_PRTS_PRTS_DELEGATES_H_
 diff --git a/chrome/browser/prts/prts_ime_bridge.cc b/chrome/browser/prts/prts_ime_bridge.cc
 new file mode 100644
-index 0000000000..96362694a5
+index 0000000000..4febd2ac6f
 --- /dev/null
 +++ b/chrome/browser/prts/prts_ime_bridge.cc
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,285 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1248,6 +1607,7 @@ index 0000000000..96362694a5
 +#include "ui/base/ime/remote_input_method.h"
 +#include "ui/base/ime/text_input_client.h"
 +#include "ui/base/ime/text_input_flags.h"
++#include "ui/base/ime/virtual_keyboard_controller.h"
 +#include "ui/base/ui_base_switches.h"
 +#include "ui/gfx/geometry/rect.h"
 +#include "ui/wm/core/coordinate_conversion.h"
@@ -1312,6 +1672,7 @@ index 0000000000..96362694a5
 +PrtsImeBridge::~PrtsImeBridge() {
 +  if (input_method_) {
 +    input_method_->SetVirtualKeyboardCallback({});
++    input_method_->SetCompositionCancelledCallback({});
 +    input_method_->RemoveObserver(this);
 +  }
 +}
@@ -1322,6 +1683,7 @@ index 0000000000..96362694a5
 +  }
 +  if (input_method_) {
 +    input_method_->SetVirtualKeyboardCallback({});
++    input_method_->SetCompositionCancelledCallback({});
 +    input_method_->RemoveObserver(this);
 +  }
 +  host_ = host ? host->GetWeakPtr() : nullptr;
@@ -1331,10 +1693,13 @@ index 0000000000..96362694a5
 +      host ? static_cast<ui::RemoteInputMethod*>(host->GetInputMethod())
 +           : nullptr;
 +  focused_ = host != nullptr;
++  ++context_;
 +  if (input_method_) {
 +    input_method_->AddObserver(this);
 +    input_method_->SetVirtualKeyboardCallback(base::BindRepeating(
 +        &PrtsImeBridge::OnKeyboard, weak_factory_.GetWeakPtr()));
++    input_method_->SetCompositionCancelledCallback(base::BindRepeating(
++        &PrtsImeBridge::OnCompositionCancelled, weak_factory_.GetWeakPtr()));
 +  }
 +  Publish();
 +}
@@ -1350,14 +1715,20 @@ index 0000000000..96362694a5
 +}
 +
 +void PrtsImeBridge::Publish() {
++  auto* client = EditableClient();
++  if (client != client_.get()) {
++    client_ = client ? client->AsWeakPtr() : nullptr;
++    ++context_;
++  }
 +  auto state = mojom::ImeState::New();
 +  state->seq = ++seq_;
++  state->context = context_;
 +  state->focused = false;
 +  state->type = "none";
 +  state->mode = "default";
 +  state->flags = 0;
 +  state->reason = "none";
-+  if (auto* client = EditableClient()) {
++  if (client) {
 +    state->focused = true;
 +    const size_t type = static_cast<size_t>(client->GetTextInputType());
 +    const size_t mode = static_cast<size_t>(client->GetTextInputMode());
@@ -1365,26 +1736,35 @@ index 0000000000..96362694a5
 +    state->mode = mode < kModes.size() ? kModes[mode] : "default";
 +    state->flags = WireFlags(client->GetTextInputFlags());
 +    state->reason = Reason(client->GetFocusReason());
++    state->composing = client->HasCompositionText();
 +    gfx::Rect caret = client->GetCaretBounds();
 +    wm::ConvertRectFromScreen(host_->window(), &caret);
 +    const auto size = host_->window()->bounds().size();
-+    caret.Intersect(gfx::Rect(size));
 +    if (!size.IsEmpty()) {
++      // Collapsed renderer carets can have zero width. Rect::Intersect would
++      // erase their position; clamp edges independently instead.
++      const int x = std::clamp(caret.x(), 0, size.width());
++      const int y = std::clamp(caret.y(), 0, size.height());
++      const int right = std::clamp(caret.right(), x, size.width());
++      const int bottom = std::clamp(caret.bottom(), y, size.height());
 +      state->caret_norm =
-+          gfx::RectF(static_cast<float>(caret.x()) / size.width(),
-+                     static_cast<float>(caret.y()) / size.height(),
-+                     static_cast<float>(caret.width()) / size.width(),
-+                     static_cast<float>(caret.height()) / size.height());
++          gfx::RectF(static_cast<float>(x) / size.width(),
++                     static_cast<float>(y) / size.height(),
++                     static_cast<float>(right - x) / size.width(),
++                     static_cast<float>(bottom - y) / size.height());
 +    }
 +  }
 +  // Copy callbacks before invoking embedder code, which may destroy the bridge.
 +  auto state_callback = state_callback_;
 +  auto keyboard_callback = keyboard_callback_;
-+  if ((!state->focused || state->mode == "none") && keyboard_callback) {
-+    keyboard_callback.Run(false, state->seq);
-+  }
++  const bool hide = !state->focused || state->mode == "none";
++  // State precedes its visibility decision; every message has a unique seq.
++  const uint32_t hide_seq = hide ? ++seq_ : 0;
 +  if (state_callback) {
 +    state_callback.Run(std::move(state));
++  }
++  if (hide && keyboard_callback) {
++    keyboard_callback.Run(false, hide_seq);
 +  }
 +}
 +
@@ -1393,8 +1773,17 @@ index 0000000000..96362694a5
 +  show =
 +      show && client && client->GetTextInputMode() != ui::TEXT_INPUT_MODE_NONE;
 +  if (keyboard_callback_) {
-+    keyboard_callback_.Run(show, seq_);
++    keyboard_callback_.Run(show, ++seq_);
 +  }
++}
++void PrtsImeBridge::OnCompositionCancelled() {
++  if (!ui::IsPrtsRemoteMode()) {
++    return;
++  }
++  // Cancellation also marks node/selection changes on the same Aura client.
++  // Reject any older in-flight edits rather than applying them to the new node.
++  ++context_;
++  Publish();
 +}
 +void PrtsImeBridge::OnFocus() {
 +  focused_ = true;
@@ -1424,7 +1813,10 @@ index 0000000000..96362694a5
 +  Publish();
 +}
 +
-+void PrtsImeBridge::ImeCommit(const std::string& text) {
++void PrtsImeBridge::ImeCommit(const std::string& text, uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
 +  std::u16string decoded;
 +  if (!DecodeText(text, &decoded)) {
 +    return;
@@ -1435,7 +1827,12 @@ index 0000000000..96362694a5
 +        ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
 +  }
 +}
-+void PrtsImeBridge::ImeCompose(const std::string& text, int32_t cursor) {
++void PrtsImeBridge::ImeCompose(const std::string& text,
++                               int32_t cursor,
++                               uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
 +  ui::CompositionText composition;
 +  if (!DecodeText(text, &composition.text)) {
 +    return;
@@ -1455,7 +1852,10 @@ index 0000000000..96362694a5
 +                                          0, composition.text.size());
 +  client->SetCompositionText(composition);
 +}
-+void PrtsImeBridge::ImeDelete(int32_t before, int32_t after) {
++void PrtsImeBridge::ImeDelete(int32_t before, int32_t after, uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
 +  if (before < 0 || after < 0 || before > 4096 || after > 4096) {
 +    return;
 +  }
@@ -1463,13 +1863,23 @@ index 0000000000..96362694a5
 +    client->ExtendSelectionAndDelete(before, after);
 +  }
 +}
++void PrtsImeBridge::ImeHidden(uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
++  // Keep the content VK helper's observer state coherent so a subsequent tap
++  // can request another show without changing the remote editable focus.
++  if (ui::IsPrtsRemoteMode() && input_method_) {
++    input_method_->GetVirtualKeyboardController()->DismissVirtualKeyboard();
++  }
++}
 +}  // namespace prts
 diff --git a/chrome/browser/prts/prts_ime_bridge.h b/chrome/browser/prts/prts_ime_bridge.h
 new file mode 100644
-index 0000000000..5464723f79
+index 0000000000..6dd6a28f79
 --- /dev/null
 +++ b/chrome/browser/prts/prts_ime_bridge.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,62 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1504,9 +1914,10 @@ index 0000000000..5464723f79
 +  PrtsImeBridge(StateCallback state, KeyboardCallback keyboard);
 +  ~PrtsImeBridge() override;
 +  void SetActiveHost(aura::WindowTreeHost* host);
-+  void ImeCommit(const std::string& text);
-+  void ImeCompose(const std::string& text, int32_t cursor);
-+  void ImeDelete(int32_t before, int32_t after);
++  void ImeCommit(const std::string& text, uint32_t context);
++  void ImeCompose(const std::string& text, int32_t cursor, uint32_t context);
++  void ImeDelete(int32_t before, int32_t after, uint32_t context);
++  void ImeHidden(uint32_t context);
 +
 +  void OnFocus() override;
 +  void OnBlur() override;
@@ -1518,22 +1929,25 @@ index 0000000000..5464723f79
 +  ui::TextInputClient* EditableClient() const;
 +  void Publish();
 +  void OnKeyboard(bool show);
++  void OnCompositionCancelled();
 +  StateCallback state_callback_;
 +  KeyboardCallback keyboard_callback_;
 +  base::WeakPtr<aura::WindowTreeHost> host_;
++  base::WeakPtr<ui::TextInputClient> client_;
 +  raw_ptr<ui::RemoteInputMethod> input_method_ = nullptr;
 +  bool focused_ = false;
 +  uint32_t seq_ = 0;
++  uint32_t context_ = 1;
 +  base::WeakPtrFactory<PrtsImeBridge> weak_factory_{this};
 +};
 +}  // namespace prts
 +#endif  // CHROME_BROWSER_PRTS_PRTS_IME_BRIDGE_H_
 diff --git a/chrome/browser/prts/prts_input.cc b/chrome/browser/prts/prts_input.cc
 new file mode 100644
-index 0000000000..3599008e89
+index 0000000000..d5c5fa1080
 --- /dev/null
 +++ b/chrome/browser/prts/prts_input.cc
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,353 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1774,6 +2188,10 @@ index 0000000000..3599008e89
 +                                             : ui::EventPointerType::kTouch,
 +      input.pid, std::max(0.0f, input.radius_x), std::max(0.0f, input.radius_y),
 +      std::clamp(input.pressure, 0.0f, 1.0f));
++  if (input.action == Action::kCancel) {
++    loc = it->second.location;
++    details = it->second.details;
++  }
 +  if (input.action == Action::kUp || input.action == Action::kCancel) {
 +    touches_.erase(input.pid);
 +  } else {
@@ -2125,10 +2543,10 @@ index 0000000000..2892e333f3
 +#endif  // CHROME_BROWSER_PRTS_PRTS_SWITCHES_H_
 diff --git a/chrome/browser/prts/prts_window_registry.cc b/chrome/browser/prts/prts_window_registry.cc
 new file mode 100644
-index 0000000000..b0626c89bd
+index 0000000000..e36a482d8d
 --- /dev/null
 +++ b/chrome/browser/prts/prts_window_registry.cc
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,340 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -2158,6 +2576,8 @@ index 0000000000..b0626c89bd
 +#include "ui/aura/window_tree_host.h"
 +#include "ui/aura/window_tree_host_observer.h"
 +#include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
++#include "ui/display/win/screen_win_display.h"
 +#include "ui/views/widget/widget.h"
 +#include "ui/views/widget/widget_observer.h"
 +
@@ -2316,6 +2736,10 @@ index 0000000000..b0626c89bd
 +  if (entries_.contains(id)) {
 +    return;
 +  }
++  widget->Maximize();
++  widget->GetNativeWindow()->GetHost()->SetBoundsInPixels(
++      display::win::GetScreenWinHeadless()
++          ->GetPrimaryScreenWinDisplay().pixel_bounds());
 +  auto entry = std::make_unique<Entry>(this, id, browser.get(), widget);
 +  entry->last_info_ = entry->Info();
 +  auto info = entry->last_info_->Clone();
@@ -2416,6 +2840,20 @@ index 0000000000..b0626c89bd
 +  }
 +}
 +
++void PrtsWindowRegistry::MaximizeAll() {
++  for (auto& [id, entry] : entries_) {
++    // Headless Maximize() is a no-op for an already maximized window. Restore
++    // first to recompute its bounds and scale from the updated work area.
++    entry->widget_->Restore();
++    entry->widget_->Maximize();
++    // Avoid DIP-to-pixel round trips adding an odd capture pixel at fractional
++    // DSF. Preserve maximized state while making the root equal monitor pixels.
++    entry->host_->SetBoundsInPixels(display::win::GetScreenWinHeadless()
++                                      ->GetPrimaryScreenWinDisplay()
++                                      .pixel_bounds());
++  }
++}
++
 +void PrtsWindowRegistry::NewWindow(const std::string& url) {
 +  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 +  Profile* profile = ProfileManager::GetLastUsedProfileAllowedByPolicy();
@@ -2451,10 +2889,10 @@ index 0000000000..b0626c89bd
 +}  // namespace prts
 diff --git a/chrome/browser/prts/prts_window_registry.h b/chrome/browser/prts/prts_window_registry.h
 new file mode 100644
-index 0000000000..857b3ccb88
+index 0000000000..47b557f526
 --- /dev/null
 +++ b/chrome/browser/prts/prts_window_registry.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,77 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -2499,6 +2937,7 @@ index 0000000000..857b3ccb88
 +  void NewWindow(const std::string& url) override;
 +
 +  aura::WindowTreeHost* GetHost(uint32_t id) const;
++  void MaximizeAll();
 +  uint32_t active_window_id() const { return active_id_; }
 +  void AddObserver(Observer* observer);
 +  void RemoveObserver(Observer* observer);

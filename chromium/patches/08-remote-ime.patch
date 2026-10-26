@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
-Date: Mon, 26 Oct 2026 03:35:10 +0800
+Date: Mon, 26 Oct 2026 13:44:25 +0800
 Subject: [PATCH] ime: RemoteInputMethod in remote mode
 
 Patch-Name: 08-remote-ime
@@ -46,10 +46,10 @@ index ad27a262b3..d7841182c1 100644
  
 diff --git a/ui/base/ime/remote_input_method.cc b/ui/base/ime/remote_input_method.cc
 new file mode 100644
-index 0000000000..b2614bbdec
+index 0000000000..1d3e15964d
 --- /dev/null
 +++ b/ui/base/ime/remote_input_method.cc
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,165 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -120,6 +120,21 @@ index 0000000000..b2614bbdec
 +  // MockInputMethod notifies for non-null clients only.
 +  if (!client) {
 +    OnTextInputTypeChanged(nullptr);
++  }
++}
++
++void RemoteInputMethod::SetCompositionCancelledCallback(
++    base::RepeatingClosure callback) {
++  composition_cancelled_ = std::move(callback);
++}
++
++void RemoteInputMethod::CancelComposition(const TextInputClient* client) {
++  // PRTS: this class is selected only by the guarded remote-mode factory.
++  // The renderer may already have changed its active node. Notify the remote
++  // editor without clearing composition on a possibly different client.
++  if (client == GetTextInputClient() && composition_cancelled_) {
++    auto callback = composition_cancelled_;
++    callback.Run();
 +  }
 +}
 +
@@ -202,10 +217,10 @@ index 0000000000..b2614bbdec
 +}  // namespace ui
 diff --git a/ui/base/ime/remote_input_method.h b/ui/base/ime/remote_input_method.h
 new file mode 100644
-index 0000000000..d2ef15c72b
+index 0000000000..9c9fdee333
 --- /dev/null
 +++ b/ui/base/ime/remote_input_method.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,41 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -227,6 +242,8 @@ index 0000000000..d2ef15c72b
 +
 +  // One active-root bridge installs this callback; clear it before detaching.
 +  void SetVirtualKeyboardCallback(base::RepeatingCallback<void(bool)> callback);
++  void SetCompositionCancelledCallback(base::RepeatingClosure callback);
++  void CancelComposition(const TextInputClient* client) override;
 +  void SetFocusedTextInputClient(TextInputClient* client) override;
 +  void DetachTextInputClient(TextInputClient* client) override;
 +  void OnTextInputTypeChanged(TextInputClient* client) override;
@@ -240,6 +257,7 @@ index 0000000000..d2ef15c72b
 + private:
 +  class KeyboardController;
 +  std::unique_ptr<KeyboardController> controller_;
++  base::RepeatingClosure composition_cancelled_;
 +  base::WeakPtrFactory<RemoteInputMethod> weak_factory_{this};
 +};
 +}  // namespace ui
