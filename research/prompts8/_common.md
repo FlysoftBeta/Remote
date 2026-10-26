@@ -23,6 +23,8 @@ Rules:
 - Chromium C++ style; upstream hook lines get a `// PRTS:` comment and are guarded by `ui::IsPrtsRemoteMode()` (or a PRTS switch); minimal changes.
 - Treat run-to-run differences below ~20 ms as noise unless repeated (capture phase locks per run).
 - Final message: 5-8 lines summary (results, files changed, what is unverified).
-CPU LOAD NOTE: a background out\rel build (siso/clang-cl, set to Idle priority) may still be running during your measurements. Record in every results
+CPU LOAD NOTE: a background out\rel build (siso/clang-cl) may still be running during your measurements. Before each measurement batch set it to
+Idle priority (PowerShell: `Get-Process siso*,autoninja*,clang-cl,lld-link -EA SilentlyContinue | % { try { $_.PriorityClass='Idle' } catch {} }`; new
+compiler processes inherit Idle from siso); never kill it. Record in every results
 table whether it was running (`Get-Process clang-cl`), and compare your baseline against M3 numbers (research/m3/matrix2.md): research/m4/capture-phase.md
 saw shaped capture->decoded P80 135-143 ms, worse than M3's 104-124 ms display numbers, possibly because of that build.
