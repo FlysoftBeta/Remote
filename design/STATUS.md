@@ -86,3 +86,45 @@
 - Widevine：Codex 已从 Google 组件更新服务取得 Win x64 CDM 4.10.3112.0（`C:\src\tmp\m1\widevine\`，`STEPS.md`：复制到 `third_party/widevine/cdm/win/x64/`，
   args 加 `enable_widevine/enable_library_cdms/bundle_widevine_cdm=true`、`enable_cdm_host_verification=false`）。尚未应用（需要较大重建）。
 - 测试脚本：`/c/src/tmp/m1/{be.sh,test.sh,kill.sh,cp.sh}`；endpoint 参数 `--app`、`--cr-<switch>` 透传 chrome；chrome 日志用 `--cr-enable-logging` → `<profile>\chrome_debug.log`。
+
+## M1 交接（Stage 3 orchestrator，2026-10-26 08:56）——下一位 orchestrator 从这里开始
+
+### 已经能用（真实链路，已验证）
+- PRTS chrome（`--headless=new --prts-remote`，由 endpoint 拉起）→ 根 `FrameSinkVideoCapturer`（D3D11 keyed-mutex 共享纹理）→ Mojo（isolated invitation，S10a 通过）
+  → `prts_endpoint`（私有拷贝 → staging → I420 → **OpenH264**）→ libwebrtc → viewer。30 fps 连续出帧。
+- 延迟（`research/m1/debug-frames.md`；回环、headless Edge 156 viewer、OpenH264、dev 构建）：tab 窗口 capture→display **P50 58.4 / P95 68.5 / P99 74.2 ms**；
+  `--app` 窗口 P50 75.8 / P95 87.6 / P99 90.8 ms。注意：页面标记在浏览器 UI 下方，当时用的是任务内的对齐脚本（`C:\src\tmp\m1\debug-frames\run-aligned.mjs`）；
+  正式修复见下方 marker-align 任务。input-to-photon 尚未测。
+- 输入与弹层（`research/m1/input-validate.md`，截图在 `C:\src\tmp\m1\input-validate\final-*.png`，我抽查过 select 与应用菜单截图）：点击导航、omnibox 输入+回车、
+  Ctrl+T/切换/关闭标签、应用菜单、右键菜单、`<select>`（S11：弹层留在根内，无新顶层 HWND）、滚轮、拖选、hover/tooltip、键盘（Shift/Backspace/方向键）**10/10 通过**。
+- 品牌：remote 模式 UA = `Chrome/157.0.0.0`（无 Headless），brands = Not-A.Brand / Google Chrome / Chromium v157；菜单里产品名 PRTS。
+- Widevine：CDM 4.10.3112.0 已放到 `src/third_party/widevine/cdm/win/x64/`（不入库，见 `design/07-widevine.md`），args 已加入 dev/rel 并重建 out\dev（exit=0）；
+  **运行期 EME 验证未做**（`requestMediaKeySystemAccess('com.widevine.alpha')`）。
+
+### 补丁与代码状态（全部已提交）
+- src `prts` 分支 = upstream + 9 个提交，已 `cr export`：01 switch、04 viz CompleteCapture（无守卫）、11 弹层根内、12 品牌、13 Web 身份、06 aura/views 远程输入、
+  08 RemoteInputMethod、02 `chrome/browser/prts/*`（含启动导航重试 P0）、14 gn_all。src 工作区干净（除 widevine 二进制与 `prts_endpoint` 符号链接）。
+- `endpoint/`（`mklink /D src\prts_endpoint` → remotekit\endpoint，siso 不支持 junction）。endpoint 参数：`--chrome= --user-data-dir= --url= [--app] [--synthetic] [--cr-<switch>…]`。
+- 工具：`/c/src/tmp/m1/{be.sh（先杀进程再增量构建）,test.sh,cp.sh,kill.sh}`；CP 读 `ENDPOINT_PATH/ENDPOINT_ARGS`；`tools/latency/run.mjs --no-mock`；
+  `tools/latency/remote-page.html`；chrome 日志 `--cr-enable-logging` → `<profile>\chrome_debug.log`（endpoint 拉起的 chrome 没有 stderr）。
+
+### 已知问题
+1. 启动时 Network Service 必崩一次（无 `--prts-remote` 也崩；`NetworkServiceInProcess2` 不崩）→ 首个导航失败（空页）。目前 P0：`PrtsStartupNavigationRecovery` 重试一次。根因待查（任务 netsvc-crash）。
+2. 窗口 1898x1069 而不是 1920x1080（有标题栏与最小化/最大化/关闭按钮，viewer 两侧有黑边）→ remote 模式应最大化/无边框（M2，S6）。
+3. 本地化：zh-CN 下仍显示“您的 Chromium”（补丁 12 只改了英文 GRIT，未改 xtb 翻译）。
+4. 帧路径每帧 `CreateTexture2D` + CPU staging/I420（M1 临时）；oneVPL + VPP 零拷贝在 M3。GPU 进程刷 `vsync_thread_win_dxgi: Failed to find DXGI output`（无匹配显示器，帧仍是 30 fps）。
+5. 光标（remote_cursor_sink 未接到 endpoint/viewer）、IME/软键盘端到端、触摸未测（M2）。Chrome 89 + H.264 + playout-delay(0,0) 未实测。
+6. endpoint 用 `#pragma allow_unsafe_buffers` 和去掉 style plugin 编译（M5 再清理）。
+
+### Codex 任务（交接时）
+- 已完成并已审：s10-link、m1-small-patches、endpoint-webrtc、endpoint-d3d、capture-registry、input-ime、m1-debug-frames、m1-input-validate、widevine（笔记在 `research/m1/`、草稿在 `C:\src\tmp\m1\*`）。
+- **仍在运行**（08:33-08:46 启动，输出未审）：`vpl-encoder`（审查 t1 调参 + oneVPL `webrtc::VideoEncoder` 草稿 → `C:\src\tmp\m1\vpl\`）、
+  `netsvc-crash`（崩溃根因，只读 → `C:\src\tmp\m1\netsvc\NOTES.md`）、`marker-align`（viewer 自动找标记行，会改 `viewer/`、`tools/latency/`，未提交 → 需审后提交）。
+  提示词在 `research/prompts5/`，日志 `.codex-logs/`。
+- `research/t1-encoder-tuning.md` + `tools/encoder-tuning/`（07575f6，自主运行）**我未审**；vpl-encoder 任务的 REVIEW.md 是第一份审查。
+
+### 下一步（建议顺序）
+1. 审 marker-align → 用 `tools/latency/run.mjs --no-mock` 正式复测 capture→display 与 input-to-photon（tab 模式），写入本文件；运行期验证 Widevine EME。
+2. 审 netsvc-crash 结论，替换 P0 重试为真正修复。
+3. M2：remote 窗口最大化/无边框 + `--screen-info` 与 viewer 尺寸（S6）、光标、IME/软键盘端到端、触摸 + `prts-web-prefs`（补丁 09）、zh-CN 品牌字符串。
+4. M3：审 vpl-encoder 草稿 → oneVPL 编码器 + 零拷贝 VPP（取代 OpenH264 与 CPU I420），rel 构建测量，Chrome 89 实测。
