@@ -128,6 +128,7 @@
       if (!current(s, p)) return;
       sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, osk: isTouch, dpr: devicePixelRatio },
         view: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio } });
+      sendViewport();
       sendCtl({ t: 'focus', focused: document.hasFocus() && !document.hidden });
     };
     ch.ctl.onmessage = function (e) { if (current(s, p)) { try { onCtl(JSON.parse(e.data)); } catch (err) { console.warn('ctl', err); } } };
@@ -198,11 +199,26 @@
   window.addEventListener('blur', focusChanged);
   window.addEventListener('focus', focusChanged);
   document.addEventListener('visibilitychange', focusChanged);
+  function sendViewport() {
+    var r = video.getBoundingClientRect();
+    sendCtl({ t: 'resize', w: Math.round(r.width), h: Math.round(r.height), dpr: devicePixelRatio });
+  }
   var rzTimer = null;
-  window.addEventListener('resize', function () {
+  function scheduleViewport() {
     clearTimeout(rzTimer);
-    rzTimer = setTimeout(function () { sendCtl({ t: 'resize', w: innerWidth, h: innerHeight, dpr: devicePixelRatio }); }, 200);
-  });
+    rzTimer = setTimeout(sendViewport, 200);
+  }
+  window.addEventListener('resize', scheduleViewport);
+  // Moving between displays can change DPR without changing CSS dimensions.
+  // addListener/removeListener also work on the Chrome 89 viewer baseline.
+  var dprMedia = null;
+  function watchDpr() {
+    if (dprMedia) dprMedia.removeListener(dprChanged);
+    dprMedia = matchMedia('(resolution: ' + devicePixelRatio + 'dppx)');
+    dprMedia.addListener(dprChanged);
+  }
+  function dprChanged() { watchDpr(); scheduleViewport(); }
+  watchDpr();
   stage.addEventListener('pointerdown', function () { if (video.paused) { var play = video.play(); if (play && play.catch) play.catch(function () {}); } });
 
   // ---- stats overlay (1 Hz) ----

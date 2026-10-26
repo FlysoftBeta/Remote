@@ -9,6 +9,7 @@
 
 #include "prts_endpoint/browser_session.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -286,6 +287,33 @@ void BrowserSession::OnControl(base::DictValue m) {
     if (active_) {
       browser->RequestRefreshFrame(active_);
     }
+  } else if (*type == "resize") {
+    auto w = m.FindDouble("w"), h = m.FindDouble("h"), dpr = m.FindDouble("dpr");
+    if (!w || !h || !dpr || !std::isfinite(*w) || !std::isfinite(*h) ||
+        !std::isfinite(*dpr) || *w < 1 || *h < 1 || *dpr <= 0 ||
+        *w > 16384 || *h > 16384) {
+      return;
+    }
+    constexpr double kPixelBudget = 1920.0 * 1080.0;
+    // Scale uniformly to meet the minimum, preserving the viewer's aspect.
+    double scale = std::max({1.0, 640.0 / *w, 480.0 / *h});
+    scale = std::min(scale, std::sqrt(kPixelBudget / (*w * *h)));
+    int width = static_cast<int>(std::ceil(*w * scale / 2)) * 2;
+    int height = static_cast<int>(std::ceil(*h * scale / 2)) * 2;
+    // Rounding up may cross the budget at DSF 1.
+    while (static_cast<double>(width) * height > kPixelBudget) {
+      if (width >= height) width -= 2;
+      else height -= 2;
+    }
+    double requested_dsf = std::max(
+        1.0, std::min(*dpr, std::sqrt(kPixelBudget / (width * height))));
+    float dsf = static_cast<float>(requested_dsf);
+    // Avoid rounding above the budget, retaining exactly representable DSFs.
+    if (dsf > requested_dsf) {
+      dsf = std::nextafter(dsf, 0.0f);
+    }
+    LOG(INFO) << "PRTS viewport " << width << "x" << height << " @" << dsf;
+    browser->SetViewport(gfx::Size(width, height), dsf);
   } else if (*type == "focus") {
     if (auto focused = m.FindBool("focused")) {
       if (!*focused) {
@@ -343,7 +371,6 @@ void BrowserSession::OnControl(base::DictValue m) {
     browser->Key(active_, std::move(p));
     browser->Key(active_, std::move(up));
   }
-  // ime.hidden records local OSK dismissal only. resize has no v1 Mojo method;
-  // browser WindowChanged notifications remain authoritative for frame size.
+  // ime.hidden records local OSK dismissal only.
 }
 }  // namespace prts

@@ -55,6 +55,7 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
       : encoder_(std::move(encoder)) {}
   int InitEncode(const webrtc::VideoCodec* codec,
                  const Settings& settings) override {
+    LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x" << codec->height;
     auto screenshare = *codec;
     screenshare.mode = webrtc::VideoCodecMode::kScreensharing;
     return encoder_->InitEncode(&screenshare, settings);

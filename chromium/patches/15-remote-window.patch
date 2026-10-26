@@ -1,0 +1,285 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 10:46:53 +0800
+Subject: [PATCH] prts: remote windows maximized and frameless; runtime
+ viewport from the viewer
+
+Remote mode: browser windows show maximized with no caption buttons, resize
+border or non-client hit areas. SetViewport over Mojo updates the headless
+screen (ScreenWinHeadless::SetPrimaryDisplayGeometry) and re-maximizes the
+registered browser windows.
+
+Patch-Name: 15-remote-window
+
+diff --git a/chrome/browser/prts/BUILD.gn b/chrome/browser/prts/BUILD.gn
+index dd57f2b5be..67e2240057 100644
+--- a/chrome/browser/prts/BUILD.gn
++++ b/chrome/browser/prts/BUILD.gn
+@@ -50,6 +50,7 @@ if (is_win) {
+       "//ui/base",
+       "//ui/base/ime",
+       "//ui/compositor",
++      "//ui/display",
+       "//ui/events",
+       "//ui/gfx",
+       "//ui/views",
+diff --git a/chrome/browser/prts/mojom/prts.mojom b/chrome/browser/prts/mojom/prts.mojom
+index 1942c997d7..1059ce0c80 100644
+--- a/chrome/browser/prts/mojom/prts.mojom
++++ b/chrome/browser/prts/mojom/prts.mojom
+@@ -120,4 +120,5 @@ interface PrtsBrowser {
+   ImeDelete(int32 before, int32 after);
+   Focus(bool focused);
+   NewWindow(string url);               // debug helper; empty = NTP
++  SetViewport(gfx.mojom.Size dip, float dsf);
+ };
+diff --git a/chrome/browser/prts/prts_controller.cc b/chrome/browser/prts/prts_controller.cc
+index 4bd407e1db..fde5d9df8c 100644
+--- a/chrome/browser/prts/prts_controller.cc
++++ b/chrome/browser/prts/prts_controller.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/prts/prts_controller.h"
+ 
++#include <cmath>
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
+@@ -28,6 +29,7 @@
+ #include "content/public/browser/web_contents_observer.h"
+ #include "net/base/net_errors.h"
+ #include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
+ #include "url/gurl.h"
+ 
+ namespace prts {
+@@ -280,6 +282,16 @@ void PrtsController::Focus(bool focused) {
+     delegates_.windows->Focus(focused);
+   }
+ }
++void PrtsController::SetViewport(const gfx::Size& dip, float dsf) {
++  if (!ui::IsPrtsRemoteMode() || dip.IsEmpty() || dip.width() > 8192 ||
++      dip.height() > 8192 || !std::isfinite(dsf) || dsf < 1.0f || dsf > 4.0f) {
++    return;
++  }
++  auto* screen = display::win::GetScreenWinHeadless();
++  screen->SetPrimaryDisplayGeometry(dip, dsf);
++  registry_->MaximizeAll();
++}
++
+ void PrtsController::NewWindow(const std::string& url) {
+   if (delegates_.windows) {
+     delegates_.windows->NewWindow(url);
+diff --git a/chrome/browser/prts/prts_controller.h b/chrome/browser/prts/prts_controller.h
+index 796910cd35..16160e08a8 100644
+--- a/chrome/browser/prts/prts_controller.h
++++ b/chrome/browser/prts/prts_controller.h
+@@ -47,6 +47,7 @@ class PrtsController : public mojom::PrtsBrowser {
+   void ImeDelete(int32_t before, int32_t after) override;
+   void Focus(bool focused) override;
+   void NewWindow(const std::string& url) override;
++  void SetViewport(const gfx::Size& dip, float dsf) override;
+ 
+  private:
+   void OnDisconnect();
+diff --git a/chrome/browser/prts/prts_window_registry.cc b/chrome/browser/prts/prts_window_registry.cc
+index b0626c89bd..e36a482d8d 100644
+--- a/chrome/browser/prts/prts_window_registry.cc
++++ b/chrome/browser/prts/prts_window_registry.cc
+@@ -27,6 +27,8 @@
+ #include "ui/aura/window_tree_host.h"
+ #include "ui/aura/window_tree_host_observer.h"
+ #include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
++#include "ui/display/win/screen_win_display.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_observer.h"
+ 
+@@ -185,6 +187,10 @@ void PrtsWindowRegistry::AddWindow(
+   if (entries_.contains(id)) {
+     return;
+   }
++  widget->Maximize();
++  widget->GetNativeWindow()->GetHost()->SetBoundsInPixels(
++      display::win::GetScreenWinHeadless()
++          ->GetPrimaryScreenWinDisplay().pixel_bounds());
+   auto entry = std::make_unique<Entry>(this, id, browser.get(), widget);
+   entry->last_info_ = entry->Info();
+   auto info = entry->last_info_->Clone();
+@@ -285,6 +291,20 @@ void PrtsWindowRegistry::Focus(bool focused) {
+   }
+ }
+ 
++void PrtsWindowRegistry::MaximizeAll() {
++  for (auto& [id, entry] : entries_) {
++    // Headless Maximize() is a no-op for an already maximized window. Restore
++    // first to recompute its bounds and scale from the updated work area.
++    entry->widget_->Restore();
++    entry->widget_->Maximize();
++    // Avoid DIP-to-pixel round trips adding an odd capture pixel at fractional
++    // DSF. Preserve maximized state while making the root equal monitor pixels.
++    entry->host_->SetBoundsInPixels(display::win::GetScreenWinHeadless()
++                                      ->GetPrimaryScreenWinDisplay()
++                                      .pixel_bounds());
++  }
++}
++
+ void PrtsWindowRegistry::NewWindow(const std::string& url) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+   Profile* profile = ProfileManager::GetLastUsedProfileAllowedByPolicy();
+diff --git a/chrome/browser/prts/prts_window_registry.h b/chrome/browser/prts/prts_window_registry.h
+index 857b3ccb88..47b557f526 100644
+--- a/chrome/browser/prts/prts_window_registry.h
++++ b/chrome/browser/prts/prts_window_registry.h
+@@ -42,6 +42,7 @@ class PrtsWindowRegistry final : public PrtsWindowRegistryDelegate,
+   void NewWindow(const std::string& url) override;
+ 
+   aura::WindowTreeHost* GetHost(uint32_t id) const;
++  void MaximizeAll();
+   uint32_t active_window_id() const { return active_id_; }
+   void AddObserver(Observer* observer);
+   void RemoveObserver(Observer* observer);
+diff --git a/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc b/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
+index bf13db120f..496f866006 100644
+--- a/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
++++ b/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
+@@ -43,6 +43,8 @@
+ #include "ui/base/mojom/menu_source_type.mojom-shared.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/base/theme_provider.h"
++// PRTS: Remote browser windows follow the virtual screen.
++#include "ui/base/ui_base_switches.h"
+ #include "ui/base/win/hwnd_metrics.h"
+ #include "ui/display/screen.h"
+ #include "ui/display/win/screen_win.h"
+@@ -305,6 +307,10 @@ void BrowserDesktopWindowTreeHostWin::Show(
+       OnHostWorkspaceChanged();
+     }
+   }
++  // PRTS: Applies to startup, Ctrl+N and browser popup windows alike.
++  if (ui::IsPrtsRemoteMode()) {
++    show_state = ui::mojom::WindowShowState::kMaximized;
++  }
+   DesktopWindowTreeHostWin::Show(show_state, restore_bounds);
+ }
+ 
+@@ -333,6 +339,12 @@ int BrowserDesktopWindowTreeHostWin::GetInitialShowState() const {
+ bool BrowserDesktopWindowTreeHostWin::GetClientAreaInsets(
+     gfx::Insets* insets,
+     int frame_thickness) const {
++  // PRTS: Headless maximized bounds already equal the virtual work area;
++  // native resize insets would shrink the captured root on every edge.
++  if (ui::IsPrtsRemoteMode()) {
++    *insets = gfx::Insets();
++    return true;
++  }
+   // Always use default insets for opaque frame.
+   if (!browser_view_ || !ShouldUseNativeFrame()) {
+     return false;
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_win.cc b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
+index 5b7aa72031..da4ff34484 100644
+--- a/chrome/browser/ui/views/frame/browser_frame_view_win.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
+@@ -43,6 +43,8 @@
+ #include "ui/base/resource/resource_bundle_win.h"
+ #include "ui/base/theme_provider.h"
+ #include "ui/base/ui_base_features.h"
++// PRTS: Remote browser windows follow the virtual screen.
++#include "ui/base/ui_base_switches.h"
+ #include "ui/base/win/hwnd_metrics.h"
+ #include "ui/color/color_provider_key.h"
+ #include "ui/display/win/dpi.h"
+@@ -277,6 +279,10 @@ gfx::Rect BrowserFrameViewWin::GetWindowBoundsForClientBounds(
+ }
+ 
+ int BrowserFrameViewWin::NonClientHitTest(const gfx::Point& point) {
++  // PRTS: Input belongs to the browser UI; no window dragging or resize border.
++  if (ui::IsPrtsRemoteMode()) {
++    return bounds().Contains(point) ? HTCLIENT : HTNOWHERE;
++  }
+   int super_component = BrowserFrameView::NonClientHitTest(point);
+   if (super_component != HTNOWHERE) {
+     return super_component;
+@@ -583,6 +589,10 @@ int BrowserFrameViewWin::WindowTopY() const {
+ }
+ 
+ int BrowserFrameViewWin::CaptionButtonsRegionWidth() const {
++  // PRTS: Give the tab strip the space normally occupied by window controls.
++  if (ui::IsPrtsRemoteMode()) {
++    return 0;
++  }
+   return caption_button_container_->size().width();
+ }
+ 
+@@ -727,6 +737,12 @@ void BrowserFrameViewWin::LayoutTitleBar() {
+ void BrowserFrameViewWin::LayoutCaptionButtons() {
+   TRACE_EVENT0("views.frame", "BrowserFrameViewWin::LayoutCaptionButtons");
+ 
++  // PRTS: Keep tabs and toolbar while removing desktop window controls.
++  if (ui::IsPrtsRemoteMode()) {
++    caption_button_container_->SetVisible(false);
++    caption_button_container_->SetBounds(0, 0, 0, 0);
++    return;
++  }
+   caption_button_container_->SetVisible(
+       !browser_widget()->IsFullscreen() ||
+       GetBrowserView()->IsWindowControlsOverlayEnabled());
+diff --git a/ui/display/win/screen_win_headless.cc b/ui/display/win/screen_win_headless.cc
+index e1b885898d..504f31632e 100644
+--- a/ui/display/win/screen_win_headless.cc
++++ b/ui/display/win/screen_win_headless.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <windows.h>
+ 
++#include <cmath>
+ #include <vector>
+ 
+ #include "base/compiler_specific.h"
+@@ -142,6 +143,32 @@ int ScreenWinHeadless::GetSystemMetricsForDisplayId(int64_t id, int metric) {
+                           display.device_scale_factor());
+ }
+ 
++// PRTS: Runtime counterpart to the initial --screen-info configuration.
++// The remote-mode caller owns policy; this general screen API also works for
++// other headless embedders without depending on ui/base (which depends on us).
++void ScreenWinHeadless::SetPrimaryDisplayGeometry(const gfx::Size& dip,
++                                                float dsf) {
++  CHECK(!dip.IsEmpty());
++  CHECK(std::isfinite(dsf) && dsf >= 1.0f);
++  Display display = GetPrimaryDisplay();
++  // H.264 requires even pixel dimensions. Round down before publishing so the
++  // capture constraints, compositor and display all agree on the pixel size.
++  gfx::Size pixels(static_cast<int>(dip.width() * dsf) & ~1,
++                   static_cast<int>(dip.height() * dsf) & ~1);
++  // Keep monitor pixels exact: converting through integer DIP bounds can add
++  // an odd pixel at fractional scale factors.
++  MONITORINFOEX& monitor_info = headless_monitor_info_.at(display.id());
++  monitor_info.rcMonitor = gfx::Rect(pixels).ToRECT();
++  monitor_info.rcWork = monitor_info.rcMonitor;
++  auto infos = GetExistingDisplayInfos(/*except_display_id=*/display.id());
++  infos.emplace_back(display.id(), monitor_info, dsf,
++                     display.text_scale_multiplier(), display.color_depth(),
++                     kSdrWhiteLevel, display.rotation(), kDisplayFrequency,
++                     GetDisplayPhysicalPixelsPerInch(dsf),
++                     GetOutputTechnology(display.IsInternal()), display.label());
++  UpdateFromDisplayInfos(infos);
++}
++
+ void ScreenWinHeadless::SetCursorScreenPointForTesting(
+     const gfx::Point& point) {
+   cursor_screen_point_ = point;
+diff --git a/ui/display/win/screen_win_headless.h b/ui/display/win/screen_win_headless.h
+index 5abe7be3cb..8066aead36 100644
+--- a/ui/display/win/screen_win_headless.h
++++ b/ui/display/win/screen_win_headless.h
+@@ -52,6 +52,9 @@ class DISPLAY_EXPORT ScreenWinHeadless
+   // the headless monitor with the specified display id.
+   int GetSystemMetricsForDisplayId(int64_t id, int metric);
+ 
++  // PRTS: Update virtual screen geometry and notify display observers.
++  void SetPrimaryDisplayGeometry(const gfx::Size& dip, float dsf);
++
+   // Screen:
+   gfx::Point GetCursorScreenPoint() override;
+   void SetCursorScreenPointForTesting(const gfx::Point& point) override;
