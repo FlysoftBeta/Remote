@@ -17,6 +17,7 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/bind_post_task.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace prts {
@@ -145,7 +146,15 @@ void BrowserSession::Select(uint32_t id) {
   auto params = mojom::CaptureParams::New();
   params->max_fps = fps_;
   params->nv12 = false;
-  browser->StartCapture(id, std::move(params), source_->BindCapture(luid_, g));
+  // PRTS: A Viz pool reset must also refresh the encoder after a GPU restart.
+  // Weak ownership makes late reset notifications harmless during shutdown.
+  browser->StartCapture(
+      id, std::move(params),
+      source_->BindCapture(
+          luid_, g,
+          base::BindPostTask(
+              main_runner_,
+              base::BindRepeating(&BrowserSession::Refresh, weak_))));
   Send(base::DictValue()
            .Set("t", "frame")
            .Set("w", g.width)

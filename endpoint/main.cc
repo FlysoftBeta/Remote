@@ -7,6 +7,8 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
+#include <windows.h>
+
 #include <memory>
 #include <thread>
 #include <utility>
@@ -26,6 +28,7 @@
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/threading/thread.h"
+#include "base/time/time.h"
 #include "mojo/core/embedder/configuration.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
@@ -71,8 +74,34 @@ int main(int argc, char** argv) {
   if (instance.empty()) {
     instance = "default";
   }
+  // PRTS: the endpoint has no window, so Windows 11 may ignore timer
+  // resolution requests and throttle it; libwebrtc's pacer, probe and
+  // packetizer wake-ups then land on the 15.6 ms tick. Opt out of both and
+  // request 1 ms. --no-hires-timer restores the old behaviour for A/B runs.
+  if (!command.HasSwitch("no-hires-timer")) {
+    PROCESS_POWER_THROTTLING_STATE throttling = {};
+    throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
+                             PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    throttling.StateMask = 0;
+    ::SetProcessInformation(::GetCurrentProcess(), ProcessPowerThrottling,
+                            &throttling, sizeof(throttling));
+    base::Time::ActivateHighResolutionTimer(true);
+  }
   base::SingleThreadTaskExecutor executor;
   base::FieldTrialList field_trials;
+  // PRTS: libwebrtc field trials (read through WebRtcFieldTrials ->
+  // base::FieldTrialList). Opt-in: --webrtc-field-trials=<Trial/Group/...>,
+  // e.g. WebRTC-Video-Pacing/factor:2.5/ . Group names may contain ':' and ','.
+  if (command.HasSwitch("webrtc-field-trials")) {
+    const std::string trials =
+        command.GetSwitchValueASCII("webrtc-field-trials");
+    if (!trials.empty() && trials != "none") {
+      CHECK(base::FieldTrialList::CreateTrialsFromString(trials))
+          << "bad --webrtc-field-trials";
+      LOG(INFO) << "PRTS webrtc field trials: " << trials;
+    }
+  }
   base::FeatureList::InitInstance(
       command.GetSwitchValueASCII("enable-features"),
       command.GetSwitchValueASCII("disable-features"));

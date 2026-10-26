@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "base/functional/callback.h"
 #include "chrome/browser/prts/mojom/prts.mojom.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "prts_endpoint/frame_source.h"
@@ -22,8 +23,11 @@ class D3DFrameSource : public FrameSource,
  public:
   D3DFrameSource(std::shared_ptr<VplEncoderState> encoder_state, int fps);
   ~D3DFrameSource() override;
-  mojo::PendingRemote<mojom::PrtsFrameSink> BindCapture(uint64_t gpu_luid,
-                                                        FrameGeometry geometry);
+  // on_reset must marshal to its owner sequence; invoked on the import thread.
+  mojo::PendingRemote<mojom::PrtsFrameSink> BindCapture(
+      uint64_t gpu_luid,
+      FrameGeometry geometry,
+      base::RepeatingClosure on_reset);
   void ClearCapture();
   // A new lease for each Peer session; destruction drains its consumer.
   std::unique_ptr<FrameSource> CreateLease();

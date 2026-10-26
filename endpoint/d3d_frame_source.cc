@@ -98,8 +98,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     import_.Stop();
     convert_.Stop();
   }
-  mojo::PendingRemote<mojom::PrtsFrameSink> Bind(uint64_t luid,
-                                                 FrameGeometry g) {
+  mojo::PendingRemote<mojom::PrtsFrameSink>
+  Bind(uint64_t luid, FrameGeometry g, base::RepeatingClosure on_reset) {
     // Change generation synchronously so an old conversion cannot escape after
     // the main-sequence window switch. Receiver work follows on import_.
     uint64_t epoch;
@@ -115,12 +115,14 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         FROM_HERE,
         base::BindOnce(
             [](Impl* self, uint64_t luid, uint64_t epoch,
+               base::RepeatingClosure on_reset,
                mojo::PendingReceiver<mojom::PrtsFrameSink> receiver) {
               self->receiver_.reset();
               self->buffers_.clear();
               if (self->native_pool_)
                 self->native_pool_->ClearImports();
               self->bound_epoch_ = epoch;
+              self->on_reset_ = std::move(on_reset);
               if (!self->device_ || self->luid_ != luid) {
                 self->CreateDevice(luid);
               }
@@ -128,7 +130,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
                   std::make_unique<mojo::Receiver<mojom::PrtsFrameSink>>(
                       self, std::move(receiver));
             },
-            base::Unretained(this), luid, epoch,
+            base::Unretained(this), luid, epoch, std::move(on_reset),
             remote.InitWithNewPipeAndPassReceiver()));
     return remote;
   }
@@ -309,12 +311,21 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     buffers_.clear();
     if (native_pool_)
       native_pool_->ClearImports();
-    base::AutoLock lock(mutex_);
-    if (bound_epoch_ != epoch_) {
-      return;
+    {
+      base::AutoLock lock(mutex_);
+      if (bound_epoch_ != epoch_) {
+        return;
+      }
+      pending_.reset();
+      bound_epoch_ = ++epoch_;
     }
-    pending_.reset();
-    bound_epoch_ = ++epoch_;
+    // PRTS: Reset precedes replacement NewBuffer/OnFrame messages on this pipe.
+    // Imported COM textures and native VPP imports were cleared above; retire
+    // old conversion work by epoch and request an IDR via the owner sequence.
+    LOG(INFO) << "PRTS: capture reset; texture imports cleared, requesting IDR";
+    if (on_reset_) {
+      on_reset_.Run();
+    }
   }
 
  private:
@@ -513,6 +524,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   // threads.
   std::unique_ptr<mojo::Receiver<mojom::PrtsFrameSink>> receiver_;
   std::map<uint32_t, Buffer> buffers_;
+  base::RepeatingClosure on_reset_;  // Import sequence only.
   ComPtr<ID3D11Device1> device_;
   ComPtr<ID3D11DeviceContext> context_;
   std::shared_ptr<VplEncoderState> encoder_state_;
@@ -530,8 +542,9 @@ D3DFrameSource::D3DFrameSource(std::shared_ptr<VplEncoderState> state, int fps)
 D3DFrameSource::~D3DFrameSource() = default;
 mojo::PendingRemote<mojom::PrtsFrameSink> D3DFrameSource::BindCapture(
     uint64_t luid,
-    FrameGeometry g) {
-  return impl_->Bind(luid, g);
+    FrameGeometry g,
+    base::RepeatingClosure on_reset) {
+  return impl_->Bind(luid, g, std::move(on_reset));
 }
 void D3DFrameSource::ClearCapture() {
   impl_->Clear();
