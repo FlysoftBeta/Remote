@@ -3,6 +3,8 @@
 //   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off] [--mock-my <source px>] [--my <viewer override px>]
 //        [--no-mock: use the real endpoint started by the CP via ENDPOINT_PATH/ENDPOINT_ARGS] [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
 //        [--viewer-window-size 1928,1162] [--validate-frame: sample VideoFrame/rVFC timestamp agreement]
+//        [--viewer-exe <path>: alias for --viewer-browser] [--viewer-flags '<switches>': extra viewer switches, double-quote values containing spaces]
+//        [--presenter clean|canvas: opt-in viewer presentation experiment; canvas display timing remains source-video metadata]
 //        [--netem <profile|none>: start tools/netem/relay.mjs with that profile (profiles.json), relay-only on viewer+endpoint; recorded in the report]
 //        [--netem-queue-ms N] [--netem-port 3478] [--remote-cdp <port>: remote chrome started with --cr-remote-debugging-port=<port> (GPU info)]
 //        [--endpoint-log <file>: log of the chain (encoder/capture lines), default C:/src/tmp/m1/cp1.log]
@@ -32,7 +34,12 @@ const TMP = process.env.PTRACK_TMP || 'C:/src/tmp/ptrack';
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', preset ? 60 : 30), w = +arg('w', 1920), h = +arg('h', 1080);
 const kbps = +arg('kbps', 12000), delay = arg('delay', '0');
-const viewerExe = arg('viewer-browser', EDGE), mockExe = arg('mock-browser', EDGE);
+const presenter = arg('presenter', null);
+if (presenter && !['clean', 'canvas'].includes(presenter)) throw new Error('--presenter must be clean or canvas');
+const viewerExe = arg('viewer-exe', arg('viewer-browser', EDGE)), mockExe = arg('mock-browser', EDGE);
+// Extra viewer switches only; double quotes preserve spaces inside a switch.
+const viewerFlagsIndex = argv.indexOf('--viewer-flags');
+const viewerFlags = (viewerFlagsIndex < 0 ? '' : argv[viewerFlagsIndex + 1] || '').match(/(?:[^\s"]+|"[^"]*")+/g)?.map(s => s.replace(/"/g, '')) || [];
 const base = `http://127.0.0.1:${port}`;
 const netemProfile = arg('netem', null), netemPort = +arg('netem-port', 3478), netemHttp = netemPort + 1, netemHost = pickHost();
 const mockMy = arg('mock-my', null), my = arg('my', null);
@@ -49,9 +56,10 @@ function browser(exe, name, url, oldHeadless) {
     oldHeadless ? '--headless --no-sandbox --enable-features=NetworkServiceInProcess --remote-debugging-port=0' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion',
-    '--enable-logging=stderr', '--v=0', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--window-size=' + arg('viewer-window-size', '1920,1080'), url
+    '--enable-logging=stderr', '--v=0', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--window-size=' + arg('viewer-window-size', '1920,1080'), ...(name === 'viewer' ? viewerFlags : []), url
   ].filter(Boolean).flatMap(a => a.startsWith('--headless --') ? a.split(' ') : [a]);
   const p = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  p.stderr.pipe(fs.createWriteStream(path.join(TMP, name + '-stderr.log')));
   p.stderr.on('data', d => { for (const line of d.toString().split(/\r?\n/)) if (/\[(mock|viewer)\]|Uncaught|ERROR:.*(rtc|webrtc)/i.test(line)) console.log(`  ${name}| ${line.replace(/^.*?CONSOLE\(\d+\)\] /, '')}`); });
   kids.push(p);
   return p;
@@ -84,7 +92,7 @@ const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${presenter ? '&presenter=' + presenter : ''}${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -101,6 +109,7 @@ while (Date.now() < deadline) {
 if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
 report.netem = null;
 report.preset = preset;
+report.viewerLaunch = { exe: viewerExe, flags: viewerFlags, headed: !!arg('headed') };
 if (process.env.TRACE_OUT) { // m3-trace: relay per-packet trace + remote page rAF/keydown records + clock offsets (hrtime ms is the TimeTicks base)
   const out = process.env.TRACE_OUT; fs.mkdirSync(out, { recursive: true });
   try { if (netemProfile) fs.writeFileSync(path.join(out, 'relay.json'), await (await fetch(`http://${netemHost}:${netemHttp}/trace`)).text()); } catch (e) { console.log('relay trace failed ' + e); }

@@ -10,7 +10,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-$nodeExe = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+$nodeExe = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $nodeVersion = & $nodeExe --version
 if ($LASTEXITCODE -ne 0 -or [int]($nodeVersion.TrimStart('v').Split('.')[0]) -lt 22) {
     throw 'Node.js 22+ is required (control-plane/package.json).'

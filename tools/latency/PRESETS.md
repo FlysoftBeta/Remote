@@ -25,3 +25,10 @@ M4 endpoint tuning switches belong in `ENDPOINT_ARGS`: `--min-kbps`, `--start-kb
 
 M4 acceptance uses `summary.latDecoded` and `summary.i2decoded` ending at rVFC `presentationTime`. `summary.lat` and `summary.i2display` retain `expectedDisplayTime` glass estimates; real-endpoint `summary.i2p` is the legacy input-flip callback metric. Set `PRTS_TRACE=1`, `RELAY_TRACE=1`, `TRACE_OUT=<task trace directory>`, and pass `--trace` for correlated endpoint/relay/viewer/source traces.
 
+For an alternate viewer, use `--viewer-exe <path>` (alias of `--viewer-browser`) and `--viewer-flags '<switches>'`. Extra flags apply only to the viewer; double-quote values containing spaces within that string. Edge remains the default. Genuine Google Chrome 89 on this Windows 11 host was measured headed with:
+
+```powershell
+--headed --viewer-exe C:/src/tmp/chrome89-google/app/chrome.exe --viewer-flags '--user-data-dir=C:/src/tmp/chrome89-google/profile --no-first-run --no-default-browser-check --disable-component-update --disable-background-networking --disable-sync --no-sandbox --enable-features=NetworkServiceInProcess --remote-debugging-port=9444'
+```
+
+The last two compatibility switches before CDP were necessary after a plain headed attempt disconnected during negotiation. Reports retain `viewerLaunch` and full viewer stderr is saved beside the CSV as `viewer-stderr.log`. Chrome 89 jitter-buffer counters come from legacy `track` stats; reports preserve that source plus codec `sdpFmtpLine`. See [Chrome 89 acceptance](../../research/m4/chrome89.md) for measurement caveats and results.

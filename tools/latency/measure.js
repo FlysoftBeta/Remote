@@ -60,6 +60,8 @@
     var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
   };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
+    var presenter = root.RKPresenter;
+    if (presenter) presenter.draw();
     // presentationTime is when this decoded frame was submitted for composition;
     // expectedDisplayTime remains the separate glass estimate. Never substitute
     // callback time when presentationTime is unavailable.
@@ -99,11 +101,13 @@
     }
     this.expireInputs(RKClock.wall());
     var v = this.video, w = v.videoWidth;
+    // Canvas mode must sample the visible canvas, after the full-frame draw.
+    var pixels = presenter && presenter.source ? presenter.source : v;
     if (!w || this.clock.offset == null) return;
     if (this.colorInput) {
       // This point is inside the fixture's right-hand colour block in tab mode,
       // including its browser UI inset. Read decoded video, never the source DOM.
-      this.colorCtx.drawImage(v, Math.floor(w * 0.75), Math.floor(v.videoHeight * 0.5), 1, 1, 0, 0, 1, 1);
+      this.colorCtx.drawImage(pixels, Math.floor(w * 0.75), Math.floor(v.videoHeight * 0.5), 1, 1, 0, 0, 1, 1);
       var pixel = this.colorCtx.getImageData(0, 0, 1, 1).data;
       var state = pixel[1] - pixel[0] > 60 ? 0 : pixel[0] - pixel[1] > 60 ? 1 : null;
       var detected = performance.now();
@@ -136,13 +140,13 @@
       var maxY = Math.floor(Math.min(200, v.videoHeight / 4, v.videoHeight - ch));
       var scanHeight = maxY + ch;
       if (this.canvas.width !== cw || this.canvas.height !== scanHeight) { this.canvas.width = cw; this.canvas.height = scanHeight; }
-      this.ctx.drawImage(v, 0, 0, cw, scanHeight, 0, 0, cw, scanHeight);
+      this.ctx.drawImage(pixels, 0, 0, cw, scanHeight, 0, 0, cw, scanHeight);
       var found = RKMarker.findRow(this.ctx.getImageData(0, 0, cw, scanHeight).data, cw, cell, maxY);
       this.markerScans++;
       if (found) { this.markerY = found.y; m = found.marker; }
     } else if (this.markerY + ch <= v.videoHeight) {
       if (this.canvas.width !== cw || this.canvas.height !== ch) { this.canvas.width = cw; this.canvas.height = ch; }
-      this.ctx.drawImage(v, 0, this.markerY, cw, ch, 0, 0, cw, ch);
+      this.ctx.drawImage(pixels, 0, this.markerY, cw, ch, 0, 0, cw, ch);
       m = RKMarker.decode(this.ctx.getImageData(0, 0, cw, ch).data, cw, cell);
     }
     if (!m) {
@@ -189,6 +193,7 @@
     var stages = {}, self = this;
     Object.keys(this.stages).forEach(function (key) { stages[key] = RKMarker.percentiles(self.stages[key], [50, 80, 95, 99]); });
     return {
+      presenter: root.RKPresenter ? root.RKPresenter.info : { mode: 'video' },
       stages: stages,
       measurementStartWall: this.measurementStartWall,
       freezes: { thresholdMs: 200, count: this.freezeCount,
