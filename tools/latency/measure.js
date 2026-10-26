@@ -1,12 +1,13 @@
 // Glass-to-glass measurement on the viewer (design/03 section 5, 06 section 4.2).
 // Decodes the pixel marker from every displayed frame (requestVideoFrameCallback), maps the sender timestamp
-// into the viewer clock with RKClock, and records capture->display and input->photon samples.
+// into the viewer clock with RKClock, and records decoded and display-estimate samples.
 // Needs marker.js (RKMarker) and clock.js (RKClock).
 (function (root) {
   'use strict';
   function RKMeasure(video, clock) {
     this.video = video; this.clock = clock; this.senderWidth = null; // Unknown sender width defaults to videoWidth.
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
+    this.latDecoded = []; this.i2decoded = []; this.i2display = [];
     this.stages = {};
     this.displayGaps = []; this.lastDisplayPerf = null; this.freezeCount = 0;
     this.measurementStartWall = Date.now();
@@ -59,6 +60,10 @@
     var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
   };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
+    // presentationTime is when this decoded frame was submitted for composition;
+    // expectedDisplayTime remains the separate glass estimate. Never substitute
+    // callback time when presentationTime is unavailable.
+    var decodedPerf = meta && Number.isFinite(meta.presentationTime) ? meta.presentationTime : null;
     if (this.lastDisplayPerf != null) {
       var displayGap = displayPerf - this.lastDisplayPerf;
       if (displayGap > 200) this.freezeCount++;
@@ -104,8 +109,10 @@
       var detected = performance.now();
       if (state != null && this.colorState != null && state !== this.colorState && this.colorPending != null) {
         var elapsed = detected - this.colorPending;
+        if (decodedPerf != null) this.i2decoded.push(decodedPerf - this.colorPending);
+        this.i2display.push(displayPerf - this.colorPending);
         this.i2p.push(elapsed);
-        this.colorRows.push({ sent: this.colorPending, detected: detected, latency: elapsed, state: state, rt: meta ? meta.rtpTimestamp : null, ed: meta ? meta.expectedDisplayTime : null });
+        this.colorRows.push({ sent: this.colorPending, detected: detected, latency: elapsed, state: state, rt: meta ? meta.rtpTimestamp : null, pr: decodedPerf, ed: meta ? meta.expectedDisplayTime : null });
         if (this.curTrace) this.curTrace.flip = 1;
         this.colorPending = null;
       }
@@ -154,20 +161,29 @@
     var sentRemote = RKMarker.unwrap(m.t, display + this.clock.offset);
     var lat = display - this.clock.toLocal(sentRemote);
     this.lat.push(lat);
+    if (decodedPerf != null) this.latDecoded.push(performance.timeOrigin + decodedPerf - this.clock.toLocal(sentRemote));
     // rVFC receiveTime (WebRTC sources): sender draw -> last packet received, i.e. without decode/render/display.
     if (meta && meta.receiveTime) this.rx.push(performance.timeOrigin + meta.receiveTime - this.clock.toLocal(sentRemote));
     var row = { fid: m.frameId, lat: +lat.toFixed(2), rtt: this.clock.minRtt != null ? +this.clock.minRtt.toFixed(2) : '' ,
+      latDecoded: decodedPerf != null ? +(performance.timeOrigin + decodedPerf - this.clock.toLocal(sentRemote)).toFixed(2) : '',
+      i2decoded: this.colorInput && elapsed != null && decodedPerf != null ? +(decodedPerf - this.colorRows[this.colorRows.length - 1].sent).toFixed(2) : '',
+      i2display: this.colorInput && elapsed != null ? +(displayPerf - this.colorRows[this.colorRows.length - 1].sent).toFixed(2) : '',
       i2p: this.colorInput && elapsed != null ? +elapsed.toFixed(2) : '' };
     var self = this;
     Object.keys(this.inputSent).forEach(function (seq) {
       // Half-range comparison orders 16-bit seqs across wrap; pending entries expire after five seconds.
       if (((m.inputSeq - (+seq)) & 0xffff) >= 0x8000) return;
       var sample = display - self.inputSent[seq];
+      if (decodedPerf != null) self.i2decoded.push(performance.timeOrigin + decodedPerf - self.inputSent[seq]);
+      self.i2display.push(sample);
+      row.i2decoded = decodedPerf != null ? +(performance.timeOrigin + decodedPerf - self.inputSent[seq]).toFixed(2) : '';
+      row.i2display = +sample.toFixed(2);
       self.i2p.push(sample); row.i2p = +sample.toFixed(2); delete self.inputSent[seq];
     });
     this.lastInputSeq = m.inputSeq;
     if (this.rows.length < 100000) this.rows.push(row);
     if (this.lat.length > 20000) this.lat.shift();
+    if (this.latDecoded.length > 20000) this.latDecoded.shift();
   };
   RKMeasure.prototype.summary = function () {
     var stages = {}, self = this;
@@ -182,10 +198,14 @@
       inputMethod: this.colorInput ? 'DataChannel keydown to decoded colour flip' : 'marker sequence',
       inputAttempts: this.colorAttempts, inputTimeouts: this.colorTimeouts, inputSamples: this.colorRows,
       offset: this.clock.offset, minRtt: this.clock.minRtt,
+      latDecoded: RKMarker.percentiles(this.latDecoded, [50, 80, 95, 99]),
+      i2decoded: RKMarker.percentiles(this.i2decoded, [50, 80, 95, 99]),
+      i2display: RKMarker.percentiles(this.i2display, [50, 80, 95, 99]),
       lat: RKMarker.percentiles(this.lat, [50, 80, 95, 99]), rx: RKMarker.percentiles(this.rx, [50, 80, 95, 99]), i2p: RKMarker.percentiles(this.i2p, [50, 80, 95, 99])
     };
   };
   RKMeasure.prototype.reset = function () {
+    this.latDecoded = []; this.i2decoded = []; this.i2display = [];
     this.stages = {};
     this.displayGaps = []; this.lastDisplayPerf = null; this.freezeCount = 0;
     this.measurementStartWall = Date.now();
@@ -195,7 +215,7 @@
     this.colorPending = null; this.colorAttempts = this.colorTimeouts = 0; this.colorRows = [];
   };
   RKMeasure.prototype.csv = function () {
-    return 'fid,lat_ms,min_rtt_ms,i2p_ms\n' + this.rows.map(function (r) { return [r.fid, r.lat, r.rtt, r.i2p].join(','); }).join('\n') + '\n';
+    return 'fid,lat_ms,min_rtt_ms,i2p_ms,lat_decoded_ms,i2decoded_ms,i2display_ms\n' + this.rows.map(function (r) { return [r.fid, r.lat, r.rtt, r.i2p, r.latDecoded, r.i2decoded, r.i2display].join(','); }).join('\n') + '\n';
   };
   root.RKMeasure = RKMeasure;
 })(typeof self !== 'undefined' ? self : this);

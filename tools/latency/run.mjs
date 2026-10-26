@@ -105,19 +105,29 @@ if (process.env.TRACE_OUT) { // m3-trace: relay per-packet trace + remote page r
   const out = process.env.TRACE_OUT; fs.mkdirSync(out, { recursive: true });
   try { if (netemProfile) fs.writeFileSync(path.join(out, 'relay.json'), await (await fetch(`http://${netemHost}:${netemHttp}/trace`)).text()); } catch (e) { console.log('relay trace failed ' + e); }
   const cdp = arg('remote-cdp', null);
+  let remoteWs = null;
   if (cdp) try {
-    const list = await (await fetch(`http://127.0.0.1:${cdp}/json`)).json();
+    const list = await (await fetch(`http://127.0.0.1:${cdp}/json`, { signal: AbortSignal.timeout(5000) })).json();
     const page = list.find(t => t.type === 'page' && /remote-page/.test(t.url));
-    const ws = new WebSocket(page.webSocketDebuggerUrl); await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+    const ws = remoteWs = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((res, rej) => { const timer = setTimeout(() => rej(new Error('remote CDP connect timed out')), 5000); ws.onopen = () => { clearTimeout(timer); res(); }; ws.onerror = e => { clearTimeout(timer); rej(e); }; });
     let id = 0; const pend = new Map(); ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.id && pend.has(m.id)) { pend.get(m.id)(m); pend.delete(m.id); } };
-    const call = (method, params) => new Promise(r => { const i = ++id; pend.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+    const call = (method, params) => new Promise((res, rej) => { const i = ++id; const timer = setTimeout(() => { pend.delete(i); rej(new Error('remote CDP timed out: ' + method)); }, 5000); pend.set(i, m => { clearTimeout(timer); res(m); }); ws.send(JSON.stringify({ id: i, method, params })); });
     const ev = async expr => (await call('Runtime.evaluate', { expression: expr, returnByValue: true })).result.result.value;
     let best = null;
     for (let i = 0; i < 40; i++) { const t0 = Number(process.hrtime.bigint()) / 1e6, v = await ev('performance.now()'), t1 = Number(process.hrtime.bigint()) / 1e6; if (!best || t1 - t0 < best.rtt) best = { rtt: t1 - t0, off: (t0 + t1) / 2 - v }; }
+    // Chromium's document time origin is NavigationStart on the TimeTicks
+    // clock, also used by capture_begin. Avoid CDP round-trip asymmetry when
+    // comparing a ~2 ms draw->capture phase; retain the midpoint as a check.
+    await call('Performance.enable', {});
+    const metrics = (await call('Performance.getMetrics', {})).result?.metrics;
+    const origin = metrics?.find(m => m.name === 'NavigationStart')?.value;
+    if (Number.isFinite(origin) && origin > 0) best = { ...best, midpointOff: best.off, off: origin * 1000, method: 'CDP Performance.NavigationStart (TimeTicks)' };
+    await call('Performance.disable', {});
     const rt = await ev('JSON.stringify({rt: window.__rt, rk: window.__rk})');
     fs.writeFileSync(path.join(out, 'remote.json'), JSON.stringify({ clock: best, ...JSON.parse(rt) }));
-    ws.close();
   } catch (e) { console.log('remote trace failed ' + e); }
+  finally { remoteWs?.close(); }
   fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ ...report, csv: undefined }));
 }
 if (netemProfile) { try { report.netem = await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json(); } catch (e) { report.netem = { error: String(e) }; } }
@@ -144,9 +154,12 @@ console.log(`viewer UA: ${report.ua}`);
 console.log(`hint: ${report.hint}; codec ${report.stats?.codec} ${report.stats?.decoder} ${report.stats?.frameWidth}x${report.stats?.frameHeight}; sender ${report.sender?.backend}`);
 console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}, dupes ${s.dupes}, skipped ${s.skipped}; clock offset ${f(s.offset)} ms, min RTT ${s.minRtt?.toFixed(2)} ms`);
 console.log(`marker row ${s.markerY ?? 'unknown'} source px; alignment scans ${s.markerScans ?? 'unknown'}`);
-console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
+for (const [label, metric] of [['capture->decoded', s.latDecoded], ['input->decoded', s.i2decoded], ['input->display (glass estimate)', s.i2display]]) {
+  if (metric?.n) console.log(`${label} ms: P50 ${f(metric.p50)}  P80 ${f(metric.p80)}  P95 ${f(metric.p95)}  P99 ${f(metric.p99)}  (n=${metric.n}, rVFC same-frame metadata)`);
+}
+console.log(`capture->display ms (glass estimate): P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
-if (s.i2p.n) console.log(`${arg('no-mock') ? 'input->decoded flip' : 'input->display estimate'} ms: P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
+if (s.i2p.n) console.log(`${arg('no-mock') ? 'input->flip (callback detection)' : 'input->display estimate'} ms: P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
 if (report.senderEgress) console.log(`endpoint send ${f(report.senderEgress.meanMbps)} Mbps; freezes >200ms ${s.freezes?.count}`);
 for (const l of pipelineLines(report)) console.log(l);

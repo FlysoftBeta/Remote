@@ -23,3 +23,7 @@ Fence path:
    session. Table: P50/P80/P95/P99 capture->decoded, input->decoded, capture->display, input->flip, plus capture stage (capture_begin -> endpoint
    receive -> VPP submit) from PRTS_TRACE=1. Save `git -C C:\src\chromium\src diff > C:\src\tmp\m4\fence-impl\chromium.diff` and
    `git -C C:\Users\Flysoft\Desktop\remotekit diff -- endpoint > C:\src\tmp\m4\fence-impl\endpoint.diff`; leave everything applied.
+RESUME NOTE: a previous run of this task worked ~55 min (21:18-22:12) and was cut off by the Codex usage limit. Its partial implementation is
+UNCOMMITTED in the working trees (chromium: prts mojom, prts_capture.cc, viz skia_output_surface_impl_on_gpu.*, gmb_video_frame_pool_context_provider*,
+prts_copy_output_result.h; endpoint: d3d_frame_source.cc, d3d_native_frame.*, endpoint_link.cc) and described in research/m4/fence-impl.md and
+C:\src\tmp\m4\fence-impl\. Continue from that state (review it, finish, build, verify, measure); do not start over.
