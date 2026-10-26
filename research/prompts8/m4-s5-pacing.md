@@ -19,3 +19,6 @@ Design to implement: research/m4/capture-phase.md section "S5 design fallback: o
    (primary acceptance) and the glass estimates, pass/fail vs P80<100/P99<200, per-stage trace for one S run (experiments.md format).
 4. If S5 does not stabilise the phase within ~90 min, stop implementing, run the final matrix with the current best configuration (fence + 8 Mbps), and
    document exactly what blocks S5. Either way save chromium.diff / endpoint.diff in the task dir and leave the best configuration applied as the default.
+5. Release measurement (only if >= 25 min remain after step 3/4): out\rel (non-component, no dcheck) is built and current up to the shared-fence patch.
+   Rebuild it incrementally with your final changes (`cd C:\src\chromium\src && autoninja -C out\rel chrome prts_endpoint`, after kill.sh; never gn clean),
+   then run d25j5-c12 S and G x2 each with ENDPOINT_PATH/--chrome pointing at out\rel and the same configuration; add a "rel vs dev" table.
