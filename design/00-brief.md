@@ -63,6 +63,16 @@ chain runs and the experience is usable.
   prtsd/, server/, scripts/, PIN, args.gn, cr.cmd). Survey it as prior art and reuse what helps;
   do not modify it.
 
+## Repo / workspace rules (from the user)
+- Prior art at `C:\Users\Flysoft\Desktop\chromium` may be referenced ONLY PARTIALLY: it contains
+  several decisions and practices the user disagrees with. Do not copy it wholesale or inherit its
+  architecture by default; each reused piece must be evaluated against our own design.
+- Never use `C:\src.old` (junk).
+- All temporary files go to ONE place: `C:\src\tmp` (create subfolders per task).
+- Sync every commit to GitHub (`origin` = https://github.com/FlysoftBeta/Remote.git), WIP included:
+  commit and `git push origin main` often. Work directly on `main`; avoid branches (they can break
+  the build infra during fast iteration).
+
 ## Delegation rules (apply to every agent)
 - Structure: the main agent manages stages. Each stage has ONE orchestrator subagent (context
   isolation), and that orchestrator engages DEEPLY: it does the reasoning, reviews and verifies
