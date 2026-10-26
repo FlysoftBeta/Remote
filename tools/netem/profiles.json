@@ -1,0 +1,13 @@
+{
+  "none": {},
+  "d25j5-c16": { "delayMs": 25, "jitterMs": 5, "rateKbps": 16000 },
+  "d25j5-c12": { "delayMs": 25, "jitterMs": 5, "rateKbps": 12000 },
+  "d25j5-c10": { "delayMs": 25, "jitterMs": 5, "rateKbps": 10000 },
+  "d50j10-c16": { "delayMs": 50, "jitterMs": 10, "rateKbps": 16000 },
+  "d50j10-c12": { "delayMs": 50, "jitterMs": 10, "rateKbps": 12000 },
+  "d50j10-c10": { "delayMs": 50, "jitterMs": 10, "rateKbps": 10000 },
+  "d25j5-c12-wifi": { "delayMs": 25, "jitterMs": 5, "rateKbps": 12000,
+    "ge": { "p": 0.0025, "r": 0.25, "lossBad": 1.0 }, "spike": { "everyS": 5, "durationMs": 100, "minMs": 30, "maxMs": 50 } },
+  "d50j10-c12-wifi": { "delayMs": 50, "jitterMs": 10, "rateKbps": 12000,
+    "ge": { "p": 0.0025, "r": 0.25, "lossBad": 1.0 }, "spike": { "everyS": 5, "durationMs": 100, "minMs": 30, "maxMs": 50 } }
+}

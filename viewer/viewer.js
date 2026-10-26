@@ -26,6 +26,7 @@
   input.backedUp = function () { return ch && ch.input.bufferedAmount > 4096; };
 
   // ---- signalling ----
+  function relayUrl() { var r = q.get('relay'); return r ? (r.indexOf('?') < 0 ? r + '?transport=udp' : r) : null; }
   function sendSig(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
   function connect() {
     clearTimeout(retryTimer); retryTimer = null; terminal = false;
@@ -37,7 +38,7 @@
     var socket = ws;
     ws.onopen = function () {
       if (ws !== socket) return;
-      sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent,
+      sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent, relay: relayUrl() || undefined,
         caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
       status('waiting for endpoint');
     };
@@ -123,7 +124,12 @@
     return s.ice;
   }
   function createPc(s) {
-    pc = new RTCPeerConnection({ iceServers: s.iceServers, bundlePolicy: 'max-bundle' });
+    var rtcConfig = { iceServers: s.iceServers, bundlePolicy: 'max-bundle' };
+    if (relayUrl()) { // netem lab: relay-only through the shaping TURN server (tools/netem)
+      rtcConfig.iceServers = [{ urls: relayUrl(), username: 'viewer', credential: 'netem' }];
+      rtcConfig.iceTransportPolicy = 'relay';
+    }
+    pc = new RTCPeerConnection(rtcConfig);
     var p = pc;
     ch = RK.createChannels(pc);
     var channels = ch;
@@ -300,7 +306,22 @@
         setTimeout(function () { if (current(s, p)) measure.reset(); }, warm * 1000);
         setTimeout(function () {
           if (!current(s, p)) return;
-          var body = { kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
+          p.getStats().then(function (rs) {
+          var pipeline = { relay: relayUrl(), pairs: [], inbound: null, headlessUa: /HeadlessChrome/.test(navigator.userAgent) };
+          var cands = {};
+          rs.forEach(function (x) { if (x.type === 'local-candidate' || x.type === 'remote-candidate') cands[x.id] = x; });
+          rs.forEach(function (x) {
+            if (x.type === 'candidate-pair' && x.nominated && x.state === 'succeeded') {
+              var l = cands[x.localCandidateId] || {}, r = cands[x.remoteCandidateId] || {};
+              pipeline.pairs.push({ local: l.candidateType, localProtocol: l.protocol, relayProtocol: l.relayProtocol, localAddress: l.address, remote: r.candidateType, remoteAddress: r.address,
+                currentRoundTripTime: x.currentRoundTripTime, bytesSent: x.bytesSent, bytesReceived: x.bytesReceived });
+            }
+            if (x.type === 'inbound-rtp' && (x.kind || x.mediaType) === 'video') pipeline.inbound = { decoderImplementation: x.decoderImplementation, powerEfficientDecoder: x.powerEfficientDecoder,
+              framesPerSecond: x.framesPerSecond, frameWidth: x.frameWidth, frameHeight: x.frameHeight, framesDecoded: x.framesDecoded, framesDropped: x.framesDropped, packetsLost: x.packetsLost,
+              nackCount: x.nackCount, pliCount: x.pliCount, firCount: x.firCount, retransmittedPacketsReceived: x.retransmittedPacketsReceived, jitter: x.jitter, jitterBufferTargetDelay: x.jitterBufferTargetDelay };
+          });
+          pipeline.display = 'requestVideoFrameCallback expectedDisplayTime estimate' + (pipeline.headlessUa ? ' (headless UA: no real vsync/scanout)' : '');
+          var body = { pipeline: pipeline, kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
             durationSeconds: secs, query: location.search,
             statsSamples: statsSamples.slice(-secs),
             playoutDelayExtmap: p.localDescription.sdp.split('\n').filter(function (line) { return line.indexOf('a=extmap:') === 0 && line.indexOf('playout-delay') >= 0; }),
@@ -311,9 +332,16 @@
               frameWidth: window.rk.last.inbound.frameWidth, frameHeight: window.rk.last.inbound.frameHeight } : null,
             sender: epStats, csv: measure.csv() };
           var x = new XMLHttpRequest(); x.open('POST', '/api/report'); x.setRequestHeader('content-type', 'application/json'); x.send(JSON.stringify(body));
+          });
         }, (warm + secs) * 1000);
       }
     }, 500);
+  }
+  // hwinfo=1: Chrome only exposes inbound-rtp decoderImplementation/powerEfficientDecoder to pages that had media-capture permission when the
+  // RTCPeerConnection was created (lab flags --use-fake-ui-for-media-stream --use-fake-device-for-media-stream), so capture first, then connect.
+  if (q.get('hwinfo') && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ video: true }).then(function (st) { st.getTracks().forEach(function (t) { t.stop(); }); console.log('[viewer] hwinfo capture permission ok'); }).catch(function (e) { console.warn('[viewer] hwinfo failed', e && e.name, e && e.message); }).then(connect);
+    return;
   }
   connect();
 })();

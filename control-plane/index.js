@@ -32,8 +32,10 @@ function startSession(id) {
   const sid = I.sid, viewer = I.viewer, endpoint = I.endpoint;
   viewer.sid = sid;
   viewer.send({ t: 'welcome', v: V, sid, instance: id, iceServers: [] });
+  // netem lab (tools/netem): a viewer that asks for ?relay=turn:host:port makes both peers relay-only through that TURN server.
+  const relay = viewer.relay ? { iceServers: [{ urls: viewer.relay, username: 'endpoint', credential: 'netem' }], iceTransportPolicy: 'relay' } : { iceServers: [] };
   if (I.sid !== sid) return;
-  endpoint.send({ t: 'session.open', sid, viewer: { caps: viewer.caps, ua: viewer.ua }, iceServers: [] });
+  endpoint.send({ t: 'session.open', sid, viewer: { caps: viewer.caps, ua: viewer.ua }, ...relay });
   if (I.sid === sid) log(`session ${sid.slice(0, 8)} open on ${id}`);
 }
 function endSession(id, reason, notify) {
@@ -57,6 +59,7 @@ function onHello(conn, m) {
     startSession(conn.instance);
   } else {
     conn.caps = m.caps || {};
+    conn.relay = typeof m.relay === 'string' && /^turn:[\w.-]+:\d+(\?transport=udp)?$/.test(m.relay) ? m.relay : null;
     conn.ua = String(m.ua || '').slice(0, 200);
     if (I.viewer && I.viewer !== conn) {
       const old = I.viewer;

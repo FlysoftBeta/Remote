@@ -17,6 +17,7 @@
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_split.h"
 #include "base/synchronization/lock.h"
 #include "prts_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/audio_codecs/audio_decoder_factory_template.h"
@@ -60,7 +61,12 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
   int InitEncode(const webrtc::VideoCodec* codec,
                  const Settings& settings) override {
     LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x"
-              << codec->height << " max_fps=" << codec->maxFramerate;
+              << codec->height << " max_fps=" << codec->maxFramerate
+              << " start_kbps=" << codec->startBitrate
+              << " min_kbps=" << codec->minBitrate
+              << " max_kbps=" << codec->maxBitrate
+              << " cores=" << settings.number_of_cores
+              << " impl=" << encoder_->GetEncoderInfo().implementation_name;
     auto screenshare = *codec;
     screenshare.mode = webrtc::VideoCodecMode::kScreensharing;
     return encoder_->InitEncode(&screenshare, settings);
@@ -248,6 +254,25 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         server.password = String(item, "credential");
         config.servers.push_back(std::move(server));
       }
+    }
+    // Network-emulation lab: the control-plane may force relay-only candidates
+    // (iceTransportPolicy) and --turn=host:port[,user[,pass]] overrides the
+    // server list with a TURN relay (tools/netem), forcing relay-only as well.
+    if (String(message, "iceTransportPolicy") == "relay")
+      config.type = webrtc::PeerConnectionInterface::kRelay;
+    if (const auto* cl = base::CommandLine::ForCurrentProcess();
+        cl->HasSwitch("turn")) {
+      std::vector<std::string> parts =
+          base::SplitString(cl->GetSwitchValueASCII("turn"), ",",
+                            base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+      webrtc::PeerConnectionInterface::IceServer server;
+      server.urls.push_back("turn:" + parts[0] + "?transport=udp");
+      server.username = parts.size() > 1 ? parts[1] : "endpoint";
+      server.password = parts.size() > 2 ? parts[2] : "netem";
+      config.servers.clear();
+      config.servers.push_back(std::move(server));
+      config.type = webrtc::PeerConnectionInterface::kRelay;
+      LOG(INFO) << "PRTS netem: forced relay-only via TURN " << parts[0];
     }
     auto result = owner_.factory_->CreatePeerConnectionOrError(
         config, webrtc::PeerConnectionDependencies(this));

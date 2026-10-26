@@ -3,11 +3,17 @@
 //   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off] [--mock-my <source px>] [--my <viewer override px>]
 //        [--no-mock: use the real endpoint started by the CP via ENDPOINT_PATH/ENDPOINT_ARGS] [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
 //        [--viewer-window-size 1928,1162] [--validate-frame: sample VideoFrame/rVFC timestamp agreement]
+//        [--netem <profile|none>: start tools/netem/relay.mjs with that profile (profiles.json), relay-only on viewer+endpoint; recorded in the report]
+//        [--netem-queue-ms N] [--netem-port 3478] [--remote-cdp <port>: remote chrome started with --cr-remote-debugging-port=<port> (GPU info)]
+//        [--endpoint-log <file>: log of the chain (encoder/capture lines), default C:/src/tmp/m1/cp1.log]
+//        Every report JSON carries "pipeline" (render/capture/encoder/viewer/display/network) and, with --netem, "netem" (relay stats).
 // Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pickHost } from '../netem/relay.mjs';
+import { collectPipeline, pipelineLines } from './pipeline.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i < 0 ? d : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true); };
@@ -18,6 +24,7 @@ const port = +arg('port', 8090), secs = +arg('secs', 30), fps = +arg('fps', 30),
 const kbps = +arg('kbps', 12000), delay = arg('delay', '0');
 const viewerExe = arg('viewer-browser', EDGE), mockExe = arg('mock-browser', EDGE);
 const base = `http://127.0.0.1:${port}`;
+const netemProfile = arg('netem', null), netemPort = +arg('netem-port', 3478), netemHttp = netemPort + 1, netemHost = pickHost();
 const mockMy = arg('mock-my', null), my = arg('my', null);
 const markerQuery = value => value == null ? '' : '&my=' + encodeURIComponent(value);
 fs.mkdirSync(TMP, { recursive: true });
@@ -32,7 +39,7 @@ function browser(exe, name, url, oldHeadless) {
     oldHeadless ? '--headless --no-sandbox --enable-features=NetworkServiceInProcess --remote-debugging-port=0' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion',
-    '--enable-logging=stderr', '--v=0', '--window-size=' + arg('viewer-window-size', '1920,1080'), url
+    '--enable-logging=stderr', '--v=0', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--window-size=' + arg('viewer-window-size', '1920,1080'), url
   ].filter(Boolean).flatMap(a => a.startsWith('--headless --') ? a.split(' ') : [a]);
   const p = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   p.stderr.on('data', d => { for (const line of d.toString().split(/\r?\n/)) if (/\[(mock|viewer)\]|Uncaught|ERROR:.*(rtc|webrtc)/i.test(line)) console.log(`  ${name}| ${line.replace(/^.*?CONSOLE\(\d+\)\] /, '')}`); });
@@ -45,11 +52,20 @@ if (!(await up())) {
   kids.push(cp);
   for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
 }
+let relayProc = null;
+if (netemProfile) {
+  const ra = ['--profile', String(netemProfile), '--host', netemHost, '--port', String(netemPort), '--http', String(netemHttp)];
+  if (arg('netem-queue-ms')) ra.push('--queue-ms', String(arg('netem-queue-ms')));
+  relayProc = spawn(process.execPath, [path.join(repo, 'tools/netem/relay.mjs'), ...ra], { stdio: ['ignore', 'inherit', 'inherit'] });
+  kids.push(relayProc);
+  for (let i = 0; i < 50; i++) { try { if ((await fetch(`http://${netemHost}:${netemHttp}/stats`)).ok) break; } catch {} await new Promise(r => setTimeout(r, 100)); }
+}
+const relayQuery = netemProfile ? '&relay=' + encodeURIComponent(`turn:${netemHost}:${netemPort}`) : '';
 const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -60,6 +76,10 @@ while (Date.now() < deadline) {
   if (all.length > before) { report = all[all.length - 1]; break; }
 }
 if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
+report.netem = null;
+if (netemProfile) { try { report.netem = await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json(); } catch (e) { report.netem = { error: String(e) }; } }
+report.pipeline = { ...(report.pipeline || {}), ...(await collectPipeline({ report, cdpPort: arg('remote-cdp', null), endpointLog: arg('endpoint-log', 'C:/src/tmp/m1/cp1.log'),
+  headed: !!arg('headed'), viewerExe, windowSize: arg('viewer-window-size', '1920,1080'), netemProfile })) };
 const s = report.summary, f = v => v == null ? '-' : v.toFixed(1);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const csv = path.join(TMP, `latency-${stamp}.csv`);
@@ -74,5 +94,6 @@ console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
 if (s.i2p.n) console.log(`${arg('no-mock') ? 'input->decoded flip' : 'input->display estimate'} ms: P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
+for (const l of pipelineLines(report)) console.log(l);
 console.log(`csv: ${csv}`);
 process.exit(0);
