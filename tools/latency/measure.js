@@ -8,6 +8,8 @@
     this.video = video; this.clock = clock; this.senderWidth = null; // Unknown sender width defaults to videoWidth.
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
     this.stages = {};
+    this.displayGaps = []; this.lastDisplayPerf = null; this.freezeCount = 0;
+    this.measurementStartWall = Date.now();
     this.validateFrame = new URLSearchParams(location.search).get('validateFrame') === '1';
     this.inputSent = {}; this.lastInputSeq = -1; this.lastFrameId = -1; this.dupes = 0; this.skipped = 0;
     // my is a marker origin in decoded source pixels; absent/invalid means auto-detect.
@@ -55,6 +57,13 @@
     var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
   };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
+    if (this.lastDisplayPerf != null) {
+      var displayGap = displayPerf - this.lastDisplayPerf;
+      if (displayGap > 200) this.freezeCount++;
+      this.displayGaps.push(displayGap);
+      if (this.displayGaps.length > 20000) this.displayGaps.shift();
+    }
+    this.lastDisplayPerf = displayPerf;
     var self = this;
     function stage(name, value) {
       if (!Number.isFinite(value)) return;
@@ -155,6 +164,9 @@
     Object.keys(this.stages).forEach(function (key) { stages[key] = RKMarker.percentiles(self.stages[key], [50, 80, 95, 99]); });
     return {
       stages: stages,
+      measurementStartWall: this.measurementStartWall,
+      freezes: { thresholdMs: 200, count: this.freezeCount,
+        gaps: RKMarker.percentiles(this.displayGaps, [50, 80, 95, 99]) },
       precise: this.precise, frames: this.frames, decoded: this.decoded, failed: this.failed, dupes: this.dupes, skipped: this.skipped,
       markerY: this.markerY, markerScans: this.markerScans,
       inputMethod: this.colorInput ? 'DataChannel keydown to decoded colour flip' : 'marker sequence',
@@ -165,6 +177,8 @@
   };
   RKMeasure.prototype.reset = function () {
     this.stages = {};
+    this.displayGaps = []; this.lastDisplayPerf = null; this.freezeCount = 0;
+    this.measurementStartWall = Date.now();
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {};
     this.lastInputSeq = this.lastFrameId = -1;
     this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0;

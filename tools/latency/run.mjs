@@ -70,14 +70,29 @@ console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer
 
 const deadline = Date.now() + (secs + 60) * 1000;
 let report = null;
+const netemSamples = [];
 while (Date.now() < deadline) {
   await new Promise(r => setTimeout(r, 1000));
+  if (netemProfile) {
+    try { netemSamples.push({ at: Date.now(), stats: await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json() }); } catch {}
+  }
   const all = await (await fetch(base + '/api/report')).json();
   if (all.length > before) { report = all[all.length - 1]; break; }
 }
 if (!report) { console.error('no report received (viewer did not connect or marker not decoded)'); process.exit(1); }
 report.netem = null;
 if (netemProfile) { try { report.netem = await (await fetch(`http://${netemHost}:${netemHttp}/stats`)).json(); } catch (e) { report.netem = { error: String(e) }; } }
+if (netemSamples.length) {
+  const start = report.summary.measurementStartWall;
+  const first = netemSamples.reduce((a, b) => Math.abs(b.at - start) < Math.abs(a.at - start) ? b : a);
+  const last = netemSamples[netemSamples.length - 1];
+  const bytes = sample => sample.stats.allocations.filter(a => a.user === 'endpoint').reduce((sum, a) => sum + a.sentBytes, 0);
+  report.senderEgress = { source: 'TURN allocation username=endpoint sentBytes; endpoint payload egress including media, retransmissions, RTCP and DataChannels, excluding TURN/IP/UDP framing',
+    startWall: first.at, endWall: last.at, durationSeconds: (last.at - first.at) / 1000, bytes: bytes(last) - bytes(first),
+    meanMbps: (bytes(last) - bytes(first)) * 8 / (last.at - first.at) / 1000,
+    note: 'Nearest 1 Hz relay snapshot to viewer measurement start; relay drops/max queue are full-connection counters including warmup' };
+  report.netemSamples = netemSamples;
+}
 report.pipeline = { ...(report.pipeline || {}), ...(await collectPipeline({ report, cdpPort: arg('remote-cdp', null), endpointLog: arg('endpoint-log', 'C:/src/tmp/m1/cp1.log'),
   headed: !!arg('headed'), viewerExe, windowSize: arg('viewer-window-size', '1920,1080'), netemProfile })) };
 const s = report.summary, f = v => v == null ? '-' : v.toFixed(1);
@@ -94,6 +109,7 @@ console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
 if (s.i2p.n) console.log(`${arg('no-mock') ? 'input->decoded flip' : 'input->display estimate'} ms: P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
+if (report.senderEgress) console.log(`endpoint send ${f(report.senderEgress.meanMbps)} Mbps; freezes >200ms ${s.freezes?.count}`);
 for (const l of pipelineLines(report)) console.log(l);
 console.log(`csv: ${csv}`);
 process.exit(0);

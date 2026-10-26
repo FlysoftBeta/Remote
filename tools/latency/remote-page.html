@@ -1,11 +1,14 @@
 <!doctype html>
 <!-- Latency test page rendered INSIDE the remote PRTS browser (real chain). Draws the 06 4.2 marker at the
      top-left of the page every animation frame with the sender wall clock (same machine as the endpoint).
+     ?scenario=S (scrolling article), V (1080p30 moving-pattern fallback), G (game canvas).
      Use with prts_endpoint --app so the page origin is the video frame origin. -->
 <meta charset="utf-8"><title>PRTS latency page</title>
-<style>html,body{margin:0;height:100%;overflow:hidden;background:#246}canvas{display:block;width:100vw;height:100vh}</style>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#246}#c{display:block;width:100vw;height:100vh;position:fixed;inset:0;pointer-events:none}#load{position:fixed;inset:0;overflow:hidden}#load canvas,#load video{width:100%;height:100%;object-fit:cover}article{padding:24px 40px;background:#f6f3eb;color:#243142;font:22px/1.55 Georgia;display:flow-root}article img{width:48%;float:left;margin:0 28px 20px 0}article:nth-child(even) img{float:right}h1{font:40px sans-serif}</style>
+<div id="load"></div>
 <canvas id="c"></canvas>
 <script src="marker.js"></script>
+<script src="scenarios.js"></script>
 <script>
 const c = document.getElementById('c'), ctx = c.getContext('2d');
 let frameId = 0, inputs = 0, x = 0;
@@ -14,13 +17,21 @@ function resize() { c.width = innerWidth * devicePixelRatio; c.height = innerHei
 addEventListener('resize', resize); resize();
 function tick() {
   frameId++; x = (x + 8) % c.width;
-  ctx.fillStyle = '#246'; ctx.fillRect(0, 0, c.width, c.height);
-  ctx.fillStyle = '#fc0'; ctx.fillRect(x, c.height / 3, 60, c.height / 3);
-  // A large, compression-tolerant target for real input-to-photon sampling.
-  ctx.fillStyle = inputs % 2 ? '#d020d0' : '#20d020';
-  ctx.fillRect(c.width / 2, c.height / 4, c.width / 2, c.height / 2);
-  ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
-  ctx.fillText('PRTS remote latency page  frame ' + frameId + '  inputs ' + inputs, 20, c.height - 40);
+  if (window.rkScenario.name !== 'marker') {
+    ctx.clearRect(0, 0, c.width, c.height);
+    // Same decoded-pixel probe as the marker fixture, with a small patch so
+    // realistic motion covers almost the entire frame (including tab inset).
+    ctx.fillStyle = inputs % 2 ? '#d020d0' : '#20d020';
+    ctx.fillRect(c.width * .75 - 72, c.height * .5 - 100, 144, 200);
+  } else {
+    ctx.fillStyle = '#246'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#fc0'; ctx.fillRect(x, c.height / 3, 60, c.height / 3);
+    // A large, compression-tolerant target for real input-to-photon sampling.
+    ctx.fillStyle = inputs % 2 ? '#d020d0' : '#20d020';
+    ctx.fillRect(c.width / 2, c.height / 4, c.width / 2, c.height / 2);
+    ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
+    ctx.fillText('PRTS remote latency page  frame ' + frameId + '  inputs ' + inputs, 20, c.height - 40);
+  }
   RKMarker.draw(ctx, c.width, { frameId, t: performance.timeOrigin + performance.now(), inputSeq: inputs });
   requestAnimationFrame(tick);
 }
