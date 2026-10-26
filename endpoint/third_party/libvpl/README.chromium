@@ -12,5 +12,8 @@ Description:
 Windows x64 dispatcher and API headers. No GPU runtime is redistributed.
 
 Local Modifications:
-BUILD.gn only. Copy the SHA256-checked files staged by task vendor-libvpl.ps1
-beside this file before building. See task libvpl-manifest.json.
+BUILD.gn and libvpl-manifest.json only. The manifest records the SHA256 of
+each unmodified vendored source/header/license file. Hashes freeze the
+reviewed S7 cache; they are not independent upstream release authentication.
+The dispatcher uses Chromium's toolchain, libc++ and CRT, with exceptions
+enabled only for its target. No driver DLLs or prebuilt libraries are vendored.

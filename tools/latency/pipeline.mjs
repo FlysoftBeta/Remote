@@ -43,14 +43,29 @@ export async function collectPipeline(ctx) {
   out.encoder.initLine = ie ? strip(ie) : null;
   if (ie) {
     const g = k => ie.match(new RegExp(k + '=([\\w.\\-]+)'))?.[1];
-    Object.assign(out.encoder, { impl: g('impl'), fps: +g('max_fps'), cores: +g('cores'), startKbps: +g('start_kbps'), minKbps: +g('min_kbps'), maxKbps: +g('max_kbps'), resolution: ie.match(/InitEncode (\d+x\d+)/)?.[1] });
+    Object.assign(out.encoder, { impl: ie.match(/impl=(.*?) status=/)?.[1] || g('impl'), fps: +g('max_fps'), cores: +g('cores'), startKbps: +g('start_kbps'), minKbps: +g('min_kbps'), maxKbps: +g('max_kbps'), resolution: ie.match(/InitEncode (\d+x\d+)/)?.[1] });
   }
   const ds = last(/D3D source fps=([1-9]|0\.[1-9])/);
-  out.capture.path = 'Viz capture -> Mojo -> D3D11 shared-texture copy -> D3D11 staging Map -> libyuv I420 (CPU) -> OpenH264 (software)';
+  const activeVpl = lines.findLastIndex(l => /PRTS encoder active=vpl/.test(l));
+  const fallback = lines.findLastIndex(l => /PRTS VPL .*fallback encoder=openh264/.test(l));
+  out.encoder.backend = report.sender?.backend || (fallback > activeVpl ? 'OpenH264' : out.encoder.impl);
+  const vpl = /^PRTS oneVPL/.test(out.encoder.backend || '');
+  out.encoder.requested = last(/PRTS encoder requested=/)?.match(/requested=(\w+)/)?.[1];
+  out.encoder.selected = last(/PRTS encoder selected=/)?.match(/selected=(\w+)/)?.[1];
+  out.encoder.vpl = vpl ? {
+    implementation: strip(last(/PRTS VPL candidate=/) || ''),
+    runtime: strip(last(/PRTS VPL runtime=/) || ''),
+    readback: strip(last(/PRTS VPL GetVideoParam/) || ''),
+    settings: Object.fromEntries([...(last(/PRTS VPL GetVideoParam/) || '').matchAll(/(\w+)=([^ ]+)/g)].map(m => [m[1], m[2]]))
+  } : null;
+  out.capture.path = vpl
+    ? 'Viz capture -> Mojo -> D3D11 VideoProcessorBlt BGRA to native NV12 -> oneVPL D3D11 AVC (startup I420 bridge)'
+    : 'Viz capture -> Mojo -> D3D11 shared-texture copy -> D3D11 staging Map -> libyuv BT.709 I420 (CPU) -> OpenH264 (software)';
   out.capture.lastD3dLine = ds ? strip(ds) : null;
   out.encoder.codec = report.stats?.codec;
   out.encoder.contentHint = report.hint;
-  out.encoder.mode = 'OpenH264 kScreensharing, track ContentHint kFluid, MAINTAIN_RESOLUTION, playout-delay 0/0';
+  out.encoder.mode = (vpl ? 'oneVPL hardware AVC VBR LowPower=ON AsyncDepth=1' : 'OpenH264 kRealtimeVideo (camera)') + ', MAINTAIN_RESOLUTION, playout hint ' + report.hint;
+  out.encoder.stageLine = strip(last(/PRTS latency5s p50\/p95_ms/) || '');
   out.encoder.relayOnly = lines.some(l => /forced relay-only via TURN/.test(l)) ? 'endpoint --turn' : (ctx.netemProfile ? 'control-plane iceTransportPolicy=relay' : false);
   const inb = report.pipeline?.inbound;
   Object.assign(out.viewer, { ua: report.ua, browser: (report.ua.match(/(Edg|HeadlessChrome|Chrome)\/[\d.]+/g) || []).join(' '), headless: !ctx.headed, exe: ctx.viewerExe, windowSize: ctx.windowSize,
@@ -73,6 +88,7 @@ export function pipelineLines(r) {
     `pipeline.viewer: ${p.viewer.browser} ${p.viewer.headless ? 'headless' : 'HEADED'}; decoder ${p.viewer.decoderImplementation} powerEfficient=${p.viewer.powerEfficientDecoder}`,
     `pipeline.display: ${p.display.measurementPoint}; ${p.display.note}`,
     `pipeline.network: ${p.network.kind}${p.network.profile ? ' ' + p.network.profile : ''}; pairs ${(p.network.selectedPairs || []).map(x => x.local + '/' + x.remote).join(',')}`];
+  if (p.encoder.vpl) L.push('pipeline.encoder.vpl: ' + p.encoder.vpl.readback + '; ' + p.encoder.vpl.runtime);
   if (r.netem && r.netem.links) {
     L.push('netem: ' + ['down', 'up'].map(d => { const l = r.netem.links[d]; return `${d}: ${l.pkts} pkts ${l.achievedMbps}/${l.offeredMbps} Mbps drops q${l.dropQueue}/loss${l.dropLoss} maxQ ${l.maxQueueDelayMs}ms (limit ${l.queueLimitBytes}B)`; }).join(' | '));
     L.push('netem timer error ms ' + JSON.stringify(r.netem.timerError));

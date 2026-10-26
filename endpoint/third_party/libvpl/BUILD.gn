@@ -6,14 +6,14 @@ config("public_headers") {
 
 static_library("dispatcher") {
   sources = [
+    "libvpl/src/mfx_config_interface/mfx_config_interface.cpp",
+    "libvpl/src/mfx_config_interface/mfx_config_interface_string_api.cpp",
     "libvpl/src/mfx_dispatcher_vpl.cpp",
     "libvpl/src/mfx_dispatcher_vpl_config.cpp",
     "libvpl/src/mfx_dispatcher_vpl_loader.cpp",
     "libvpl/src/mfx_dispatcher_vpl_log.cpp",
     "libvpl/src/mfx_dispatcher_vpl_lowlatency.cpp",
     "libvpl/src/mfx_dispatcher_vpl_msdk.cpp",
-    "libvpl/src/mfx_config_interface/mfx_config_interface.cpp",
-    "libvpl/src/mfx_config_interface/mfx_config_interface_string_api.cpp",
     "libvpl/src/windows/main.cpp",
     "libvpl/src/windows/mfx_critical_section.cpp",
     "libvpl/src/windows/mfx_dispatcher.cpp",
@@ -26,10 +26,35 @@ static_library("dispatcher") {
     "libvpl/src/windows/mfx_win_reg_key.cpp",
   ]
   public_configs = [ ":public_headers" ]
-  include_dirs = [ "api", "libvpl", "libvpl/src" ]
-  defines = [ "UNICODE", "_UNICODE", "NOMINMAX" ]
+  include_dirs = [
+    "api",
+    "libvpl",
+    "libvpl/src",
+  ]
+  defines = [
+    "UNICODE",
+    "_UNICODE",
+    "NOMINMAX",
+  ]
+
   # Direct S7 build needed objbase for StringFromGUID2's declaration.
-  cflags_cc = [ "/FIobjbase.h" ]
+  cflags_cc = [
+    "/FIobjbase.h",
+    "-Wno-unsafe-buffer-usage",
+    "-Wno-unsafe-buffer-usage-in-libc-call",
+    "-Wno-deprecated-declarations",
+    "-Wno-unused-function",
+    "-Wno-unused-const-variable",
+    "-Wno-sign-compare",
+    "-Wno-microsoft-cast",
+    "-Wno-extra-semi",
+    "-Wno-missing-braces",
+    "-Wno-reorder-ctor",
+    "-Wno-implicit-fallthrough",
+    "-Wno-pointer-sign",
+    "-Wno-writable-strings",
+  ]
+
   # Dispatcher catches exceptions internally. Do not change endpoint's policy.
   configs -= [
     "//build/config/compiler:chromium_code",
@@ -40,6 +65,7 @@ static_library("dispatcher") {
     "//build/config/compiler:no_chromium_code",
     "//build/config/compiler:exceptions",
   ]
+
   # Build with the same toolchain, libc++ and CRT as the endpoint. Do not link
   # the MSVC-built probe vpl.lib into Chromium (C++ ABI/CRT differences).
   libs = [

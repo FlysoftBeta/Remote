@@ -17,8 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/logging.h"
 #include "third_party/webrtc/api/make_ref_counted.h"
-#include "third_party/webrtc/rtc_base/logging.h"
+#include "third_party/webrtc_overrides/rtc_base/logging.h"
 
 namespace prts {
 using Microsoft::WRL::ComPtr;
@@ -233,15 +234,15 @@ class D3DNativeFramePool::Impl {
     }
     if (++frames_ % 120 == 0) {
       auto now = std::chrono::steady_clock::now();
-      RTC_LOG(LS_INFO) << "PRTS native VPP frames=" << frames_ << " acquire_us="
-                       << std::chrono::duration_cast<std::chrono::microseconds>(
-                              acquired - started)
-                              .count()
-                       << " mutex_hold_us="
-                       << std::chrono::duration_cast<std::chrono::microseconds>(
-                              now - acquired)
-                              .count()
-                       << " pool=" << slots_.size() << " limit=" << limit;
+      LOG(INFO) << "PRTS native VPP frames=" << frames_ << " acquire_us="
+                << std::chrono::duration_cast<std::chrono::microseconds>(
+                       acquired - started)
+                       .count()
+                << " mutex_hold_us="
+                << std::chrono::duration_cast<std::chrono::microseconds>(
+                       now - acquired)
+                       .count()
+                << " pool=" << slots_.size() << " limit=" << limit;
     }
     return webrtc::make_ref_counted<VplNativeFrameBuffer>(slot->texture, width,
                                                           height, slot);

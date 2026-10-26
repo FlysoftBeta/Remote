@@ -19,11 +19,17 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <new>
 #include <span>
 #include <thread>
 #include <utility>
 
+#include "base/command_line.h"
+#include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
+#include "prts_endpoint/latency_stats.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
 #include "third_party/libyuv/include/libyuv/convert_from.h"
 #include "third_party/webrtc/api/video/encoded_image.h"
@@ -34,8 +40,8 @@
 #include "third_party/webrtc/media/engine/internal_encoder_factory.h"
 #include "third_party/webrtc/modules/video_coding/include/video_codec_interface.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
-#include "third_party/webrtc/rtc_base/logging.h"
 #include "third_party/webrtc/rtc_base/time_utils.h"
+#include "third_party/webrtc_overrides/rtc_base/logging.h"
 
 namespace prts {
 namespace {
@@ -237,14 +243,17 @@ void SetRateFields(Parameters& params, int kbps, int fps) {
 }
 
 void LogParameters(const char* phase, mfxStatus status, const Parameters& p) {
-  RTC_LOG(LS_INFO) << "PRTS VPL " << phase << " status=" << status
-                   << " kbps=" << p.p.mfx.TargetKbps << '/' << p.p.mfx.MaxKbps
-                   << " fps=" << p.p.mfx.FrameInfo.FrameRateExtN
-                   << " VBV_KB=" << p.p.mfx.BufferSizeInKB
-                   << " initial_KB=" << p.p.mfx.InitialDelayInKB
-                   << " cap_bytes=" << p.co2.MaxFrameSize
-                   << " LDB=" << p.co3.LowDelayBRC
-                   << " LP=" << p.p.mfx.LowPower;
+  LOG(INFO) << "PRTS VPL " << phase << " status=" << status
+            << " kbps=" << p.p.mfx.TargetKbps << '/' << p.p.mfx.MaxKbps
+            << " fps=" << p.p.mfx.FrameInfo.FrameRateExtN
+            << " VBV_KB=" << p.p.mfx.BufferSizeInKB
+            << " initial_KB=" << p.p.mfx.InitialDelayInKB
+            << " cap_bytes=" << p.co2.MaxFrameSize
+            << " LDB=" << p.co3.LowDelayBRC << " LP=" << p.p.mfx.LowPower
+            << " rate_control=" << p.p.mfx.RateControlMethod
+            << " AsyncDepth=" << p.p.AsyncDepth
+            << " level=" << p.p.mfx.CodecLevel
+            << " profile=" << p.p.mfx.CodecProfile;
 }
 
 bool Compatible(const Parameters& requested, const Parameters& actual) {
@@ -297,7 +306,16 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
     auto limited = settings;
     limited.encoder_thread_limit =
         std::clamp(settings.encoder_thread_limit.value_or(4), 1, 4);
-    return encoder_->InitEncode(&copy, limited);
+    const int result = encoder_->InitEncode(&copy, limited);
+    LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x"
+              << codec->height << " max_fps=" << codec->maxFramerate
+              << " start_kbps=" << codec->startBitrate
+              << " min_kbps=" << codec->minBitrate
+              << " max_kbps=" << codec->maxBitrate
+              << " cores=" << settings.number_of_cores
+              << " impl=" << encoder_->GetEncoderInfo().implementation_name
+              << " status=" << result;
+    return result;
   }
   int32_t RegisterEncodeCompleteCallback(
       webrtc::EncodedImageCallback* callback) override {
@@ -307,6 +325,17 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
   int32_t Release() override { return encoder_->Release(); }
   int32_t Encode(const webrtc::VideoFrame& frame,
                  const std::vector<webrtc::VideoFrameType>* types) override {
+    const auto now = base::TimeTicks::Now();
+    const auto capture =
+        base::TimeTicks() + base::Microseconds(frame.timestamp_us());
+    LatencyStats::Get().Add("capture_to_encode", capture, now);
+    LatencyStats::Get().EncodeStart(frame.timestamp_us(), now);
+    {
+      base::AutoLock lock(timing_lock_);
+      timing_[frame.rtp_timestamp()] = {capture, now};
+      if (timing_.size() > 240)
+        timing_.erase(timing_.begin());
+    }
     return encoder_->Encode(frame, types);
   }
   void SetRates(const RateControlParameters& p) override {
@@ -327,10 +356,28 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
   }
   Result OnEncodedImage(const webrtc::EncodedImage& image,
                         const webrtc::CodecSpecificInfo* info) override {
-    auto output = image;
-    output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
+    const auto encoded = base::TimeTicks::Now();
+    {
+      base::AutoLock lock(timing_lock_);
+      auto it = timing_.find(image.RtpTimestamp());
+      if (it != timing_.end()) {
+        LatencyStats::Get().Add("encode", it->second.second, encoded);
+        LatencyStats::Get().Add("capture_to_encoded", it->second.first,
+                                encoded);
+        timing_.erase(it);
+      }
+    }
+    auto output = image;  // Encoded buffer is refcounted, no payload copy.
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            "latency-no-playout-delay")) {
+      output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
+    }
     output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
-    return callback_->OnEncodedImage(output, info);
+    const auto handed = base::TimeTicks::Now();
+    LatencyStats::Get().Add("encoded_to_handoff", encoded, handed);
+    auto result = callback_->OnEncodedImage(output, info);
+    LatencyStats::Get().Add("handoff_callback", handed, base::TimeTicks::Now());
+    return result;
   }
   void OnFrameDropped(uint32_t ts, int spatial, bool end) override {
     callback_->OnFrameDropped(ts, spatial, end);
@@ -339,6 +386,8 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
  private:
   std::unique_ptr<webrtc::VideoEncoder> encoder_;
   webrtc::EncodedImageCallback* callback_ = nullptr;  // Unregistered by owner.
+  base::Lock timing_lock_;
+  std::map<uint32_t, std::pair<base::TimeTicks, base::TimeTicks>> timing_;
 };
 }  // namespace
 
@@ -396,7 +445,7 @@ const VplNativeFrameBuffer* VplNativeFrameBuffer::From(
 }
 webrtc::scoped_refptr<webrtc::I420BufferInterface>
 VplNativeFrameBuffer::ToI420() {
-  RTC_LOG(LS_INFO) << "PRTS native ToI420 slow readback";
+  LOG(INFO) << "PRTS native ToI420 slow readback";
   if (!lease_ || !ValidNv12(texture_.Get(), width_, height_))
     return nullptr;
   ComPtr<ID3D11Device> device;
@@ -506,8 +555,9 @@ class VplEncoder::Impl {
       return false;
     }
     luid_ = desc.AdapterLuid;
-    RTC_LOG(LS_INFO) << "PRTS VPL device LUID=" << luid_.HighPart << ':'
-                     << luid_.LowPart;
+    LOG(INFO) << "PRTS VPL adapter=" << base::WideToUTF8(desc.Description)
+              << " vendor=" << desc.VendorId << " device=" << desc.DeviceId
+              << " LUID=" << luid_.HighPart << ':' << luid_.LowPart;
     return true;
   }
 
@@ -543,9 +593,9 @@ class VplEncoder::Impl {
       if (status != MFX_ERR_NONE || !description)
         return false;
       auto* impl = static_cast<mfxImplDescription*>(description);
-      RTC_LOG(LS_INFO) << "PRTS VPL candidate=" << impl->ImplName
-                       << " API=" << impl->ApiVersion.Major << '.'
-                       << impl->ApiVersion.Minor;
+      LOG(INFO) << "PRTS VPL candidate=" << impl->ImplName
+                << " API=" << impl->ApiVersion.Major << '.'
+                << impl->ApiVersion.Minor;
       MFXDispReleaseImplDescription(loader_, description);
       mfxHDL extended = nullptr;
       status = MFXEnumImplementations(
@@ -567,8 +617,8 @@ class VplEncoder::Impl {
       if (MFXEnumImplementations(loader_, i, MFX_IMPLCAPS_IMPLPATH,
                                  &runtime_path) == MFX_ERR_NONE &&
           runtime_path) {
-        RTC_LOG(LS_INFO) << "PRTS VPL runtime="
-                         << static_cast<const char*>(runtime_path);
+        LOG(INFO) << "PRTS VPL runtime="
+                  << static_cast<const char*>(runtime_path);
         MFXDispReleaseImplDescription(loader_, runtime_path);
       }
       if (MFXCreateSession(loader_, i, &session_) != MFX_ERR_NONE)
@@ -576,8 +626,8 @@ class VplEncoder::Impl {
       mfxVersion version{};
       if (MFXQueryVersion(session_, &version) != MFX_ERR_NONE)
         return false;
-      RTC_LOG(LS_INFO) << "PRTS VPL session API=" << version.Major << '.'
-                       << version.Minor;
+      LOG(INFO) << "PRTS VPL session API=" << version.Major << '.'
+                << version.Minor;
       allocator_ = std::make_unique<TextureAllocator>(device_.Get());
       return MFXVideoCORE_SetHandle(session_, MFX_HANDLE_D3D11_DEVICE,
                                     device_.Get()) == MFX_ERR_NONE &&
@@ -679,8 +729,8 @@ class VplEncoder::Impl {
     failed_ = false;
     if (state_)
       state_->SetEncoderDevice(device_);
-    RTC_LOG(LS_INFO) << "PRTS encoder active=vpl " << width << 'x' << height
-                     << " fps=" << fps << " SPS_level=" << m.CodecLevel;
+    LOG(INFO) << "PRTS encoder active=vpl " << width << 'x' << height
+              << " fps=" << fps << " SPS_level=" << m.CodecLevel;
     return true;
   }
 
@@ -921,15 +971,19 @@ class VplEncoder::Impl {
             bytes[i + 6] != parameters_.p.mfx.CodecLevel)
           return Fail("SPS profile/level mismatch");
         sps = true;
-        RTC_LOG(LS_INFO) << "PRTS VPL SPS profile=66 constraints="
-                         << static_cast<int>(bytes[i + 5])
-                         << " level=" << static_cast<int>(bytes[i + 6]);
+        LOG(INFO) << "PRTS VPL SPS profile=66 constraints="
+                  << static_cast<int>(bytes[i + 5])
+                  << " level=" << static_cast<int>(bytes[i + 6]);
       }
     }
     if (idr && (!sps || !pps))
       return Fail("IDR without SPS/PPS");
-    if (idr)
+    if (idr) {
+      LOG(INFO) << "PRTS VPL IDR " << width_ << "x" << height_
+                << " bytes=" << bits.DataLength << " SPS=" << sps
+                << " PPS=" << pps;
       force_idr_ = false;
+    }
     webrtc::EncodedImage output;
     output.SetEncodedData(
         webrtc::EncodedImageBuffer::Create(bytes.data(), bytes.size()));
@@ -1084,8 +1138,7 @@ VplEncoderFactory::VplEncoderFactory(std::shared_ptr<VplEncoderState> state,
                                      bool prefer_vpl)
     : state_(std::move(state)),
       use_vpl_(prefer_vpl && VplEncoder::IsAvailable()) {
-  RTC_LOG(LS_INFO) << "PRTS encoder selected="
-                   << (use_vpl_ ? "vpl" : "openh264");
+  LOG(INFO) << "PRTS encoder selected=" << (use_vpl_ ? "vpl" : "openh264");
   if (prefer_vpl && !use_vpl_)
     RTC_LOG(LS_WARNING) << "PRTS VPL unavailable; fallback encoder=openh264";
 }

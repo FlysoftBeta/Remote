@@ -1,0 +1,271 @@
+﻿{
+    "provenance":  "Existing S7 cache, identity described by research/s7-onevpl-probe.md and cache README.prts.md; hashes freeze this cache, not independent upstream verification",
+    "files":  [
+                  {
+                      "sha256":  "EDD1B3E1133F835A137EB454CEF952725E03ABC00BB71226A942E4D43532E157",
+                      "path":  "api/vpl/mfx.h"
+                  },
+                  {
+                      "sha256":  "1943B3A47CB9945EEB7703FEF19738318A52544D6C5C174D8FAFA81CFE803F02",
+                      "path":  "api/vpl/mfxadapter.h"
+                  },
+                  {
+                      "sha256":  "8548390294D8549F100A8E9B7E7A7631C78E8EDE8087EC89B6F62A3854FCCE71",
+                      "path":  "api/vpl/mfxbrc.h"
+                  },
+                  {
+                      "sha256":  "FC98CA2F285E53E8A03F453EC840F6BEE48EC8489ECC93CA5159E20679C83FDA",
+                      "path":  "api/vpl/mfxcamera.h"
+                  },
+                  {
+                      "sha256":  "C290E6AE15F35436097F0B605C02566FA67094CF449D090520D23C7E3FA194A8",
+                      "path":  "api/vpl/mfxcommon.h"
+                  },
+                  {
+                      "sha256":  "9CDFECA6651E3D994D068389E30C6235C6970E018BE98D2BACC89202175775FF",
+                      "path":  "api/vpl/mfxdefs.h"
+                  },
+                  {
+                      "sha256":  "19072D08DAA7FC094D690C387BE162FE4A8A5A30316886AC333DEEEDEC67A0D8",
+                      "path":  "api/vpl/mfxdispatcher.h"
+                  },
+                  {
+                      "sha256":  "9DB68EC1E3B852984E22971488ABC5B5AAD01728565A92290C18BD30612093BF",
+                      "path":  "api/vpl/mfxdispatcherprefixedfunctions.h"
+                  },
+                  {
+                      "sha256":  "D6F2E6AF520E652814BCDA801122271940E8670F99018729156B565985E8BDA6",
+                      "path":  "api/vpl/mfxencodestats.h"
+                  },
+                  {
+                      "sha256":  "AFCC8E46FFC67655B4374EF4D3BD4F4C91478DCA2F7CBA790E7A3CF6BEA9D5A3",
+                      "path":  "api/vpl/mfximplcaps.h"
+                  },
+                  {
+                      "sha256":  "6BCCEE77BB4F50F8605689B86F9066A4C207393E93B80AC09CA5991CC02685DF",
+                      "path":  "api/vpl/mfxjpeg.h"
+                  },
+                  {
+                      "sha256":  "2D751E9F590D536F0C59452D1D7323FE2A801402A9BD8A7725C89FCF5DCD7CF1",
+                      "path":  "api/vpl/mfxmemory.h"
+                  },
+                  {
+                      "sha256":  "4E3B5A0AB44CF25D1EA903F86C574C80137F5ADB6CFBA17D37F73564F0EA452E",
+                      "path":  "api/vpl/mfxmvc.h"
+                  },
+                  {
+                      "sha256":  "C00ED6EE90018090DE26B7515D6A2394606E8C56EF1D1ACCBFB56CBF4FD7F9C7",
+                      "path":  "api/vpl/mfxpcp.h"
+                  },
+                  {
+                      "sha256":  "E141900442754D11806D199EE29AD065B7E7677044EB9B3F496CB10206C49926",
+                      "path":  "api/vpl/mfxsession.h"
+                  },
+                  {
+                      "sha256":  "1A1FD6C0BC3A406CB41FFB1F079CAD1304BDBD4C8ED43127A3F9D9BE8308C305",
+                      "path":  "api/vpl/mfxstructures.h"
+                  },
+                  {
+                      "sha256":  "E05F031D9C0B856C3D1947888560025983D30350C594B5530470BA5EEFA14FA0",
+                      "path":  "api/vpl/mfxsurfacepool.h"
+                  },
+                  {
+                      "sha256":  "571F6607E1AD16BFACD16733B2188ACEA40F4837B7DF336A7BF85ADE059D17D2",
+                      "path":  "api/vpl/mfxvideo.h"
+                  },
+                  {
+                      "sha256":  "D7B9337E669D31A3D449F0EABF4317CEBEAF225F786C6AB0C430AD0F1224EAF3",
+                      "path":  "api/vpl/mfxvideo++.h"
+                  },
+                  {
+                      "sha256":  "7A1F260BE6D0AA441BC87349FC74D1C30475C7504520DDF7F827EBA0752262CE",
+                      "path":  "api/vpl/mfxvp8.h"
+                  },
+                  {
+                      "sha256":  "CD0AF89280CB0DB5E5DEEDE388595A32F4504A4FBA81E0E155135915DBEFA247",
+                      "path":  "api/vpl/preview/legacy/mfxvideo++.h"
+                  },
+                  {
+                      "sha256":  "BEF4D52550A750E33E01822B5E01E6F7D65BFBF99DB71CAA1222954358AA34CE",
+                      "path":  "api/vpl/preview/legacy/README.txt"
+                  },
+                  {
+                      "sha256":  "3A2A4BC6F69AC0FC26AD926F4913CA437801DB913D9BEA47FCA0DE01E9FE576C",
+                      "path":  "api/vpl/preview/README.txt"
+                  },
+                  {
+                      "sha256":  "B0AAC8604EEF7F816F747D685008D31B8D4535385A6C67253898B971DFFE1EB7",
+                      "path":  "libvpl/src/linux/device_ids.h"
+                  },
+                  {
+                      "sha256":  "167F9058743A636DBB627BFE570E330FFD9313AFAF4B66B67BBDEADDACFB8185",
+                      "path":  "libvpl/src/linux/libvpl.map"
+                  },
+                  {
+                      "sha256":  "94A2DACD1DC4CF8A284D7C485A40ACA8D35BF0857A957DAA79A5759F54F9119D",
+                      "path":  "libvpl/src/linux/mfxloader.cpp"
+                  },
+                  {
+                      "sha256":  "2A0B7F15CDB13E349F3588AAC579566AA7B54965248D123669A0D577932DDF83",
+                      "path":  "libvpl/src/linux/mfxloader.h"
+                  },
+                  {
+                      "sha256":  "836B8B9A47DBE9E2D8002CE89035BCD2EDA088626632DEE0A239103FD089D54A",
+                      "path":  "libvpl/src/linux/mfxvideo_functions.h"
+                  },
+                  {
+                      "sha256":  "A2EBB7297C8E48704989C3190E1A55612A610D0F79BDAFF98B2604AC3096B697",
+                      "path":  "libvpl/src/mfx_config_interface/.clang-format"
+                  },
+                  {
+                      "sha256":  "86733E7FD2C40D690686035815860EB78278944F67919FA27AE97C311A719ECE",
+                      "path":  "libvpl/src/mfx_config_interface/mfx_config_interface.cpp"
+                  },
+                  {
+                      "sha256":  "F831E10CD6750960956A6E58FBFFF674B6B621A67D28EDBA9C68167B92A006AC",
+                      "path":  "libvpl/src/mfx_config_interface/mfx_config_interface.h"
+                  },
+                  {
+                      "sha256":  "67AF11FA62FA507504C2D83FCA7BE9CE75CEC11DDA25068737573346D3586B81",
+                      "path":  "libvpl/src/mfx_config_interface/mfx_config_interface_string_api.cpp"
+                  },
+                  {
+                      "sha256":  "0D055EB3B4EB03BFB5E26C25F1FF9FDDF17B7CF16F0C14ECDFC8290458EF1193",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl.cpp"
+                  },
+                  {
+                      "sha256":  "776CCBD8D065A75BC7293BBD9882D93DDD5331A8C7EA5546C0C049F130145EFE",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl.h"
+                  },
+                  {
+                      "sha256":  "E0F3470BF74D33C1BBA4943D14B1C7AA7F3A547752EE45557015353871A4B013",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_config.cpp"
+                  },
+                  {
+                      "sha256":  "1A8D94CDFF440DC947596B0F1EED792ACF12B691790096E6EE8E5995B5B10549",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_loader.cpp"
+                  },
+                  {
+                      "sha256":  "85B73A65535282DA4990FDC859E4D7167EE8DA110B23BCE6D7D031248226C8D9",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_log.cpp"
+                  },
+                  {
+                      "sha256":  "0E1B21137A12EFAAA50167CBE6C0788E9157C9AB1C95C4FF0F5135484F8C7B7F",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_log.h"
+                  },
+                  {
+                      "sha256":  "003434A5D239F330ED9A071103AF576923AE664FB098086E999DF93CD37C9561",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_lowlatency.cpp"
+                  },
+                  {
+                      "sha256":  "488257AE46B25E7E3113FCE43B5DC03AA7B5079B28C49D194B89A41835DB88AF",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_msdk.cpp"
+                  },
+                  {
+                      "sha256":  "57E3536CC5BB127B8EE0A305E6626E2233602B9A92A34284C8BAE8380CFED17B",
+                      "path":  "libvpl/src/mfx_dispatcher_vpl_win.h"
+                  },
+                  {
+                      "sha256":  "C73CB0325DB7F46AA920094ED6AD15197B5BA634854506A9144756C0ACBD3712",
+                      "path":  "libvpl/src/windows/libmfx.def"
+                  },
+                  {
+                      "sha256":  "4A1A5B76DE3CD37D38A07AE686E9E3FACCB1656E1DA6554BE798DE28C7E48737",
+                      "path":  "libvpl/src/windows/main.cpp"
+                  },
+                  {
+                      "sha256":  "8F67CA4F246C763B3B2ECE129B1FAEE4292C0B816AE5A170FCE4A7D7C5995A16",
+                      "path":  "libvpl/src/windows/mfx_critical_section.cpp"
+                  },
+                  {
+                      "sha256":  "5D678F692E4F2BD536B21FC9C0B7CF4B3B6C0D2259D90BB8684B107571383080",
+                      "path":  "libvpl/src/windows/mfx_critical_section.h"
+                  },
+                  {
+                      "sha256":  "1644A282FD6BB5DBA3E08ED285CC9A9CAB9B20B884981AD66039D58836AA644A",
+                      "path":  "libvpl/src/windows/mfx_dispatcher.cpp"
+                  },
+                  {
+                      "sha256":  "32E8A8FFAB5A2AC0FF640F2BB98834254EC1004AB8873E4C2CB7890A9E93EA60",
+                      "path":  "libvpl/src/windows/mfx_dispatcher.h"
+                  },
+                  {
+                      "sha256":  "BB1913BED7C1D6AB7CD3FCC12E3D53FA679D6FFCA7425186DA5C742B1D82E433",
+                      "path":  "libvpl/src/windows/mfx_dispatcher_defs.h"
+                  },
+                  {
+                      "sha256":  "CE92FC00BFD97276E98F5133FB9D6D6EC144BC1A85BB77861E4DD130FF78BA02",
+                      "path":  "libvpl/src/windows/mfx_dispatcher_log.cpp"
+                  },
+                  {
+                      "sha256":  "1F3DC7BEAF1BE006431A96A3C0B1037637E63E1BD6AA016F1A1D1C20E3FE69EF",
+                      "path":  "libvpl/src/windows/mfx_dispatcher_log.h"
+                  },
+                  {
+                      "sha256":  "394929B0DBABE9AC748E8ECE4446C680D946BDC6C648FA7F8397ED0229D800E6",
+                      "path":  "libvpl/src/windows/mfx_driver_store_loader.cpp"
+                  },
+                  {
+                      "sha256":  "FD7FD672B9B4E813417080F5A4243E538A165236E67DF3B7EBF6E6EBF626C3AD",
+                      "path":  "libvpl/src/windows/mfx_driver_store_loader.h"
+                  },
+                  {
+                      "sha256":  "509B833EB31760E09B161AE9A892067FFAE1A265359CF4259EDD34936B6454D2",
+                      "path":  "libvpl/src/windows/mfx_dxva2_device.cpp"
+                  },
+                  {
+                      "sha256":  "0259E2FD26E6353401DCF81AE705FD642390C6A8065FA42CEC7648F9D3EF263C",
+                      "path":  "libvpl/src/windows/mfx_dxva2_device.h"
+                  },
+                  {
+                      "sha256":  "AC321DE3587D9386F42BFAFD1BACFB74C3B2888C74B5A1DF868DEADF974DAA24",
+                      "path":  "libvpl/src/windows/mfx_exposed_functions_list.h"
+                  },
+                  {
+                      "sha256":  "A4FABC96538544FE0613B4A9CB9E35C81D73B50D46ACF89945FCF58092F2EA54",
+                      "path":  "libvpl/src/windows/mfx_function_table.cpp"
+                  },
+                  {
+                      "sha256":  "E0B978FEA32889E9615FE6126CEF5423879E0914096AEEC223CDBCB3DEAC4558",
+                      "path":  "libvpl/src/windows/mfx_library_iterator.cpp"
+                  },
+                  {
+                      "sha256":  "AA9B0E5A8F82F7A46AAAAFC619A5DAD6A5489A720CE224CF10CE4A66917720F8",
+                      "path":  "libvpl/src/windows/mfx_library_iterator.h"
+                  },
+                  {
+                      "sha256":  "BBC1596025A6C5645F6D8FFEBD8A91BC7A96831A0066FA09041BC3976A4BF86A",
+                      "path":  "libvpl/src/windows/mfx_load_dll.cpp"
+                  },
+                  {
+                      "sha256":  "51853D245C465A4417936E1D7638A5C4225836DD54D9D20079D9D2A5792774E8",
+                      "path":  "libvpl/src/windows/mfx_load_dll.h"
+                  },
+                  {
+                      "sha256":  "209D3B92321E90FBF6CBDE228D28A106A2EA48F61E55E81C5F6338626210F301",
+                      "path":  "libvpl/src/windows/mfx_vector.h"
+                  },
+                  {
+                      "sha256":  "9AD4E11EDB07C921CC693C682ADFEE5CCC30CC685A00A08B7EC793858AB7B5D7",
+                      "path":  "libvpl/src/windows/mfx_win_reg_key.cpp"
+                  },
+                  {
+                      "sha256":  "35C057BBE0F660867B61D9C73E34E3865D7066203E2A7BB79D1F882F8B74E186",
+                      "path":  "libvpl/src/windows/mfx_win_reg_key.h"
+                  },
+                  {
+                      "sha256":  "6A65A4BF102DF3DB203BE6E405A87788E5CF4600406EC0C4718873B00704DFDB",
+                      "path":  "libvpl/src/windows/mfxvideo++.h"
+                  },
+                  {
+                      "sha256":  "AFA890B3AD3E939D2C743C5452E2A636C867AA304E51A44FD81B13894B1E19EC",
+                      "path":  "libvpl/src/windows/version.rc.in"
+                  },
+                  {
+                      "sha256":  "BF1CFAC2E2792B6E1E995CE103D70796AECAF2EC7E4C5FE5474F7ACEC7B4A677",
+                      "path":  "LICENSE"
+                  }
+              ],
+    "version":  "2.17.0",
+    "upstream_commit":  "d77f9195cf495b937631607333288fd917ae8939"
+}
