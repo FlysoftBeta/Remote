@@ -43,6 +43,8 @@ int main(int argc, char** argv) {
   logging::LoggingSettings settings;
   settings.logging_dest = logging::LOG_TO_STDERR;
   CHECK(logging::InitLogging(settings));
+  // OpenH264 at 1080p delivers about 51 fps for --fps=60 in the dev build;
+  // retain 30 by default for consistent input latency until GPU encoding.
   int fps = 30;
   if (command.HasSwitch("fps") &&
       (!base::StringToInt(command.GetSwitchValueASCII("fps"), &fps) ||

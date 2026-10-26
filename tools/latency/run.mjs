@@ -2,6 +2,7 @@
 // incl. Chrome 89) on this machine; prints P50/P80/P95/P99 and writes the per-frame CSV.
 //   node tools/latency/run.mjs [--secs 30] [--fps 30] [--w 1920 --h 1080] [--kbps 12000] [--delay 0|off] [--mock-my <source px>] [--my <viewer override px>]
 //        [--no-mock: use the real endpoint started by the CP via ENDPOINT_PATH/ENDPOINT_ARGS] [--viewer-browser <exe>] [--mock-browser <exe>] [--old-headless] [--headed] [--port 8090] [--mock-only]
+//        [--viewer-window-size 1928,1162] [--validate-frame: sample VideoFrame/rVFC timestamp agreement]
 // Without the control-plane already running on --port it starts one. Temp profiles/output under C:\src\tmp\ptrack.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,7 +32,7 @@ function browser(exe, name, url, oldHeadless) {
     oldHeadless ? '--headless --no-sandbox --enable-features=NetworkServiceInProcess --remote-debugging-port=0' : (arg('headed') ? null : '--headless=new'), `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion',
-    '--enable-logging=stderr', '--v=0', '--window-size=1920,1080', url
+    '--enable-logging=stderr', '--v=0', '--window-size=' + arg('viewer-window-size', '1920,1080'), url
   ].filter(Boolean).flatMap(a => a.startsWith('--headless --') ? a.split(' ') : [a]);
   const p = spawn(exe, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   p.stderr.on('data', d => { for (const line of d.toString().split(/\r?\n/)) if (/\[(mock|viewer)\]|Uncaught|ERROR:.*(rtc|webrtc)/i.test(line)) console.log(`  ${name}| ${line.replace(/^.*?CONSOLE\(\d+\)\] /, '')}`); });
@@ -48,7 +49,7 @@ const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}${markerQuery(my)}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;
@@ -71,7 +72,7 @@ console.log(`frames ${s.frames}, marker decoded ${s.decoded}, failed ${s.failed}
 console.log(`marker row ${s.markerY ?? 'unknown'} source px; alignment scans ${s.markerScans ?? 'unknown'}`);
 console.log(`capture->display ms: P50 ${f(s.lat.p50)}  P80 ${f(s.lat.p80)}  P95 ${f(s.lat.p95)}  P99 ${f(s.lat.p99)}  max ${f(s.lat.max)}  (n=${s.lat.n})`);
 if (s.rx && s.rx.n) console.log(`capture->received ms: P50 ${f(s.rx.p50)}  P80 ${f(s.rx.p80)}  P99 ${f(s.rx.p99)}  (rVFC receiveTime, n=${s.rx.n})`);
-if (s.i2p.n) console.log(`input->photon ms:   P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
+if (s.i2p.n) console.log(`${arg('no-mock') ? 'input->decoded flip' : 'input->display estimate'} ms: P50 ${f(s.i2p.p50)}  P80 ${f(s.i2p.p80)}  P95 ${f(s.i2p.p95)}  P99 ${f(s.i2p.p99)}  (n=${s.i2p.n}, ${s.inputMethod}, attempts=${s.inputAttempts}, timeouts=${s.inputTimeouts})`);
 console.log(`jitter buffer ${f(report.stats?.derived?.jbMs)} ms, decode ${f(report.stats?.derived?.decMs)} ms, fps ${f(report.stats?.derived?.fps)}`);
 console.log(`csv: ${csv}`);
 process.exit(0);

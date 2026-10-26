@@ -5,16 +5,20 @@
 
 #include "prts_endpoint/peer.h"
 
+#include <map>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/synchronization/lock.h"
+#include "prts_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/audio_codecs/audio_decoder_factory_template.h"
 #include "third_party/webrtc/api/audio_codecs/audio_encoder_factory_template.h"
 #include "third_party/webrtc/api/audio_codecs/opus/audio_decoder_opus.h"
@@ -55,7 +59,8 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
       : encoder_(std::move(encoder)) {}
   int InitEncode(const webrtc::VideoCodec* codec,
                  const Settings& settings) override {
-    LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x" << codec->height;
+    LOG(INFO) << "PRTS encoder InitEncode " << codec->width << "x"
+              << codec->height << " max_fps=" << codec->maxFramerate;
     auto screenshare = *codec;
     screenshare.mode = webrtc::VideoCodecMode::kScreensharing;
     return encoder_->InitEncode(&screenshare, settings);
@@ -68,6 +73,17 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
   int32_t Release() override { return encoder_->Release(); }
   int32_t Encode(const webrtc::VideoFrame& frame,
                  const std::vector<webrtc::VideoFrameType>* types) override {
+    const auto now = base::TimeTicks::Now();
+    const auto capture =
+        base::TimeTicks() + base::Microseconds(frame.timestamp_us());
+    LatencyStats::Get().Add("capture_to_encode", capture, now);
+    LatencyStats::Get().EncodeStart(frame.timestamp_us(), now);
+    {
+      base::AutoLock lock(timing_lock_);
+      timing_[frame.rtp_timestamp()] = {capture, now};
+      if (timing_.size() > 240)
+        timing_.erase(timing_.begin());
+    }
     return encoder_->Encode(frame, types);
   }
   void SetRates(const RateControlParameters& p) override { encoder_->SetRates(p); }
@@ -84,10 +100,27 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
   EncoderInfo GetEncoderInfo() const override { return encoder_->GetEncoderInfo(); }
   Result OnEncodedImage(const webrtc::EncodedImage& image,
                          const webrtc::CodecSpecificInfo* info) override {
+    const auto encoded = base::TimeTicks::Now();
+    {
+      base::AutoLock lock(timing_lock_);
+      auto it = timing_.find(image.RtpTimestamp());
+      if (it != timing_.end()) {
+        LatencyStats::Get().Add("encode", it->second.second, encoded);
+        LatencyStats::Get().Add("capture_to_encoded", it->second.first, encoded);
+        timing_.erase(it);
+      }
+    }
     auto output = image;  // Encoded buffer is refcounted, no payload copy.
-    output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            "latency-no-playout-delay")) {
+      output.SetPlayoutDelay(webrtc::VideoPlayoutDelay::Minimal());
+    }
     output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
-    return callback_->OnEncodedImage(output, info);
+    const auto handed = base::TimeTicks::Now();
+    LatencyStats::Get().Add("encoded_to_handoff", encoded, handed);
+    auto result = callback_->OnEncodedImage(output, info);
+    LatencyStats::Get().Add("handoff_callback", handed, base::TimeTicks::Now());
+    return result;
   }
   void OnFrameDropped(uint32_t ts, int spatial, bool end) override {
     callback_->OnFrameDropped(ts, spatial, end);
@@ -96,6 +129,8 @@ class LowDelayEncoder : public webrtc::VideoEncoder,
  private:
   std::unique_ptr<webrtc::VideoEncoder> encoder_;
   raw_ptr<webrtc::EncodedImageCallback> callback_ = nullptr;
+  base::Lock timing_lock_;
+  std::map<uint32_t, std::pair<base::TimeTicks, base::TimeTicks>> timing_;
 };
 
 class EncoderFactory : public webrtc::VideoEncoderFactory {
@@ -223,6 +258,13 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     pc_ = result.MoveValue();
     track_source_ = webrtc::make_ref_counted<TrackSource>();
     auto track = owner_.factory_->CreateVideoTrack(track_source_, "screen");
+    // Fluid reduced latency in repeated 1080p30 trials. Keep the encoder in
+    // screen mode and preserve resolution for browser text.
+    // --latency-screen-content restores the original source hint for A/B runs.
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            "latency-screen-content")) {
+      track->set_content_hint(webrtc::VideoTrackInterface::ContentHint::kFluid);
+    }
     webrtc::RtpTransceiverInit init;
     init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
     init.stream_ids = {"prts"};
@@ -270,7 +312,10 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     parameters.encodings[0].max_bitrate_bps = 12000000;
     parameters.encodings[0].max_framerate = owner_.fps_;
     parameters.degradation_preference =
-        webrtc::DegradationPreference::MAINTAIN_RESOLUTION;
+        base::CommandLine::ForCurrentProcess()->HasSwitch(
+            "latency-maintain-framerate")
+            ? webrtc::DegradationPreference::MAINTAIN_FRAMERATE
+            : webrtc::DegradationPreference::MAINTAIN_RESOLUTION;
     error = transceiver_->sender()->SetParameters(parameters);
     if (!error.ok()) {
       Fail(error.message());

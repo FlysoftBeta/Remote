@@ -7,6 +7,8 @@
   function RKMeasure(video, clock) {
     this.video = video; this.clock = clock; this.senderWidth = null; // Unknown sender width defaults to videoWidth.
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.decoded = 0; this.failed = 0; this.frames = 0;
+    this.stages = {};
+    this.validateFrame = new URLSearchParams(location.search).get('validateFrame') === '1';
     this.inputSent = {}; this.lastInputSeq = -1; this.lastFrameId = -1; this.dupes = 0; this.skipped = 0;
     // my is a marker origin in decoded source pixels; absent/invalid means auto-detect.
     var my = new URLSearchParams(location.search).get('my');
@@ -53,6 +55,26 @@
     var now = RKClock.wall(); this.expireInputs(now); this.inputSent[seq & 0xffff] = now;
   };
   RKMeasure.prototype.onFrame = function (displayPerf, meta) {
+    var self = this;
+    function stage(name, value) {
+      if (!Number.isFinite(value)) return;
+      var values = self.stages[name] || (self.stages[name] = []);
+      values.push(value);
+      if (values.length > 20000) values.shift();
+    }
+    if (meta) {
+      // Optional harness diagnostic: verify that pixel sampling and rVFC refer
+      // to the same media timestamp. VideoFrame wraps the current video frame.
+      if (this.validateFrame && typeof VideoFrame !== 'undefined' && this.frames % 30 === 0) {
+        var sampled = new VideoFrame(this.video);
+        stage('sampledFrameMinusMetadata', sampled.timestamp / 1000 - meta.mediaTime * 1000);
+        sampled.close();
+      }
+      if (meta.receiveTime != null && meta.presentationTime != null) stage('receiveToPresentation', meta.presentationTime - meta.receiveTime);
+      if (meta.presentationTime != null) stage('presentationToDisplay', displayPerf - meta.presentationTime);
+      if (meta.receiveTime != null) stage('receiveToDisplay', displayPerf - meta.receiveTime);
+      if (meta.processingDuration != null) stage('processingDuration', meta.processingDuration * 1000);
+    }
     this.expireInputs(RKClock.wall());
     var v = this.video, w = v.videoWidth;
     if (!w || this.clock.offset == null) return;
@@ -129,7 +151,10 @@
     if (this.lat.length > 20000) this.lat.shift();
   };
   RKMeasure.prototype.summary = function () {
+    var stages = {}, self = this;
+    Object.keys(this.stages).forEach(function (key) { stages[key] = RKMarker.percentiles(self.stages[key], [50, 80, 95, 99]); });
     return {
+      stages: stages,
       precise: this.precise, frames: this.frames, decoded: this.decoded, failed: this.failed, dupes: this.dupes, skipped: this.skipped,
       markerY: this.markerY, markerScans: this.markerScans,
       inputMethod: this.colorInput ? 'DataChannel keydown to decoded colour flip' : 'marker sequence',
@@ -139,6 +164,7 @@
     };
   };
   RKMeasure.prototype.reset = function () {
+    this.stages = {};
     this.lat = []; this.rx = []; this.i2p = []; this.rows = []; this.inputSent = {};
     this.lastInputSeq = this.lastFrameId = -1;
     this.decoded = this.failed = this.frames = this.dupes = this.skipped = 0;

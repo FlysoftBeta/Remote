@@ -10,6 +10,7 @@ executable("prts_endpoint") {
     "frame_source.h",
     "input_parser.cc",
     "input_parser.h",
+    "latency_stats.h",
     "main.cc",
     "peer.cc",
     "peer.h",

@@ -67,7 +67,7 @@
     if (pc) { var old = pc; pc = null; old.close(); }
     if (clock) { clock.close(); clock = null; }
     if (measure) { measure.reset(); measure.clock = { offset: null }; measure.inputSent = {}; measure.lastInputSeq = measure.lastFrameId = -1; }
-    ch = null; epHello = null; epStats = null; prev = null; window.rk.last = null; video.srcObject = null; stage.style.cursor = 'default';
+    ch = null; epHello = null; epStats = null; prev = null; statsSamples = []; window.rk.last = null; video.srcObject = null; stage.style.cursor = 'default';
   }
   function current(s, p) { return session === s && generation === s.generation && pc === p; }
   function h264Caps() {
@@ -222,7 +222,7 @@
   stage.addEventListener('pointerdown', function () { if (video.paused) { var play = video.play(); if (play && play.catch) play.catch(function () {}); } });
 
   // ---- stats overlay (1 Hz) ----
-  var prev = null, showStats = q.get('stats') !== '0';
+  var prev = null, statsSamples = [], showStats = q.get('stats') !== '0';
   if (!showStats) overlay.style.display = 'none';
   window.addEventListener('keydown', function (e) { if (e.key === 'F2' && e.ctrlKey) { showStats = !showStats; overlay.style.display = showStats ? 'block' : 'none'; } });
   function fmt(v, d) { return v == null || isNaN(v) ? '-' : (+v).toFixed(d == null ? 1 : d); }
@@ -247,8 +247,19 @@
         v.kbps = (inb.bytesReceived - prev.b) * 8 / dt / 1000;
         v.jbMs = de > 0 ? ((jbSrc.jitterBufferDelay - prev.jb) / de) * 1000 : null;
         v.decMs = df > 0 && inb.totalDecodeTime != null ? ((inb.totalDecodeTime - prev.td) / df) * 1000 : null;
+        v.processingMs = df > 0 && inb.totalProcessingDelay != null ? ((inb.totalProcessingDelay - prev.tp) / df) * 1000 : null;
+        v.framesDropped = inb.framesDropped == null ? null : inb.framesDropped - prev.dropped;
+        statsSamples.push({ at: now, jbMs: v.jbMs, decMs: v.decMs, processingMs: v.processingMs, framesDropped: v.framesDropped, fps: v.fps });
+        if (statsSamples.length > 3600) statsSamples.shift();
+        if (statsSamples.length % 5 === 0) {
+          var rolling = {};
+          ['jbMs', 'decMs', 'processingMs', 'framesDropped', 'fps'].forEach(function (key) {
+            rolling[key] = RKMarker.percentiles(statsSamples.slice(-5).map(function (sample) { return sample[key]; }).filter(function (value) { return value != null; }), [50, 95]);
+          });
+          console.log('[viewer] latency5s interval-p50/p95 ' + JSON.stringify(rolling));
+        }
       }
-      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0 };
+      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0, tp: inb.totalProcessingDelay || 0, dropped: inb.framesDropped || 0 };
       var c = codec[inb.codecId] || {}, lat = measure ? measure.summary() : null;
       var lines = [
         'video  ' + (inb.frameWidth || video.videoWidth) + 'x' + (inb.frameHeight || video.videoHeight) + '  ' + (c.mimeType || '?') + ' ' + (inb.decoderImplementation || ''),
@@ -282,8 +293,13 @@
         setTimeout(function () {
           if (!current(s, p)) return;
           var body = { kind: 'latency', ua: navigator.userAgent, hint: hintInfo, n: measure.lat.length, summary: measure.summary(),
+            durationSeconds: secs, query: location.search,
+            statsSamples: statsSamples.slice(-secs),
+            playoutDelayExtmap: p.localDescription.sdp.split('\n').filter(function (line) { return line.indexOf('a=extmap:') === 0 && line.indexOf('playout-delay') >= 0; }),
             stats: window.rk.last ? { codec: window.rk.last.codec, decoder: window.rk.last.decoder, derived: window.rk.last.derived,
               jitterBufferDelay: window.rk.last.inbound.jitterBufferDelay, emitted: window.rk.last.inbound.jitterBufferEmittedCount,
+              totalDecodeTime: window.rk.last.inbound.totalDecodeTime, totalProcessingDelay: window.rk.last.inbound.totalProcessingDelay,
+              framesDropped: window.rk.last.inbound.framesDropped,
               frameWidth: window.rk.last.inbound.frameWidth, frameHeight: window.rk.last.inbound.frameHeight } : null,
             sender: epStats, csv: measure.csv() };
           var x = new XMLHttpRequest(); x.open('POST', '/api/report'); x.setRequestHeader('content-type', 'application/json'); x.send(JSON.stringify(body));

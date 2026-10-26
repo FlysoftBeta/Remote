@@ -8,6 +8,7 @@
 #endif
 
 #include "prts_endpoint/d3d_frame_source.h"
+#include "prts_endpoint/latency_stats.h"
 
 #include <d3d11_4.h>
 #include <dxgi1_2.h>
@@ -34,6 +35,11 @@
 #include "ui/gfx/geometry/size.h"
 
 namespace prts {
+LatencyStats& LatencyStats::Get() {
+  static base::NoDestructor<LatencyStats> stats;
+  return *stats;
+}
+
 using Microsoft::WRL::ComPtr;
 namespace {
 class Lease final : public FrameSource {
@@ -179,6 +185,14 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     // The owning PlatformHandle closes here; the opened COM resource persists.
   }
   void OnFrame(mojom::FrameInfoPtr info, OnFrameCallback reply) override {
+    const auto received = base::TimeTicks::Now();
+    auto& latency = LatencyStats::Get();
+    latency.Add("viz_capture", info->capture_begin, info->capture_end);
+    // Reference time is an event/target time, not necessarily capture start.
+    latency.Add("reference_to_begin", info->reference_time, info->capture_begin,
+                true);
+    latency.Add("reference_to_receive", info->reference_time, received, true);
+    latency.Add("capture_to_receive", info->capture_end, received);
     static int frames_in = 0;
     if (frames_in++ % 300 == 0) {
       LOG(INFO) << "PRTS OnFrame #" << frames_in;
@@ -186,6 +200,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     auto it = buffers_.find(info->buffer_id);
     FrameGeometry g;
     auto job = std::make_unique<Job>();
+    job->received = received;
     {
       base::AutoLock lock(mutex_);
       g = geometry_;
@@ -235,6 +250,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       return;
     }
     context_->CopyResource(job->texture.Get(), buffer.texture.Get());
+    job->copied = base::TimeTicks::Now();
+    latency.Add("import_copy_submit", received, job->copied);
     HRESULT released = buffer.mutex->ReleaseSync(0);
     std::move(reply).Run();  // Browser can call Done before staging/Map/encode.
     if (released != S_OK) {
@@ -289,6 +306,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     ComPtr<ID3D11Device1> device;
     ComPtr<ID3D11DeviceContext> context;
     mojom::FrameInfoPtr info;
+    base::TimeTicks received, copied;
     uint64_t epoch = 0, consumer_epoch = 0, serial = 0;
   };
   void CreateDevice(uint64_t luid) {
@@ -355,6 +373,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       return;
     }
     auto begin = base::TimeTicks::Now();
+    auto& latency = LatencyStats::Get();
+    latency.Add("convert_queue", job->copied, begin);
     D3D11_TEXTURE2D_DESC desc;
     job->texture->GetDesc(&desc);
     desc.Usage = D3D11_USAGE_STAGING;
@@ -374,6 +394,8 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       job->context->Unmap(staging.Get(), 0);
       return;
     }
+    const auto mapped_at = base::TimeTicks::Now();
+    latency.Add("staging_map", begin, mapped_at);
     const gfx::Rect& r = job->info->visible_rect;
     auto i420 = webrtc::I420Buffer::Create(r.width(), r.height());
     // SAFETY: Map exposes Height rows of RowPitch bytes. visible_rect was
@@ -387,6 +409,9 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         i420->StrideY(), i420->MutableDataU(), i420->StrideU(),
         i420->MutableDataV(), i420->StrideV(), r.width(), r.height());
     job->context->Unmap(staging.Get(), 0);
+    const auto converted_at = base::TimeTicks::Now();
+    latency.Add("argb_i420", mapped_at, converted_at);
+    latency.Add("receive_to_converted", job->received, converted_at);
     if (result != 0) {
       return;
     }
@@ -402,6 +427,9 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       }
     }
     if (consumer) {
+      latency.Add("converted_to_source", converted_at, base::TimeTicks::Now());
+      latency.SourceReady(
+          (job->info->capture_end - base::TimeTicks()).InMicroseconds());
       consumer(
           webrtc::VideoFrame::Builder()
               .set_video_frame_buffer(i420)
@@ -419,6 +447,10 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     stats_at_ = now;
     frames_ = converted_ = 0;
     convert_ms_ = 0;
+    if (now - latency_at_ >= base::Seconds(5)) {
+      LatencyStats::Get().Log();
+      latency_at_ = now;
+    }
     convert_runner_->PostDelayedTask(
         FROM_HERE, base::BindOnce(&Impl::LogStats, base::Unretained(this)),
         base::Seconds(1));
@@ -440,6 +472,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   ComPtr<ID3D11DeviceContext> context_;
   uint64_t luid_ = 0, bound_epoch_ = 0;
   base::TimeTicks stats_at_ = base::TimeTicks::Now();
+  base::TimeTicks latency_at_ = stats_at_;
   int frames_ = 0, converted_ = 0;
   double convert_ms_ = 0;
 };
