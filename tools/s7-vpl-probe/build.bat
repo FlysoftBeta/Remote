@@ -1,7 +1,7 @@
 @echo off
 setlocal
 rem Vendored upstream libvpl 2.17.0; extraction instructions are in the report.
-set "VPL=C:\src\tmp\s7\vendor\prtsd\vendor\libvpl"
+set "VPL=%~dp0..\..\endpoint\third_party\libvpl"
 if not "%~1"=="" set "VPL=%~1"
 set "OUT=C:\src\tmp\s7\build"
 if not exist "%OUT%" mkdir "%OUT%"

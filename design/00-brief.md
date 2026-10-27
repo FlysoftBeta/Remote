@@ -66,7 +66,7 @@ chain runs and the experience is usable.
 - Codex CLI 0.163 is installed; `codex exec -m gpt-6.1-sol -c model_reasoning_effort="medium"` works.
 - `sudo` is available (UAC is off).
 - `C:\Users\Flysoft\Desktop\chromium` holds an EARLIER related project by the user (patches/,
-  prtsd/, server/, scripts/, PIN, args.gn, cr.cmd). Survey it as prior art and reuse what helps;
+  endpoint code, server/, scripts/, PIN, args.gn, cr.cmd). Survey it as prior art and reuse what helps;
   do not modify it.
 
 ## Repo / workspace rules (from the user)
@@ -83,7 +83,7 @@ chain runs and the experience is usable.
 - Structure: the main agent manages stages. Each stage has ONE orchestrator subagent (context
   isolation), and that orchestrator engages DEEPLY: it does the reasoning, reviews and verifies
   every delegated output, spot-checks key claims, makes the decisions and writes the design/code
-  direction. Hand-off between stages goes through design/STATUS.md and the docs.
+  direction. Hand-off between stages goes through archive/design/STATUS.md and the docs.
 - Codex is NOT for autonomous or open-ended work. Give it only tightly bounded tasks: one specific
   question or deliverable, a clear output file, explicit scope limits and a timeout.
 - Tool-heavy or context-heavy grunt work goes to Codex (`gpt-6.1-sol`, reasoning medium or high)

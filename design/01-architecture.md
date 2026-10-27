@@ -3,7 +3,7 @@
 版本：clean-room 复核版，2026-10-25（取代 Stage 1 版本）。输入：`00-brief.md`、`research/r-chromium-map.md`（本次复核的源码地图）、
 `research/b1-frame-path.md`、`b2-capture.md`、`b3-pacing.md`、`c1-input-layer.md`、`c2-ime-osk.md`、`d-branding.md`、`g-h264-level.md`。
 所有 Chromium 路径相对 `src/`，基线 Stable **157.0.8103.15** / `1aa07b638799e59656559ae6c6649d4b197f555e`（“pin”）。
-每条决策只以 Chromium 源码与 brief 为依据；逐条的 kept/changed 记录与证据见 `REVIEW.md`。早期项目（prior art）不作为任何决策的理由。
+每条决策只以 Chromium 源码与 brief 为依据；逐条的 kept/changed 记录与证据见 `../archive/design/REVIEW.md`。早期项目（prior art）不作为任何决策的理由。
 
 ## 1. 一句话
 
@@ -16,13 +16,13 @@
 
 ```text
  ┌──────────────────────────── PRTS browser process tree (one per instance) ─────────────────────────┐
- │ chrome.exe --headless=new --prts-remote --prts-mojo=<h> --screen-info={…} --user-data-dir=<inst>  │
- │   browser: chrome/browser/prts/*（控制器、窗口注册、捕获绑定、输入、IME 桥）                         │
+ │ chrome.exe --headless=new --rb-remote --rb-mojo=<h> --screen-info={…} --user-data-dir=<inst>  │
+ │   browser: chrome/browser/rb/*（控制器、窗口注册、捕获绑定、输入、IME 桥）                         │
  │            Views/Aura + DesktopWindowTreeHostWin + HWNDMessageHandlerHeadless（cloaked HWND 保留）   │
  │   GPU process: viz display compositor + FrameSinkVideoCapturerImpl (D3D11, Intel UHD 630)          │
  └──────▲ Mojo (control, input, IME, capture descriptors / or capturer remote) ────────────────────────┘
         │                                    pixels stay on GPU: D3D11 NT handle + keyed mutex
- ┌──────┴──────────── prts_endpoint (C++, built in the Chromium tree, one worker per instance) ─────────┐
+ ┌──────┴──────────── rb_legacy_endpoint (C++, built in the Chromium tree, one worker per instance) ─────────┐
  │ frame import (open-once cache) · optional scene pass · VideoProcessor BGRA→NV12 · oneVPL H.264       │
  │ libwebrtc PeerConnection (H.264 track + data channels) · pacing controller · metrics                 │
  └──────▲ control API (JSON over stdio/WebSocket)            │ WebRTC (UDP, direct)
@@ -47,7 +47,7 @@
 - 依据（r-chromium-map §1-2）：`HWNDMessageHandlerHeadless` 保留真实 HWND 并 cloak，激活/capture 都是进程内逻辑状态；
   `--headless` 关闭 native occlusion；cloak 不影响 Present 与 BeginFrame 源。brief 明确要求走这条路径。
 - 新发现：headless `Activate()` 不会使同进程其他窗口失活（`hwnd_message_handler_headless.cc:383-395`），D8 必须自己维护互斥。
-- 所有 PRTS 行为由运行期开关 `--prts-remote` 守卫；无开关时补丁后的 chrome.exe 等同上游。
+- 所有 PRTS 行为由运行期开关 `--rb-remote` 守卫；无开关时补丁后的 chrome.exe 等同上游。
 - 否决：
   - 自定义 `ui::PlatformWindow` / Windows 上的 headless-ozone 式 shim：`DesktopWindowTreeHostPlatform` 只为 linux/fuchsia 编译
     （`ui/views/BUILD.gn:985-995`），需要移植整条宿主并绕开 `DesktopWindowTreeHostWin` → 补丁大、离开 new-headless 路径（违反 brief）。
@@ -56,7 +56,7 @@
 ### D3 浏览器 ↔ endpoint IPC：Mojo invitation（spike S10），退路为三条管道 + schema 协议
 - 因为 endpoint 改为 Chromium 树内 C++（D12），两端可以共享 `.mojom` 定义、句柄传递（D3D11 NT handle 作为 `PlatformHandle`）、
   版本天然一致（同一 pin 同一构建）。上游先例：`remoting/` 自己的多进程主机就用 Mojo invitation 连接独立启动的进程。
-- 启动：endpoint 创建 `mojo::PlatformChannel`，把一端经 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承给 chrome.exe（`--prts-mojo=<h>`）；
+- 启动：endpoint 创建 `mojo::PlatformChannel`，把一端经 `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 继承给 chrome.exe（`--rb-mojo=<h>`）；
   浏览器（broker）在 PRTS 控制器启动时发送 `OutgoingInvitation`，endpoint 以非 broker 身份接受。
 - 更进一步（S10 的第二问）：浏览器可用 `HostFrameSinkManager::CreateVideoCapturer(PendingReceiver<mojom::FrameSinkVideoCapturer>)`
   创建 capturer 并把 **capturer remote 交给 endpoint**，endpoint 自己实现 `mojom::FrameSinkVideoConsumer`：帧回调从 GPU 进程直达 endpoint，
@@ -139,7 +139,7 @@
 - 否决：改 `ui/base/pointer/pointer_device_win.cc`（进程全局、影响 Views 的触摸 UI 判定，且是 ui 层补丁）；`--touch-events`（不改 maxTouchPoints）。
 
 ### D11 品牌：产品 PRTS，Web 身份 Google Chrome
-- `components/embedder_support/user_agent_utils.cc` 两处（`:162-163` 品牌、`:449-450` `Headless` 前缀），由 `--prts-remote` 守卫；其余 UA reduction/GREASE/
+- `components/embedder_support/user_agent_utils.cc` 两处（`:162-163` 品牌、`:449-450` `Headless` 前缀），由 `--rb-remote` 守卫；其余 UA reduction/GREASE/
   client hints/`userAgentData` 全部走上游流水线；`BRANDING` + 用户可见 GRIT 字符串改 PRTS（d-branding）。
 - 否决：`--user-agent`（UA-CH 元数据 early-return，d-branding）、`is_chrome_branded=true`、在 JS/HTTP 两端分别伪造。
 - 配套构建参数（建议给 Stage 2）：`proprietary_codecs=true`、`ffmpeg_branding="Chrome"`——真 Chrome 能播 H.264/AAC，Web 身份与“视频播放”测试场景都需要。
@@ -150,7 +150,7 @@
   上游 `remoting/` 正是“树内原生主机 + libwebrtc + 硬件 H.264 + `VideoPlayoutDelay::Minimal()`”（r-chromium-map §7）。
 - 编码：自写 `webrtc::VideoEncoder`（oneVPL，D3D11 视频内存输入，native `VideoFrameBuffer` 携带 NV12 纹理）；回退：`media::VideoEncodeAccelerator`（MF）、
   OpenH264（`rtc_use_h264`，CPU）。
-- 源码放 remotekit `endpoint/`，以目录联接（junction）映射到 `src/prts_endpoint/`；上游改动仅 `//BUILD.gn` 一行依赖（02 补丁 15）。
+- 源码放 remotekit `endpoint/`，以目录联接（junction）映射到 `src/rb_legacy_endpoint/`；上游改动仅 `//BUILD.gn` 一行依赖（02 补丁 15）。
 - 否决：Rust + webrtc-rs（GCC/pacer 成熟度未经验证、仍需 C++ 桥）；独立 libwebrtc 检出（第二套 gclient/工具链、版本漂移）；把 endpoint 放进浏览器进程（扩大补丁面、编码/网络进入将要被沙箱化的进程）。
   str0m 列为候选，见 REVIEW。
 
@@ -188,10 +188,12 @@ brief 的“50 ms latency”按 RTT 50 ms 解读（单向 ~25 ms），实验同�
 
 ```text
 remotekit/
-  design/  research/  scripts/        设计、调查、工具
-  chromium/                           PIN.json, args/*.gn, series, patches/
-  endpoint/                           C++（GN 目标，junction 到 src/prts_endpoint）；含 .mojom
-  control-plane/                      Node 样例 + viewer
-  tools/                              测量工具（标记块测试页、网络整形）
+  design/  research/                  设计、调查结果
+  archive/                            阶段计划、状态、提示词、旧工作流脚本
+  browser/                            PIN.json, args/, series, patches/, branding/, cr.cmd
+  endpoint/                           旧 C++ endpoint（symlink 到 src/rb_legacy_endpoint）
+  re/                                 Rust endpoint
+  control-plane/  viewer/              Node 控制平面与浏览器端 viewer
+  tools/                              测量、网络整形、isolation/ ACL 工具
 ```
 Chromium checkout：`C:\src\chromium\src`（不入库）。

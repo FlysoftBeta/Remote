@@ -7,8 +7,8 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/browser_session.h"
-#include "prts_endpoint/latency_stats.h"
+#include "rb_legacy_endpoint/browser_session.h"
+#include "rb_legacy_endpoint/latency_stats.h"
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +21,7 @@
 #include "base/task/bind_post_task.h"
 #include "ui/gfx/geometry/rect_f.h"
 
-namespace prts {
+namespace re {
 BrowserSession::BrowserSession(std::shared_ptr<D3DFrameSource> source,
                                int fps,
                                base::OnceClosure failure)
@@ -73,7 +73,7 @@ void BrowserSession::Shutdown() {
     link_.browser_process().Terminate(0, false);
   }
 }
-void BrowserSession::Hello(mojom::HelloInfoPtr info) {
+void BrowserSession::Hello(rb::mojom::HelloInfoPtr info) {
   if (info->version != 1 || info->software_compositing) {
     LOG(ERROR) << "M1 requires protocol 1 and D3D11 GPU compositing";
     OnDisconnect();
@@ -85,14 +85,14 @@ void BrowserSession::Hello(mojom::HelloInfoPtr info) {
     Select(active_ ? active_ : windows_.begin()->first);
   }
 }
-void BrowserSession::WindowAdded(mojom::WindowInfoPtr info) {
+void BrowserSession::WindowAdded(rb::mojom::WindowInfoPtr info) {
   uint32_t id = info->window_id;
   windows_[id] = std::move(info);
   if (!active_ || wanted_ == id) {
     Select(id);
   }
 }
-void BrowserSession::WindowChanged(mojom::WindowInfoPtr info) {
+void BrowserSession::WindowChanged(rb::mojom::WindowInfoPtr info) {
   uint32_t id = info->window_id;
   auto it = windows_.find(id);
   bool changed = it == windows_.end() || it->second->size_px != info->size_px ||
@@ -144,10 +144,10 @@ void BrowserSession::Select(uint32_t id) {
   }
   active_ = id;
   FrameGeometry g{w.size_px.width(), w.size_px.height(), w.device_scale_factor};
-  auto params = mojom::CaptureParams::New();
+  auto params = rb::mojom::CaptureParams::New();
   params->max_fps = fps_;
   params->nv12 = false;
-  // PRTS: A Viz pool reset must also refresh the encoder after a GPU restart.
+  // RB: A Viz pool reset must also refresh the encoder after a GPU restart.
   // Weak ownership makes late reset notifications harmless during shutdown.
   browser->StartCapture(
       id, std::move(params),
@@ -189,7 +189,7 @@ void BrowserSession::Refresh() {
 void BrowserSession::CursorChanged(const std::string& css) {
   Send(base::DictValue().Set("t", "cursor").Set("css", css));
 }
-void BrowserSession::ImeStateChanged(mojom::ImeStatePtr s) {
+void BrowserSession::ImeStateChanged(rb::mojom::ImeStatePtr s) {
   const auto& r = s->caret_norm;
   Send(base::DictValue()
            .Set("t", "ime.state")
@@ -237,9 +237,9 @@ void BrowserSession::Pointer(const PointerInput& i) {
         if (!s.active_) {
           return;
         }
-        auto p = mojom::PointerInput::New();
-        p->action = static_cast<mojom::PointerAction>(i.action);
-        p->type = static_cast<mojom::PointerType>(i.type);
+        auto p = rb::mojom::PointerInput::New();
+        p->action = static_cast<rb::mojom::PointerAction>(i.action);
+        p->type = static_cast<rb::mojom::PointerType>(i.type);
         p->pid = i.pid;
         p->x = i.x;
         p->y = i.y;
@@ -260,7 +260,7 @@ void BrowserSession::Wheel(const WheelInput& i) {
         if (!s.active_) {
           return;
         }
-        auto p = mojom::WheelInput::New();
+        auto p = rb::mojom::WheelInput::New();
         p->x = i.x;
         p->y = i.y;
         p->dx = i.dx;
@@ -277,7 +277,7 @@ void BrowserSession::Key(const KeyInput& i) {
         if (!s.active_) {
           return;
         }
-        auto p = mojom::KeyInput::New();
+        auto p = rb::mojom::KeyInput::New();
         p->down = i.down;
         p->mods = i.mods;
         p->repeat = i.repeat;
@@ -402,7 +402,7 @@ void BrowserSession::OnControl(base::DictValue m) {
     if (!code) {
       return;
     }
-    auto p = mojom::KeyInput::New();
+    auto p = rb::mojom::KeyInput::New();
     p->down = true;
     p->key_code = code;
     const int mods = m.FindInt("mods").value_or(0);
@@ -420,4 +420,4 @@ void BrowserSession::OnControl(base::DictValue m) {
   }
   // ime.hidden records local OSK dismissal only.
 }
-}  // namespace prts
+}  // namespace re

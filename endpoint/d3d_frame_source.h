@@ -2,18 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PRTS_ENDPOINT_D3D_FRAME_SOURCE_H_
-#define PRTS_ENDPOINT_D3D_FRAME_SOURCE_H_
+#ifndef RB_LEGACY_ENDPOINT_D3D_FRAME_SOURCE_H_
+#define RB_LEGACY_ENDPOINT_D3D_FRAME_SOURCE_H_
 
 #include <cstdint>
 #include <memory>
 
 #include "base/functional/callback.h"
-#include "chrome/browser/prts/mojom/prts.mojom.h"
+#include "chrome/browser/rb/mojom/rb.mojom.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "prts_endpoint/frame_source.h"
+#include "rb_legacy_endpoint/frame_source.h"
 
-namespace prts {
+namespace re {
 class VplEncoderState;
 // Construct/destroy and BindCapture on main. Start/Stop on RTC signaling;
 // geometry is thread safe. Mojo import and CPU conversion have separate
@@ -24,7 +24,7 @@ class D3DFrameSource : public FrameSource,
   D3DFrameSource(std::shared_ptr<VplEncoderState> encoder_state, int fps);
   ~D3DFrameSource() override;
   // on_reset must marshal to its owner sequence; invoked on the import thread.
-  mojo::PendingRemote<mojom::PrtsFrameSink> BindCapture(
+  mojo::PendingRemote<rb::mojom::RbFrameSink> BindCapture(
       uint64_t gpu_luid,
       FrameGeometry geometry,
       base::RepeatingClosure on_reset);
@@ -40,5 +40,5 @@ class D3DFrameSource : public FrameSource,
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_D3D_FRAME_SOURCE_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_D3D_FRAME_SOURCE_H_

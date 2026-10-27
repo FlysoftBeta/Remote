@@ -3,9 +3,9 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/peer.h"
+#include "rb_legacy_endpoint/peer.h"
 
-#include "prts_endpoint/vpl_encoder.h"
+#include "rb_legacy_endpoint/vpl_encoder.h"
 #include <span>
 #include <string>
 #include <string_view>
@@ -20,8 +20,8 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
 #include "base/synchronization/lock.h"
-#include "prts_endpoint/experiment_options.h"
-#include "prts_endpoint/latency_stats.h"
+#include "rb_legacy_endpoint/experiment_options.h"
+#include "rb_legacy_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/audio_codecs/audio_decoder_factory_template.h"
 #include "third_party/webrtc/api/audio_codecs/audio_encoder_factory_template.h"
 #include "third_party/webrtc/api/audio_codecs/opus/audio_decoder_opus.h"
@@ -42,7 +42,7 @@
 #include "third_party/webrtc/modules/audio_device/include/audio_device_default.h"  // nogncheck
 #include "third_party/webrtc_overrides/environment.h"
 
-namespace prts {
+namespace re {
 namespace {
 class SenderStats : public webrtc::RTCStatsCollectorCallback {
  public:
@@ -195,7 +195,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     }
     webrtc::RtpTransceiverInit init;
     init.direction = webrtc::RtpTransceiverDirection::kSendOnly;
-    init.stream_ids = {"prts"};
+    init.stream_ids = {"rb"};
     init.send_encodings.emplace_back();
     auto tr = pc_->AddTransceiver(track, init);
     if (!tr.ok()) {
@@ -457,7 +457,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
                   return;
                 }
                 if (GetExperimentOptions().fec == "ulpfec") {
-                  // PRTS: H264 + generic NACK disables ULPFEC in
+                  // RB: H264 + generic NACK disables ULPFEC in
                   // ShouldDisableRedAndUlpfec(). Codec preference feedback is
                   // ignored at this pin; remove only generic NACK from the
                   // actual local offer, keeping nack pli and ccm fir for IDR.
@@ -580,7 +580,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       channels_[1]->Send(base::DictValue().Set("t", "hello").Set("v", 1)
           .Set("input", 1).Set("frame", base::DictValue()
               .Set("w", g.width).Set("h", g.height))
-          .Set("dsf", g.dsf).Set("name", "prts-endpoint"));
+          .Set("dsf", g.dsf).Set("name", "rb-endpoint"));
       RequestKeyFrame();
       owner_.input_.Control(*message);
       owner_.input_.Control(base::DictValue().Set("t", "keyframe"));
@@ -736,4 +736,4 @@ void Peer::Close() {
     session_.reset();
   });
 }
-}  // namespace prts
+}  // namespace re

@@ -23,7 +23,7 @@ foreach ($file in 'codec_api.h','codec_app_def.h','codec_def.h','codec_ver.h') {
   }
 }
 # Reuse only the S7 upstream dispatcher and headers, in this task's own directory.
-if (!(Test-Path "$taskRoot/vendor/libvpl")) { Copy-Item C:/src/tmp/s7/vendor/prtsd/vendor/libvpl "$taskRoot/vendor/libvpl" -Recurse }
+if (!(Test-Path "$taskRoot/vendor/libvpl")) { Copy-Item "$PSScriptRoot/../../endpoint/third_party/libvpl" "$taskRoot/vendor/libvpl" -Recurse }
 if (!(Test-Path "$taskRoot/build/vpl.lib")) { Copy-Item C:/src/tmp/s7/build/vpl.lib "$taskRoot/build/vpl.lib" }
 $ffmpeg = (Get-ChildItem "$taskRoot/bin/ffmpeg/*/bin/ffmpeg.exe").FullName
 & $ffmpeg -hide_banner -y -threads 4 -ss 30 -i https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov -t 11 -an -c:v copy -avoid_negative_ts make_zero "$taskRoot/media/natural-source.mkv"

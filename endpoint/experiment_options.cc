@@ -1,7 +1,7 @@
 // Copyright 2026 The remotekit Authors
 // Use of this source code is governed by a BSD-style license.
 
-#include "prts_endpoint/experiment_options.h"
+#include "rb_legacy_endpoint/experiment_options.h"
 
 #include <cmath>
 #include <cstdint>
@@ -12,7 +12,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 
-namespace prts {
+namespace re {
 namespace {
 
 ExperimentOptions ParseOptions() {
@@ -151,4 +151,4 @@ const ExperimentOptions& GetExperimentOptions() {
   return *options;
 }
 
-}  // namespace prts
+}  // namespace re

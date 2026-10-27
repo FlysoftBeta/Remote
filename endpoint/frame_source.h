@@ -1,12 +1,12 @@
-#ifndef PRTS_ENDPOINT_FRAME_SOURCE_H_
-#define PRTS_ENDPOINT_FRAME_SOURCE_H_
+#ifndef RB_LEGACY_ENDPOINT_FRAME_SOURCE_H_
+#define RB_LEGACY_ENDPOINT_FRAME_SOURCE_H_
 
 #include <cstdint>
 #include <functional>
 
 #include "third_party/webrtc/api/video/video_frame.h"
 
-namespace prts {
+namespace re {
 struct FrameGeometry {
   int width = 1920;
   int height = 1080;
@@ -23,5 +23,5 @@ class FrameSource {
   virtual FrameGeometry geometry() const = 0;
   virtual void SetInputSequence(uint16_t seq) = 0;
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_FRAME_SOURCE_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_FRAME_SOURCE_H_

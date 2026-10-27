@@ -7,10 +7,10 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/d3d_frame_source.h"
-#include "prts_endpoint/latency_stats.h"
+#include "rb_legacy_endpoint/d3d_frame_source.h"
+#include "rb_legacy_endpoint/latency_stats.h"
 
-#include "prts_endpoint/d3d_native_frame.h"
+#include "rb_legacy_endpoint/d3d_native_frame.h"
 
 #include <d3d11_4.h>
 #include <dxgi1_2.h>
@@ -39,7 +39,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
-namespace prts {
+namespace re {
 LatencyStats& LatencyStats::Get() {
   static base::NoDestructor<LatencyStats> stats;
   return *stats;
@@ -66,10 +66,10 @@ class Lease final : public FrameSource {
 };
 }  // namespace
 
-class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
+class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
  public:
   Impl(std::shared_ptr<VplEncoderState> state, int fps)
-      : import_("PrtsD3DImport"), convert_("PrtsI420"),
+      : import_("RbD3DImport"), convert_("RbI420"),
         encoder_state_(std::move(state)), fps_(fps) {
     CHECK(base::TimeTicks::IsConsistentAcrossProcesses());
     CHECK(import_.Start());
@@ -99,7 +99,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     import_.Stop();
     convert_.Stop();
   }
-  mojo::PendingRemote<mojom::PrtsFrameSink>
+  mojo::PendingRemote<rb::mojom::RbFrameSink>
   Bind(uint64_t luid, FrameGeometry g, base::RepeatingClosure on_reset) {
     // Change generation synchronously so an old conversion cannot escape after
     // the main-sequence window switch. Receiver work follows on import_.
@@ -111,13 +111,13 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       pending_.reset();
     }
     Drain();
-    mojo::PendingRemote<mojom::PrtsFrameSink> remote;
+    mojo::PendingRemote<rb::mojom::RbFrameSink> remote;
     import_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(
             [](Impl* self, uint64_t luid, uint64_t epoch,
                base::RepeatingClosure on_reset,
-               mojo::PendingReceiver<mojom::PrtsFrameSink> receiver) {
+               mojo::PendingReceiver<rb::mojom::RbFrameSink> receiver) {
               self->receiver_.reset();
               self->buffers_.clear();
               self->fences_.clear();
@@ -130,7 +130,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
               }
               self->RebuildNativePool();
               self->receiver_ =
-                  std::make_unique<mojo::Receiver<mojom::PrtsFrameSink>>(
+                  std::make_unique<mojo::Receiver<rb::mojom::RbFrameSink>>(
                       self, std::move(receiver));
             },
             base::Unretained(this), luid, epoch, std::move(on_reset),
@@ -192,7 +192,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       LOG(ERROR) << "OpenSharedResource1/keyed mutex failed: " << hr;
       return;
     }
-    // PRTS: no-keyed textures are usable only with a matching ready dependency.
+    // RB: no-keyed textures are usable only with a matching ready dependency.
     buffer.texture.As(&buffer.mutex);
     D3D11_TEXTURE2D_DESC desc;
     buffer.texture->GetDesc(&desc);
@@ -205,7 +205,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     buffers_.emplace(id, std::move(buffer));
     // The owning PlatformHandle closes here; the opened COM resource persists.
   }
-  void OnFrame(mojom::FrameInfoPtr info, OnFrameCallback reply) override {
+  void OnFrame(rb::mojom::FrameInfoPtr info, OnFrameCallback reply) override {
     const auto received = base::TimeTicks::Now();
     auto& latency = LatencyStats::Get();
     latency.Add("viz_capture", info->capture_begin, info->capture_end);
@@ -257,7 +257,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       std::move(reply).Run(true);
       return;
     }
-    // PRTS: open once per writer token; validate the actual consumer adapter.
+    // RB: open once per writer token; validate the actual consumer adapter.
     const bool fenced = !!info->ready_fence;
     if (fenced == !!buffer.mutex) {
       LOG(ERROR) << "PRTS capture sync/texture mismatch";
@@ -396,7 +396,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
         FROM_HERE, base::BindOnce(&Impl::Convert, base::Unretained(this)));
   }
   void Reset() override {
-    // PRTS: retire old leases, timelines and blocked GPU waits on pool restart.
+    // RB: retire old leases, timelines and blocked GPU waits on pool restart.
     for (auto& read : pending_reads_)
       std::move(read.reply).Run(false);
     const bool had_pending = !pending_reads_.empty();
@@ -414,7 +414,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
       pending_.reset();
       bound_epoch_ = ++epoch_;
     }
-    // PRTS: Reset precedes replacement NewBuffer/OnFrame messages on this pipe.
+    // RB: Reset precedes replacement NewBuffer/OnFrame messages on this pipe.
     // Imported COM textures and native VPP imports were cleared above; retire
     // old conversion work by epoch and request an IDR via the owner sequence.
     LOG(INFO) << "PRTS: capture reset; texture imports cleared, requesting IDR";
@@ -497,7 +497,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
     webrtc::scoped_refptr<webrtc::VideoFrameBuffer> native;
     ComPtr<ID3D11Device1> device;
     ComPtr<ID3D11DeviceContext> context;
-    mojom::FrameInfoPtr info;
+    rb::mojom::FrameInfoPtr info;
     base::TimeTicks received, copied;
     uint64_t epoch = 0, consumer_epoch = 0, serial = 0;
   };
@@ -683,7 +683,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
   // Receiver is only bound/used/reset on import_; device/context are immutable
   // within a job. Multithread protection serializes context calls across
   // threads.
-  std::unique_ptr<mojo::Receiver<mojom::PrtsFrameSink>> receiver_;
+  std::unique_ptr<mojo::Receiver<rb::mojom::RbFrameSink>> receiver_;
   std::map<uint32_t, Buffer> buffers_;
   std::map<base::UnguessableToken, ComPtr<ID3D11Fence>> fences_;
   std::vector<SourceRead> pending_reads_;
@@ -705,7 +705,7 @@ class D3DFrameSource::Impl final : public mojom::PrtsFrameSink {
 D3DFrameSource::D3DFrameSource(std::shared_ptr<VplEncoderState> state, int fps)
     : impl_(std::make_unique<Impl>(std::move(state), fps)) {}
 D3DFrameSource::~D3DFrameSource() = default;
-mojo::PendingRemote<mojom::PrtsFrameSink> D3DFrameSource::BindCapture(
+mojo::PendingRemote<rb::mojom::RbFrameSink> D3DFrameSource::BindCapture(
     uint64_t luid,
     FrameGeometry g,
     base::RepeatingClosure on_reset) {
@@ -728,4 +728,4 @@ FrameGeometry D3DFrameSource::geometry() const {
 }
 void D3DFrameSource::SetInputSequence(uint16_t) {
 }  // Browser owns real markers.
-}  // namespace prts
+}  // namespace re

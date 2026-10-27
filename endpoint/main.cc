@@ -33,11 +33,11 @@
 #include "mojo/core/embedder/configuration.h"
 #include "mojo/core/embedder/embedder.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
-#include "prts_endpoint/browser_session.h"
-#include "prts_endpoint/experiment_options.h"
-#include "prts_endpoint/peer.h"
-#include "prts_endpoint/synthetic_source.h"
-#include "prts_endpoint/vpl_encoder.h"
+#include "rb_legacy_endpoint/browser_session.h"
+#include "rb_legacy_endpoint/experiment_options.h"
+#include "rb_legacy_endpoint/peer.h"
+#include "rb_legacy_endpoint/synthetic_source.h"
+#include "rb_legacy_endpoint/vpl_encoder.h"
 #include "third_party/webrtc/rtc_base/ssl_adapter.h"
 #include "third_party/webrtc/rtc_base/win32_socket_init.h"  // nogncheck
 #include "third_party/webrtc_overrides/init_webrtc.h"
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
   logging::LoggingSettings settings;
   settings.logging_dest = logging::LOG_TO_STDERR;
   CHECK(logging::InitLogging(settings));
-  const auto& experiments = prts::GetExperimentOptions();
+  const auto& experiments = re::GetExperimentOptions();
   if (!experiments.valid)
     return 1;
   // Retain 30 fps: VPL can fall back during 60 fps startup or rate changes on
@@ -80,7 +80,7 @@ int main(int argc, char** argv) {
   if (instance.empty()) {
     instance = "default";
   }
-  // PRTS: the endpoint has no window, so Windows 11 may ignore timer
+  // RB: the endpoint has no window, so Windows 11 may ignore timer
   // resolution requests and throttle it; libwebrtc's pacer, probe and
   // packetizer wake-ups then land on the 15.6 ms tick. Opt out of both and
   // request 1 ms. --no-hires-timer restores the old behaviour for A/B runs.
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
   }
   base::SingleThreadTaskExecutor executor;
   base::FieldTrialList field_trials;
-  // PRTS: libwebrtc field trials (read through WebRtcFieldTrials ->
+  // RB: libwebrtc field trials (read through WebRtcFieldTrials ->
   // base::FieldTrialList). Opt-in: --webrtc-field-trials=<Trial/Group/...>,
   // e.g. WebRTC-Video-Pacing/factor:2.5/ . Group names may contain ':' and ','.
   if (command.HasSwitch("webrtc-field-trials")) {
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
     }
   }
   if (experiments.fec == "flexfec") {
-    // PRTS: advertise the codec AND generate the repair SSRC/FEC-FR group.
+    // RB: advertise the codec AND generate the repair SSRC/FEC-FR group.
     // Reject conflicting --webrtc-field-trials rather than silently disabling
     // protection. CreateTrialsFromString must run before WebRtcEnvironment().
     for (const char* name :
@@ -138,13 +138,13 @@ int main(int argc, char** argv) {
   base::FeatureList::InitInstance(
       command.GetSwitchValueASCII("enable-features"),
       command.GetSwitchValueASCII("disable-features"));
-  base::ThreadPoolInstance::CreateAndStartWithDefaultParams("prts_endpoint");
+  base::ThreadPoolInstance::CreateAndStartWithDefaultParams("rb_legacy_endpoint");
   webrtc::WinsockInitializer winsock;
   CHECK_EQ(winsock.error(), 0);
   CHECK(InitializeWebRtcModuleBeforeSandbox());
   CHECK(webrtc::InitializeSSL());
   mojo::core::Init({.is_broker_process = true});
-  base::Thread io("PrtsMojoIO");
+  base::Thread io("RbMojoIO");
   base::Thread::Options options;
   options.message_pump_type = base::MessagePumpType::IO;
   CHECK(io.StartWithOptions(std::move(options)));
@@ -153,15 +153,15 @@ int main(int argc, char** argv) {
     mojo::core::ScopedIPCSupport ipc(
         io.task_runner(), mojo::core::ScopedIPCSupport::ShutdownPolicy::FAST);
     {
-      prts::Clock clock;
-      prts::Signaling signaling;
-      auto encoder_state = std::make_shared<prts::VplEncoderState>();
+      re::Clock clock;
+      re::Signaling signaling;
+      auto encoder_state = std::make_shared<re::VplEncoderState>();
       auto source = synthetic ? nullptr
-                              : std::make_shared<prts::D3DFrameSource>(
+                              : std::make_shared<re::D3DFrameSource>(
                                     encoder_state, fps);
-      std::unique_ptr<prts::BrowserSession> browser;
+      std::unique_ptr<re::BrowserSession> browser;
       if (!synthetic) {
-        browser = std::make_unique<prts::BrowserSession>(
+        browser = std::make_unique<re::BrowserSession>(
             source, fps, base::BindOnce([] {
               // CP owns endpoint restart. Its stdin may be blocked
               // indefinitely; a broken browser link is a terminal instance
@@ -169,27 +169,27 @@ int main(int argc, char** argv) {
               base::Process::TerminateCurrentProcessImmediately(1);
             }));
       }
-      prts::LoggingInputSink logging_sink;
-      prts::InputSink& input =
-          browser ? static_cast<prts::InputSink&>(*browser) : logging_sink;
-      prts::Peer peer(
+      re::LoggingInputSink logging_sink;
+      re::InputSink& input =
+          browser ? static_cast<re::InputSink&>(*browser) : logging_sink;
+      re::Peer peer(
           signaling, input, clock,
-          [source, &clock, fps]() -> std::unique_ptr<prts::FrameSource> {
+          [source, &clock, fps]() -> std::unique_ptr<re::FrameSource> {
             if (source) {
               return source->CreateLease();
             }
-            return std::make_unique<prts::SyntheticSource>(fps, clock);
+            return std::make_unique<re::SyntheticSource>(fps, clock);
           },
           fps, encoder_state, prefer_vpl);
       bool ready = peer.Initialize();
       if (ready && browser) {
         browser->SetPeerCallbacks(
-            base::BindRepeating(&prts::Peer::SendControl,
+            base::BindRepeating(&re::Peer::SendControl,
                                 base::Unretained(&peer)),
-            base::BindRepeating(&prts::Peer::RequestKeyFrame,
+            base::BindRepeating(&re::Peer::RequestKeyFrame,
                                 base::Unretained(&peer)));
         base::CommandLine chrome(chrome_path);
-        // EndpointLink adds --headless=new --prts-remote and --prts-mojo.
+        // EndpointLink adds --headless=new --rb-remote and --rb-mojo.
         chrome.AppendSwitchASCII("screen-info", "{1920x1080}");
         chrome.AppendSwitch("no-first-run");
         chrome.AppendSwitch("no-default-browser-check");
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
                            .Set("v", 1)
                            .Set("role", "endpoint")
                            .Set("instance", instance)
-                           .Set("name", "prts-endpoint")
+                           .Set("name", "rb-endpoint")
                            .Set("caps", base::DictValue()
                                             .Set("codecs", std::move(codecs))
                                             .Set("maxFps", fps)));

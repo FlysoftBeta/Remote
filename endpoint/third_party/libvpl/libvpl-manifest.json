@@ -1,5 +1,5 @@
 ﻿{
-    "provenance":  "Existing S7 cache, identity described by research/s7-onevpl-probe.md and cache README.prts.md; hashes freeze this cache, not independent upstream verification",
+    "provenance":  "Existing S7 cache, identity described by research/s7-onevpl-probe.md and historical cache README; hashes freeze this cache, not independent upstream verification",
     "files":  [
                   {
                       "sha256":  "EDD1B3E1133F835A137EB454CEF952725E03ABC00BB71226A942E4D43532E157",

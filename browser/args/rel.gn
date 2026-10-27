@@ -1,4 +1,4 @@
-# out\rel: measurement / packaging build (design/05-plan.md 3.3). Latency is measured only on rel.
+# out\rel: measurement / packaging build (archive/design/05-plan.md 3.3). Latency is measured only on rel.
 is_debug = false
 is_component_build = false
 is_official_build = false
@@ -8,7 +8,7 @@ blink_symbol_level = 0
 v8_symbol_level = 0
 is_chrome_branded = false
 use_siso = true
-# Codecs (design/REVIEW.md): H.264 playback in pages + OpenH264 fallback in the in-tree endpoint.
+# Codecs (archive/design/REVIEW.md): H.264 playback in pages + OpenH264 fallback in the in-tree endpoint.
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 rtc_use_h264 = true

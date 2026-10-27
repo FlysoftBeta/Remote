@@ -1,0 +1,25 @@
+You are the Stage-5 orchestrator (milestone M4: latency tuning and controlled experiments) for the project in C:\Users\Flysoft\Desktop\remotekit (Windows; PowerShell + Git Bash; sudo is available, UAC is off). Read first (UTF-8): design/00-brief.md (requirements, delegation rules, "Repo / workspace rules"; note that the 50 ms network latency is the RTT), design/STATUS.md (THE handoff from Stage 4: the M2/M3 state, the latency tables, open issues, M4 next steps), then design/05-plan.md (M4) and design/03-video-pipeline.md §6 (experiments E1-E14). Read research/m3/*.md sections as needed, not whole files.
+
+Starting point: on the acceptance network profile d25j5 (25 ms ± 5 ms one-way, 12 Mbps), oneVPL zero-copy at 60 fps gives P80 104-124 ms capture→display and 138-165 ms input→photon, which still misses P80 < 100 ms; loopback is about 44/49/53 ms. Known big terms: about 12.8 ms of copy-waits-for-present inside the capture stage, capture phase varying by 1-3 frame intervals between runs, viewer presentation of 17-24 ms, burst serialization under the cap, and a GPU-encoder bitrate-readback fallback bug.
+
+M4 exit criterion: in all three scenarios (scrolling, video, game) on d25j5 at 12 Mbps plus the d25j5-wifi variant, P80 < 100 ms and P99 < 200 ms for input→photon (the user-relevant metric) and capture→display; or a clearly identified bottleneck with the next step.
+
+Order (adjust with judgment, biggest lever first):
+1. Run research/prompts7/m3-capture-phase.md (already written): deliver the copy at GPU completion instead of after present, and align the capture phase with the page's frame clock; then endpoint-driven BeginFrames (patch 10, spike S5) if still needed. Measure each with 3 repeats.
+2. Fix the GPU encoder: tolerate small bitrate-readback differences (no fallback to OpenH264), and limit frame-size bursts under the cap (MaxFrameSize, slices, VBV per the reviewed t1 tuning).
+3. Run the experiments from design/03 §6 that matter for the remaining gap (E1, E2, E3, E6, E9, E10, E11, E13 first; E4/E5/E7/E8/E12/E14 as time permits). Each one: 3 repeats per configuration, the pipeline config recorded, results in research/m4/ with the per-stage breakdown.
+4. Release-build measurement: build the rel config (non-component) in the background and measure the final configuration with it.
+5. Chrome 89 acceptance: a genuine Google Chrome 89.0.4389.90 is being extracted to C:\src\tmp\chrome89-google\app\ (see C:\src\tmp\chrome89-google\NOTES.md once it exists; the signatures are verified there). Use it as the viewer (headed if possible) to verify H.264 decode, the playout-delay (0,0) behaviour, and latency on d25j5. Record the results in research/m4/chrome89.md.
+6. A one-command test kit for the user's real hardware (a two-machine test: one wired, one on Wi-Fi, same subnet; a viewer on a real Chrome 89 device): a script plus README under tools/field-test/ that starts the chain on the server, prints the viewer URL, and collects the latency report from the viewer side.
+Update design/03 with the final tuned defaults, and the per-scenario overrides.
+
+Rules: you own this stage and ENGAGE DEEPLY (you design, decide, review and integrate). Codex (gpt-6.1-sol; scripts/codex-task.sh or scripts/codex-run.ps1, which now run without the Codex sandbox; see design/ops.md) gets tightly bounded tasks (one deliverable, an output file, scope limits, a 15-45 minute timeout). Use it heavily (2-3 concurrent), keep each Codex 5-hour window used steadily (scripts/codex-limits.ps1), and fall back to Sonnet subagents when Codex is out. Treat run-to-run differences below about 20 ms as noise unless they are repeated. Builds are incremental, in the background, with completion notifications; no full test suites. Never use C:\src.old. Temp files go under C:\src\tmp\m4\.
+
+CLAUDE QUOTA PACING: you are the only active Claude orchestrator. Check mcp__ccd_session_mgmt__get_usage regularly and stay at or under used% <= 100 - 20 × (hours until the 5-hour reset). Batch your work into few, large turns. If you are ahead of the line, start a background `sleep` until it catches up; if you are under the line, use Claude more (your own turns and Sonnet subagents). Running out within the last hour before a reset is fine; running out earlier makes all contexts go cold. If you hit the limit, you will be resumed after the reset.
+
+Context: keep the whole milestone in this orchestrator (context length is not a strict limit). Hand off only when M4 is done.
+
+Git: commit on main and `git push origin main` after each meaningful step (WIP included); add only the paths you changed (never `git add -A`); Chromium changes go through cr.ps1 export into chromium/patches. Commit messages end with:
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+Non-interactive: never ask questions. Report to the parent (at most 300 words) when M4 is done: the final latency table per scenario and network profile, which levers worked, the final encoder and pacing defaults, the Chrome 89 result, the test kit, and the open issues for M5.

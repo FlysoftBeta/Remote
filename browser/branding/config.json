@@ -1,0 +1,29 @@
+{
+  "source": "Chromium",
+  "brand": "PRTS",
+  "allowlist": {
+    "messages": [
+      "chrome/app/chromium_strings.grd",
+      "chrome/app/settings_chromium_strings.grdp"
+    ],
+    "translations": ["chrome/app/resources/chromium_strings_*.xtb"]
+  },
+  "denylist": {
+    "message_names": [
+      "IDS_NO_NETWORK_PRESENT_ERROR",
+      "IDS_ABOUT_VERSION_COMPANY_NAME",
+      "IDS_ABOUT_VERSION_COPYRIGHT"
+    ],
+    "message_name_patterns": ["(?:^|_)(?:REGISTRY|POLICY_NAME|FILE_NAME|FILENAME|USER_AGENT|CLIENT_HINT|BUNDLE_ID|PRODUCT_ID|PROG_ID)(?:_|$)"],
+    "protected_tokens": [
+      "(?:https?|chrome|file)://[^\\s<>\"']+",
+      "[A-Za-z]:[\\\\/][^\\s<>\"']+",
+      "\\b(?:HKEY_|HKLM|HKCU)[^\\s<>\"']*",
+      "[\\w.-]+\\.(?:exe|dll|app|dmg|msi|deb|rpm|plist)\\b",
+      "\\b(?:org|com)\\.[\\w.]+",
+      "&lt;[^<>]*?&gt;"
+    ],
+    "preserve_elements": ["ph", "ex"],
+    "preserve_attributes": "all (including name, meaning and desc)"
+  }
+}

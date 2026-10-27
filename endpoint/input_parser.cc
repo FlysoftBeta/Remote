@@ -3,14 +3,14 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/input_parser.h"
+#include "rb_legacy_endpoint/input_parser.h"
 
 #include <bit>
 
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 
-namespace prts {
+namespace re {
 namespace {
 uint16_t U16(std::span<const uint8_t> b, size_t i) {
   return uint16_t{b[i]} | (uint16_t{b[i + 1]} << 8);
@@ -90,4 +90,4 @@ void LoggingInputSink::ResetInput() { LOG(INFO) << "input reset"; }
 void LoggingInputSink::Control(const base::DictValue& message) {
   LOG(INFO) << "control " << *message.FindString("t");
 }
-}  // namespace prts
+}  // namespace re

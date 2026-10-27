@@ -12,7 +12,7 @@
 
 ## 2. 分阶段方案
 
-| 阶段 | 机制 | 能提供什么 | 先验证据（prior art `docs/prts/isolation.md`, `journal-i1.md`） |
+| 阶段 | 机制 | 能提供什么 | 先验证据（prior art `docs/rb/isolation.md`, `journal-i1.md`） |
 |---|---|---|---|
 | I0（MVP 起就有） | 每 instance 一个 Job Object，`PROC_THREAD_ATTRIBUTE_JOB_LIST` 在 `CreateProcess` 时原子加入，`KILL_ON_JOB_CLOSE`；进程/内存上限；显式 `--user-data-dir`；`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` 限定继承句柄 | 生命周期、资源上限、endpoint 崩溃时整树回收 | 已在 prior art 实现并通过（job smoke / M4 / M5 / E2E PASS） |
 | I1 | 每租户独立的 Windows 本地账户（或 per-tenant 低权限 token）+ profile/临时目录 ACL | 同机互不信任租户的最低可用边界 | 设计中，未实测 |

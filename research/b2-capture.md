@@ -203,7 +203,7 @@ I420/ARGB readbacks and empty NV12/mappable SharedImage results. Same path and c
 [I] Prior patch 0013's unconditional completion is therefore still relevant to this pin,
 with the pin's metadata spelling `capture_version` rather than the prior patch's `capture.version`.
 Evidence: `FrameSinkVideoCapturerImpl::MaybeDeliverFrame()` above; historical comparison only:
-`../chromium/patches/0013-viz-complete-failed-video-captures-before-retrying-r.patch`.
+`../browser/patches/0013-viz-complete-failed-video-captures-before-retrying-r.patch`.
 
 ## 4. Pacing, static content and forcing refresh
 

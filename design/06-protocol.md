@@ -8,7 +8,7 @@
 
 ```text
 viewer ──WS /signal (JSON)──► control-plane ◄──WS /signal?role=endpoint (JSON)── mock endpoint / 远程 endpoint
-                                         ◄──stdio，4 字节 LE 长度前缀 + JSON（同一消息集）── prts_endpoint.exe（被 CP 拉起）
+                                         ◄──stdio，4 字节 LE 长度前缀 + JSON（同一消息集）── rb_legacy_endpoint.exe（被 CP 拉起）
 viewer ◄═══════════ WebRTC：H.264 视频（endpoint→viewer，recvonly）+ 3 条 negotiated DataChannel ═══════════► endpoint
 ```
 
@@ -52,7 +52,7 @@ viewer ◄═══════════ WebRTC：H.264 视频（endpoint→v
 6. 结束：任一侧 `bye`、WS 断开（CP 15 s ping/30 s 超时）、PC `failed` 超过 10 s（viewer 先尝试一次 `restart`）。
 
 ### 1.4 endpoint 的 stdio 传输
-CP 拉起 `prts_endpoint.exe`（`ENDPOINT_PATH`）时，用 stdin/stdout 承载同一消息集，帧格式 = 4 字节小端长度 + UTF-8 JSON（≤ 4 MiB，`control-plane/framing.js`）。
+CP 拉起 `rb_legacy_endpoint.exe`（`ENDPOINT_PATH`）时，用 stdin/stdout 承载同一消息集，帧格式 = 4 字节小端长度 + UTF-8 JSON（≤ 4 MiB，`control-plane/framing.js`）。
 `instance` 由命令行给出（`--instance=<id>`）。endpoint 的 stderr 是日志。实例控制（启动浏览器、关闭）放在同一通道的 `instance.*` 消息中，后续定义。
 
 ## 2. DataChannel

@@ -1,11 +1,11 @@
 // Copyright 2026 The remotekit Authors
 // Use of this source code is governed by a BSD-style license.
-#ifndef PRTS_ENDPOINT_D3D_NATIVE_FRAME_H_
-#define PRTS_ENDPOINT_D3D_NATIVE_FRAME_H_
+#ifndef RB_LEGACY_ENDPOINT_D3D_NATIVE_FRAME_H_
+#define RB_LEGACY_ENDPOINT_D3D_NATIVE_FRAME_H_
 
-#include "prts_endpoint/vpl_encoder.h"
+#include "rb_legacy_endpoint/vpl_encoder.h"
 
-namespace prts {
+namespace re {
 
 // Used only on the import queue. Owns a bounded pool, VP/enumerator, and
 // private BGRA input views. Old output slots survive resize through each native
@@ -33,5 +33,5 @@ class D3DNativeFramePool {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_D3D_NATIVE_FRAME_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_D3D_NATIVE_FRAME_H_

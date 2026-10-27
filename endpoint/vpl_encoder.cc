@@ -6,7 +6,7 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/vpl_encoder.h"
+#include "rb_legacy_endpoint/vpl_encoder.h"
 
 #include <d3d10.h>
 #include <dxgi1_2.h>
@@ -29,8 +29,8 @@
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
-#include "prts_endpoint/experiment_options.h"
-#include "prts_endpoint/latency_stats.h"
+#include "rb_legacy_endpoint/experiment_options.h"
+#include "rb_legacy_endpoint/latency_stats.h"
 #include "third_party/libyuv/include/libyuv/convert.h"
 #include "third_party/libyuv/include/libyuv/convert_from.h"
 #include "third_party/webrtc/api/units/time_delta.h"
@@ -45,11 +45,11 @@
 #include "third_party/webrtc/rtc_base/time_utils.h"
 #include "third_party/webrtc_overrides/rtc_base/logging.h"
 
-namespace prts {
+namespace re {
 namespace {
 using Microsoft::WRL::ComPtr;
 using SteadyClock = std::chrono::steady_clock;
-constexpr char kNativeTag[] = "prts-owned-nv12-v1";
+constexpr char kNativeTag[] = "rb-owned-nv12-v1";
 constexpr size_t kMaxBitstreamBytes = 16 * 1024 * 1024;
 constexpr auto kBusyTimeout = std::chrono::milliseconds(100);
 
@@ -1435,4 +1435,4 @@ std::unique_ptr<webrtc::VideoEncoder> VplEncoderFactory::Create(
       env, std::move(software), std::make_unique<VplEncoder>(state_), false);
   return std::make_unique<LowDelayOutput>(std::move(encoder));
 }
-}  // namespace prts
+}  // namespace re

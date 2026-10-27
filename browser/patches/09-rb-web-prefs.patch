@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 13:44:30 +0800
+Subject: [PATCH] rb: web preferences hook for remote mode (touch capabilities)
+
+ChromeContentBrowserClient registers RbContentBrowserClientPart, which
+overrides web preferences in remote mode so pages see the viewer's touch
+capabilities.
+
+Patch-Name: 09-rb-web-prefs
+
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index 1defcfa514..f2253a9117 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -469,6 +469,9 @@
+ #include "url/url_constants.h"
+ 
+ #if BUILDFLAG(IS_WIN)
++// RB: Windows-only part; registration is guarded by ui::IsRbRemoteMode().
++#include "chrome/browser/rb/rb_content_browser_client_part.h"
++#include "ui/base/ui_base_switches.h"
+ #include "base/files/file_util.h"
+ #include "base/strings/string_tokenizer.h"
+ #include "base/version.h"
+@@ -1585,6 +1588,12 @@ ChromeContentBrowserClient::GetPopupNavigationDelegateFactoryForTesting() {
+ }
+ 
+ ChromeContentBrowserClient::ChromeContentBrowserClient() {
++#if BUILDFLAG(IS_WIN)
++  // RB: Expose the connected viewer's touch capabilities to pages.
++  if (ui::IsRbRemoteMode()) {
++    extra_parts_.push_back(std::make_unique<rb::RbContentBrowserClientPart>());
++  }
++#endif
+ #if BUILDFLAG(ENABLE_PLUGINS)
+   extra_parts_.push_back(
+       std::make_unique<ChromeContentBrowserClientPluginsPart>());
+diff --git a/chrome/browser/rb/rb_content_browser_client_part.cc b/chrome/browser/rb/rb_content_browser_client_part.cc
+new file mode 100644
+index 0000000000..c671b1faa6
+--- /dev/null
++++ b/chrome/browser/rb/rb_content_browser_client_part.cc
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_content_browser_client_part.h"
++
++#include <algorithm>
++
++#include "content/public/browser/browser_thread.h"
++#include "third_party/blink/public/common/web_preferences/web_preferences.h"
++#include "ui/base/ui_base_switches.h"
++
++namespace rb {
++namespace {
++int g_touch_points = 0;
++bool g_touch_only = false;
++}  // namespace
++
++// static
++bool RbContentBrowserClientPart::SetTouchCapabilities(
++    uint8_t touch_points, bool touch_only) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (!ui::IsRbRemoteMode()) {
++    return false;
++  }
++  const int points = std::min<int>(touch_points, 10);
++  touch_only = points > 0 && touch_only;
++  if (g_touch_points == points && g_touch_only == touch_only) {
++    return false;
++  }
++  g_touch_points = points;
++  g_touch_only = touch_only;
++  return true;
++}
++
++void RbContentBrowserClientPart::OverrideWebPreferences(
++    content::WebContents* web_contents,
++    content::SiteInstance& main_frame_site,
++    blink::web_pref::WebPreferences* web_prefs) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (!ui::IsRbRemoteMode()) {
++    return;
++  }
++  using Pointer = blink::mojom::PointerType;
++  using Hover = blink::mojom::HoverType;
++  web_prefs->pointer_events_max_touch_points = g_touch_points;
++  web_prefs->touch_event_feature_detection_enabled = g_touch_points > 0;
++  web_prefs->primary_pointer_type =
++      g_touch_only ? Pointer::kPointerCoarseType : Pointer::kPointerFineType;
++  web_prefs->available_pointer_types =
++      static_cast<int>(web_prefs->primary_pointer_type);
++  if (g_touch_points > 0) {
++    web_prefs->available_pointer_types |=
++        static_cast<int>(Pointer::kPointerCoarseType);
++  }
++  web_prefs->primary_hover_type =
++      g_touch_only ? Hover::kHoverNone : Hover::kHoverHoverType;
++  web_prefs->available_hover_types =
++      static_cast<int>(web_prefs->primary_hover_type);
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_content_browser_client_part.h b/chrome/browser/rb/rb_content_browser_client_part.h
+new file mode 100644
+index 0000000000..260963531d
+--- /dev/null
++++ b/chrome/browser/rb/rb_content_browser_client_part.h
+@@ -0,0 +1,28 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_CONTENT_BROWSER_CLIENT_PART_H_
++#define CHROME_BROWSER_RB_RB_CONTENT_BROWSER_CLIENT_PART_H_
++
++#include <cstdint>
++
++#include "chrome/browser/chrome_content_browser_client_parts.h"
++
++namespace rb {
++
++// One viewer per browser process. Capability state is read/written on UI.
++class RbContentBrowserClientPart final : public ChromeContentBrowserClientParts {
++ public:
++  // Returns whether existing WebContents need their preferences recomputed.
++  static bool SetTouchCapabilities(uint8_t touch_points, bool touch_only);
++
++  void OverrideWebPreferences(
++      content::WebContents* web_contents,
++      content::SiteInstance& main_frame_site,
++      blink::web_pref::WebPreferences* web_prefs) override;
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_CONTENT_BROWSER_CLIENT_PART_H_

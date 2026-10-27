@@ -3,7 +3,7 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/synthetic_source.h"
+#include "rb_legacy_endpoint/synthetic_source.h"
 
 #include <algorithm>
 #include <chrono>
@@ -15,7 +15,7 @@
 #include "third_party/webrtc/api/video/i420_buffer.h"
 #include "third_party/webrtc/rtc_base/time_utils.h"
 
-namespace prts {
+namespace re {
 SyntheticSource::SyntheticSource(int fps, const Clock& clock)
     : fps_(fps), clock_(clock) {}
 SyntheticSource::~SyntheticSource() { Stop(); }
@@ -98,4 +98,4 @@ void SyntheticSource::Run(Consumer consumer) {
       return;
   }
 }
-}  // namespace prts
+}  // namespace re

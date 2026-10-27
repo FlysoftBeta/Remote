@@ -3,7 +3,7 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/signaling.h"
+#include "rb_legacy_endpoint/signaling.h"
 
 #include <fcntl.h>
 #include <io.h>
@@ -18,7 +18,7 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 
-namespace prts {
+namespace re {
 namespace {
 constexpr uint32_t kMaxRecord = 4 * 1024 * 1024;
 constexpr size_t kMaxQueue = 8 * 1024 * 1024;
@@ -124,4 +124,4 @@ void Signaling::WriteLoop() {
     queued_bytes_ -= record.size();
   }
 }
-}  // namespace prts
+}  // namespace re

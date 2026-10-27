@@ -309,7 +309,7 @@ Viewer files: `public/app.js` lifecycle/signalling/track setup, `input.js` remot
 
 ## 7. Patch-maintenance and build workflow
 
-**Code:** `cr.cmd` is a minimal `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cr.ps1 %*` shim. Infra repo holds PIN/patches/daemon/server; actual full checkout is expected under `C:/src/chromium/src` (`CR_ROOT` changes root), depot_tools `C:/src/depot_tools`. No Chromium checkout was required for this survey.
+**Code:** `cr.cmd` is a minimal `powershell -NoProfile -ExecutionPolicy Bypass -File browser/cr.ps1 %*` shim. Infra repo holds PIN/patches/daemon/server; actual full checkout is expected under `C:/src/chromium/src` (`CR_ROOT` changes root), depot_tools `C:/src/depot_tools`. No Chromium checkout was required for this survey.
 
 | Command / step | Actual implementation and caveat |
 | --- | --- |

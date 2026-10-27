@@ -1,22 +1,23 @@
 <#
 remotekit Chromium workflow (design/02-browser-patches.md section 4).
 
-  Infra (this repo):  chromium\PIN.json, chromium\series, chromium\patches\*.patch, chromium\args\{dev,rel}.gn
+  Infra (this repo):  browser\PIN.json, browser\series, browser\patches\*.patch, browser\args\{dev,rel}.gn
   Checkout:           $env:CR_ROOT (default C:\src\chromium)\src ; depot_tools: C:\src\depot_tools
-  Branches in src:    upstream = PIN commit ; prts = upstream + series ; backups prts-backup/<ts>
+  Branches in src:    upstream = PIN commit ; rb = upstream + series ; backups rb-backup/<ts>
 
 Commands:
   init                 write .gclient, gclient sync src@PIN (shallow, no history), create upstream, apply
-  apply                recreate prts from upstream + series (git am --3way); refuses on uncommitted changes
-  export               upstream..prts commits -> patches (name = Patch-Name: trailer or subject slug), rewrite series
+  apply                recreate rb from upstream + series (git am --3way); refuses on uncommitted changes
+  brand                regenerate user-visible PRTS resources (kept outside patch commits)
+  export               upstream..rb commits -> patches (name = Patch-Name: trailer or subject slug), rewrite series
   check [base]         dry-run the series on a temporary index based on upstream (or <base>); no side effects
   stat                 per-patch upstream/new file line counts, with warnings
-  rebase <tag> [-Continue]  move upstream + prts to a new Stable tag, sync deps, update PIN.json, export
+  rebase <tag> [-Continue]  move upstream + rb to a new Stable tag, sync deps, update PIN.json, export
   gen <dev|rel> [-Force]    copy args\<cfg>.gn to out\<cfg>\args.gn (diff check) and gn gen
-  build <dev|rel> [target]  autoninja under a build lock; log + .exit in out\<cfg>\prts-build-<ts>.*
-  run <dev|rel> [args]      launch out\<cfg>\chrome.exe --headless=new --prts-remote with a scratch profile
+  build <dev|rel> [target]  autoninja under a build lock; log + .exit in out\<cfg>\rb-build-<ts>.*
+  run <dev|rel> [args]      launch out\<cfg>\chrome.exe --headless=new --rb-remote with a scratch profile
   status               PIN vs checkout, branch, series count
-Commit on prts (one commit per maintenance unit, Patch-Name: trailer), then 'cr export' and commit chromium\ here.
+Commit on rb (one commit per maintenance unit, Patch-Name: trailer), then 'cr export' and commit browser\ here.
 #>
 param(
   [Parameter(Position = 0)][string]$Cmd = 'help',
@@ -29,8 +30,7 @@ $env:Path = "C:\src\depot_tools;" + [Environment]::GetEnvironmentVariable('Path'
 $env:DEPOT_TOOLS_WIN_TOOLCHAIN = '0'
 if (-not $env:vs2026_install) { $env:vs2026_install = 'C:\Program Files\Microsoft Visual Studio\18\Community' }
 
-$Repo    = Split-Path $PSScriptRoot
-$CrDir   = Join-Path $Repo 'chromium'
+$CrDir   = $PSScriptRoot
 $Patches = Join-Path $CrDir 'patches'
 $Series  = Join-Path $CrDir 'series'
 $PinFile = Join-Path $CrDir 'PIN.json'
@@ -68,10 +68,10 @@ function Ensure-Upstream {
   if (-not (Has-Ref $pin.commit)) { throw "PIN commit $($pin.commit) not present in $Src; run 'cr init'" }
   G branch -f upstream $pin.commit
 }
-function Backup-Prts {
-  if ((Has-Ref 'refs/heads/prts') -and ((Gq rev-parse prts) -ne (Gq rev-parse upstream))) {
-    $b = "prts-backup/" + (Get-Date -Format 'yyyyMMdd-HHmmss')
-    G branch $b prts
+function Backup-Rb {
+  if ((Has-Ref 'refs/heads/rb') -and ((Gq rev-parse rb) -ne (Gq rev-parse upstream))) {
+    $b = "rb-backup/" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    G branch $b rb
     Write-Host "backup: $b"
   }
 }
@@ -107,9 +107,10 @@ solutions = [
 
 function Apply {
   Ensure-Upstream
+  Brand @('--restore')
   Assert-Clean
-  Backup-Prts
-  G checkout -q -f -B prts upstream
+  Backup-Rb
+  G checkout -q -f -B rb upstream
   $n = 0
   foreach ($p in Get-Series) {
     $f = Join-Path $Patches $p
@@ -118,7 +119,13 @@ function Apply {
     if ($LASTEXITCODE) { throw "git am failed at $p : resolve in $Src, 'git am --continue', then apply the rest by hand (or fix and 'cr export')" }
     $n++
   }
-  Write-Host "prts = upstream + $n patch(es)"
+  Write-Host "rb = upstream + $n patch(es)"
+  Brand
+}
+
+function Brand([string[]]$options = @()) {
+  & python3 (Join-Path $CrDir 'branding\apply_branding.py') --src $Src @options
+  if ($LASTEXITCODE) { throw "resource branding failed ($LASTEXITCODE)" }
 }
 
 function Slug([string]$s) {
@@ -129,9 +136,10 @@ function Slug([string]$s) {
 
 function Export {
   Ensure-Upstream
-  if (-not (Has-Ref 'refs/heads/prts')) { throw 'no prts branch' }
+  if (-not (Has-Ref 'refs/heads/rb')) { throw 'no rb branch' }
+  Brand @('--check-committed')
   New-Item -ItemType Directory -Force $Patches | Out-Null
-  $commits = @(Gq rev-list --reverse upstream..prts)
+  $commits = @(Gq rev-list --reverse upstream..rb)
   $names = @(); $changed = 0
   $work = Join-Path $TmpRoot ("export-" + [guid]::NewGuid()); New-Item -ItemType Directory -Force $work | Out-Null
   try {
@@ -214,13 +222,13 @@ function Finish-Rebase($tag, $new) {
   G branch -f upstream $new
   G checkout -q --detach $new
   Native "gclient sync --revision src@$new --no-history --shallow -D" $Root
-  G checkout -q prts
+  G checkout -q rb
   $pin = Get-Pin
   $pin.version = $tag; $pin.commit = $new; $pin.ref = "refs/tags/$tag"
   $pin.depot_tools = ((& $Git -C C:\src\depot_tools rev-parse HEAD) -join '').Trim()
   Save-Pin $pin
   Export
-  Write-Host "rebased onto $tag ($new); rebuild and commit chromium\"
+  Write-Host "rebased onto $tag ($new); rebuild and commit browser\"
 }
 
 function Rebase([string]$tag) {
@@ -229,8 +237,8 @@ function Rebase([string]$tag) {
     Ensure-Upstream; Assert-Clean
     G fetch --depth=1 origin "refs/tags/${tag}:refs/tags/$tag"
     $new = Gq rev-parse "$tag^{commit}"
-    G branch -f "prts-backup/pre-$tag" prts
-    & $Git -C $Src rebase --onto $new upstream prts
+    G branch -f "rb-backup/pre-$tag" rb
+    & $Git -C $Src rebase --onto $new upstream rb
     if ($LASTEXITCODE) { throw "rebase stopped: resolve, 'git rebase --continue' until done, then 'cr rebase $tag -Continue'" }
   }
   $new = Gq rev-parse "$tag^{commit}"
@@ -244,7 +252,7 @@ function Gen([string]$cfg) {
   New-Item -ItemType Directory -Force $dir | Out-Null
   $dstArgs = Join-Path $dir 'args.gn'
   if ((Test-Path $dstArgs) -and ((Get-Content $dstArgs -Raw) -ne (Get-Content $srcArgs -Raw))) {
-    Write-Host "out\$cfg\args.gn differs from chromium\args\$cfg.gn:"
+    Write-Host "out\$cfg\args.gn differs from browser\args\$cfg.gn:"
     Compare-Object (Get-Content $srcArgs) (Get-Content $dstArgs) | ForEach-Object { "  $($_.SideIndicator) $($_.InputObject)" }
     if (-not $Force) { Write-Host 'keeping existing args.gn (use -Force to overwrite)' } else { Copy-Item $srcArgs $dstArgs -Force }
   } elseif (-not (Test-Path $dstArgs)) { Copy-Item $srcArgs $dstArgs }
@@ -256,7 +264,7 @@ function Build([string]$cfg, [string]$target) {
   if (-not $target) { $target = 'chrome' }
   $dir = Join-Path $Src $out
   if (-not (Test-Path "$dir\build.ninja")) { Gen $cfg }
-  $lock = Join-Path $dir 'prts-build.lock'
+  $lock = Join-Path $dir 'rb-build.lock'
   if (Test-Path $lock) {
     $lp = (Get-Content $lock -TotalCount 1) -as [int]
     if ($lp -and (Get-Process -Id $lp -ErrorAction SilentlyContinue)) { throw "build already running in $out (pid $lp)" }
@@ -268,13 +276,13 @@ function Build([string]$cfg, [string]$target) {
     # Running chrome.exe from this out dir locks DLLs and breaks linking.
     Get-Process chrome -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($dir, 'OrdinalIgnoreCase') } | Stop-Process -Force
     $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $log = Join-Path $dir "prts-build-$ts.log"
+    $log = Join-Path $dir "rb-build-$ts.log"
     $t0 = Get-Date
     Push-Location $Src
     try { cmd /d /c "autoninja -C $out $target > `"$log`" 2>&1"; $code = $LASTEXITCODE } finally { Pop-Location }
     $sec = [int]((Get-Date) - $t0).TotalSeconds
-    [IO.File]::WriteAllText((Join-Path $dir "prts-build-$ts.exit"), "exit=$code target=$target seconds=$sec`n", $Utf8)
-    Copy-Item (Join-Path $dir "prts-build-$ts.exit") (Join-Path $dir 'prts-build-last.exit') -Force
+    [IO.File]::WriteAllText((Join-Path $dir "rb-build-$ts.exit"), "exit=$code target=$target seconds=$sec`n", $Utf8)
+    Copy-Item (Join-Path $dir "rb-build-$ts.exit") (Join-Path $dir 'rb-build-last.exit') -Force
     Get-Content $log -Tail 15
     Write-Host "build $out $target exit=$code in ${sec}s (log $log)"
     if ($code) { exit $code }
@@ -284,8 +292,8 @@ function Build([string]$cfg, [string]$target) {
 function Run([string]$cfg, [string[]]$extra) {
   $out = Cfg-Out $cfg
   $exe = Join-Path $Src "$out\chrome.exe"
-  $prof = Join-Path $Src "$out\prts-profile"
-  & $exe --headless=new --prts-remote "--user-data-dir=$prof" @extra
+  $prof = Join-Path $Src "$out\rb-profile"
+  & $exe --headless=new --rb-remote "--user-data-dir=$prof" @extra
 }
 
 $A1 = if ($Rest) { $Rest[0] } else { $null }
@@ -293,6 +301,7 @@ $More = if ($Rest -and $Rest.Count -gt 1) { $Rest[1..($Rest.Count - 1)] } else {
 switch ($Cmd) {
   'init'   { Init }
   'apply'  { Apply }
+  'brand'  { Brand }
   'export' { Export }
   'check'  { Check $A1 }
   'stat'   { Stat }

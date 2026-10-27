@@ -1,17 +1,17 @@
-#ifndef PRTS_ENDPOINT_PEER_H_
-#define PRTS_ENDPOINT_PEER_H_
+#ifndef RB_LEGACY_ENDPOINT_PEER_H_
+#define RB_LEGACY_ENDPOINT_PEER_H_
 
 #include <functional>
 #include <memory>
 
 #include "base/values.h"
-#include "prts_endpoint/frame_source.h"
-#include "prts_endpoint/input_parser.h"
-#include "prts_endpoint/signaling.h"
+#include "rb_legacy_endpoint/frame_source.h"
+#include "rb_legacy_endpoint/input_parser.h"
+#include "rb_legacy_endpoint/signaling.h"
 #include "third_party/webrtc/api/peer_connection_interface.h"
 #include "third_party/webrtc/rtc_base/thread.h"
 
-namespace prts {
+namespace re {
 class VplEncoderState;
 // All session state lives on signaling_thread_. Main/reader call Handle/Close;
 // neither is a WebRTC callback. Inject a fresh source for each session.
@@ -43,5 +43,5 @@ class Peer {
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
   std::shared_ptr<Session> session_;
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_PEER_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_PEER_H_

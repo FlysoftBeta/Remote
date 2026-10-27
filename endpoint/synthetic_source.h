@@ -1,15 +1,15 @@
-#ifndef PRTS_ENDPOINT_SYNTHETIC_SOURCE_H_
-#define PRTS_ENDPOINT_SYNTHETIC_SOURCE_H_
+#ifndef RB_LEGACY_ENDPOINT_SYNTHETIC_SOURCE_H_
+#define RB_LEGACY_ENDPOINT_SYNTHETIC_SOURCE_H_
 
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 
-#include "prts_endpoint/frame_source.h"
-#include "prts_endpoint/signaling.h"
+#include "rb_legacy_endpoint/frame_source.h"
+#include "rb_legacy_endpoint/signaling.h"
 
-namespace prts {
+namespace re {
 class SyntheticSource : public FrameSource {
  public:
   SyntheticSource(int fps, const Clock& clock);
@@ -29,5 +29,5 @@ class SyntheticSource : public FrameSource {
   std::condition_variable wake_;
   bool stopped_ = true;
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_SYNTHETIC_SOURCE_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_SYNTHETIC_SOURCE_H_

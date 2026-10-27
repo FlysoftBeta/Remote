@@ -1,0 +1,2972 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Mon, 26 Oct 2026 13:44:39 +0800
+Subject: [PATCH] rb: browser controller, Mojo link, window registry, capture,
+ input, IME bridge
+
+Bootstraps chrome/browser/rb from the headless extra parts in remote mode
+(patches 02/03/05/07 + chrome side of 08 of design/02).
+
+M2: viewport (SetViewport), cursor bridge, IME/OSK fixes, touch capabilities.
+
+Patch-Name: 02-rb-browser
+
+diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
+index 814b9d649a..7e66b95281 100644
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1607,6 +1607,8 @@ source_set("core") {
+   }
+ 
+   if (is_win) {
++    # RB: Registered only when ui::IsRbRemoteMode() is true.
++    deps += [ "//chrome/browser/rb:web_prefs" ]
+     sources += [
+       "chrome_browser_main_win.cc",
+       "chrome_browser_main_win.h",
+diff --git a/chrome/browser/headless/BUILD.gn b/chrome/browser/headless/BUILD.gn
+index f5601a3192..9edbfa616b 100644
+--- a/chrome/browser/headless/BUILD.gn
++++ b/chrome/browser/headless/BUILD.gn
+@@ -95,6 +95,14 @@ if (!is_android) {
+       "//chrome/browser:main_extra_parts",
+       "//components/headless/clipboard",
+     ]
++
++    # RB: Runtime hooks are guarded by ui::IsRbRemoteMode().
++    if (is_win) {
++      deps += [
++        "//chrome/browser/rb",
++        "//ui/base",
++      ]
++    }
+   }
+ 
+   source_set("browser_tests") {
+diff --git a/chrome/browser/headless/chrome_browser_main_extra_parts_headless.cc b/chrome/browser/headless/chrome_browser_main_extra_parts_headless.cc
+index e08b97b89c..927e441aa7 100644
+--- a/chrome/browser/headless/chrome_browser_main_extra_parts_headless.cc
++++ b/chrome/browser/headless/chrome_browser_main_extra_parts_headless.cc
+@@ -7,6 +7,12 @@
+ #include "chrome/browser/headless/headless_mode_util.h"
+ #include "components/headless/clipboard/headless_clipboard.h"
+ 
++// RB: Windows-only link; patch 01 declares the runtime remote-mode predicate.
++#if BUILDFLAG(IS_WIN)
++#include "chrome/browser/rb/rb_controller.h"
++#include "ui/base/ui_base_switches.h"
++#endif
++
+ namespace headless {
+ 
+ ChromeBrowserMainExtraPartsHeadless::ChromeBrowserMainExtraPartsHeadless() =
+@@ -22,4 +28,23 @@ void ChromeBrowserMainExtraPartsHeadless::PreBrowserStart() {
+   }
+ }
+ 
++// RB: Bind after startup has established the browser UI and Mojo IPC support.
++#if BUILDFLAG(IS_WIN)
++void ChromeBrowserMainExtraPartsHeadless::PostBrowserStart() {
++  if (ui::IsRbRemoteMode()) {
++    rb_controller_ = std::make_unique<rb::RbController>();
++    if (!rb_controller_->Start()) {
++      rb_controller_.reset();
++    }
++  }
++}
++
++// RB: Drop bindings and delegates before browser shutdown destroys services.
++void ChromeBrowserMainExtraPartsHeadless::PostMainMessageLoopRun() {
++  if (ui::IsRbRemoteMode()) {
++    rb_controller_.reset();
++  }
++}
++#endif
++
+ }  // namespace headless
+diff --git a/chrome/browser/headless/chrome_browser_main_extra_parts_headless.h b/chrome/browser/headless/chrome_browser_main_extra_parts_headless.h
+index 42aa0d183c..7b8a34e9bb 100644
+--- a/chrome/browser/headless/chrome_browser_main_extra_parts_headless.h
++++ b/chrome/browser/headless/chrome_browser_main_extra_parts_headless.h
+@@ -5,8 +5,19 @@
+ #ifndef CHROME_BROWSER_HEADLESS_CHROME_BROWSER_MAIN_EXTRA_PARTS_HEADLESS_H_
+ #define CHROME_BROWSER_HEADLESS_CHROME_BROWSER_MAIN_EXTRA_PARTS_HEADLESS_H_
+ 
++// RB: Windows-only controller ownership; runtime activation is in the hooks.
++#include <memory>
++
++#include "build/build_config.h"
+ #include "chrome/browser/chrome_browser_main_extra_parts.h"
+ 
++// RB: Keep the controller implementation out of this upstream header.
++#if BUILDFLAG(IS_WIN)
++namespace rb {
++class RbController;
++}
++#endif
++
+ namespace headless {
+ 
+ // This class is used to run headless related code at specific points in the
+@@ -24,6 +35,16 @@ class ChromeBrowserMainExtraPartsHeadless : public ChromeBrowserMainExtraParts {
+ 
+   // ChromeBrowserMainExtraParts:
+   void PreBrowserStart() override;
++
++  // RB: Both hooks check ui::IsRbRemoteMode() before touching the
++  // controller.
++#if BUILDFLAG(IS_WIN)
++  void PostBrowserStart() override;
++  void PostMainMessageLoopRun() override;
++
++ private:
++  std::unique_ptr<rb::RbController> rb_controller_;
++#endif
+ };
+ 
+ }  // namespace headless
+diff --git a/chrome/browser/rb/BUILD.gn b/chrome/browser/rb/BUILD.gn
+new file mode 100644
+index 0000000000..2569a950fe
+--- /dev/null
++++ b/chrome/browser/rb/BUILD.gn
+@@ -0,0 +1,82 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++source_set("switches") {
++  sources = [
++    "rb_switches.cc",
++    "rb_switches.h",
++  ]
++}
++
++if (is_win) {
++  # RB: Only registered/used when ui::IsRbRemoteMode() is true.
++  source_set("web_prefs") {
++    sources = [
++      "rb_content_browser_client_part.cc",
++      "rb_content_browser_client_part.h",
++    ]
++    public_deps = [ "//chrome/browser:chrome_content_browser_client_parts" ]
++    deps = [
++      "//base",
++      "//content/public/browser",
++      "//third_party/blink/public/common",
++      "//ui/base",
++    ]
++  }
++
++  source_set("rb") {
++    sources = [
++      "rb_capture.cc",
++      "rb_capture.h",
++      "rb_controller.cc",
++      "rb_controller.h",
++      "rb_cursor_bridge.cc",
++      "rb_cursor_bridge.h",
++      "rb_delegates.h",
++      "rb_ime_bridge.cc",
++      "rb_ime_bridge.h",
++      "rb_input.cc",
++      "rb_input.h",
++      "rb_link.cc",
++      "rb_link.h",
++      "rb_window_registry.cc",
++      "rb_window_registry.h",
++    ]
++    public_deps = [
++      ":switches",
++      "//base",
++      "//chrome/browser/rb/mojom",
++      "//mojo/public/cpp/bindings",
++    ]
++    deps = [
++      ":web_prefs",
++      "//chrome/browser/profiles:profile",
++      "//chrome/browser/ui/browser_window",
++      "//chrome/browser/ui/views/frame:browser_view_header",
++      "//components/viz/common",
++      "//components/viz/host",
++      "//content/public/browser",
++      "//gpu/config",
++      "//media/capture/mojom:video_capture",
++      "//mojo/public/cpp/platform",
++      "//mojo/public/cpp/system",
++      "//net",
++      "//services/viz/privileged/mojom/compositing",
++      "//services/viz/public/mojom",
++      "//skia",
++      "//ui/aura",
++      "//ui/base",
++      "//ui/base/cursor",
++      "//ui/base/ime",
++      "//ui/compositor",
++      "//ui/display",
++      "//ui/events",
++      "//ui/gfx",
++      "//ui/gfx/codec",
++      "//ui/views",
++      "//ui/wm",
++      "//url",
++    ]
++  }
++}
+diff --git a/chrome/browser/rb/mojom/BUILD.gn b/chrome/browser/rb/mojom/BUILD.gn
+new file mode 100644
+index 0000000000..3f014aae53
+--- /dev/null
++++ b/chrome/browser/rb/mojom/BUILD.gn
+@@ -0,0 +1,13 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++import("//mojo/public/tools/bindings/mojom.gni")
++
++mojom("mojom") {
++  sources = [ "rb.mojom" ]
++  public_deps = [
++    "//mojo/public/mojom/base",
++    "//ui/gfx/geometry/mojom",
++  ]
++}
+diff --git a/chrome/browser/rb/mojom/rb.mojom b/chrome/browser/rb/mojom/rb.mojom
+new file mode 100644
+index 0000000000..bc84a99dc7
+--- /dev/null
++++ b/chrome/browser/rb/mojom/rb.mojom
+@@ -0,0 +1,128 @@
++// DRAFT contract (Stage 3 / M1). Final home: chrome/browser/rb/mojom/rb.mojom (patch 02),
++// shared by chrome/browser/rb (browser side) and //rb_legacy_endpoint (endpoint side).
++// Codex tasks may propose changes in their NOTES but must keep names unless a compile reason forces it.
++module rb.mojom;
++
++import "mojo/public/mojom/base/time.mojom";
++import "ui/gfx/geometry/mojom/geometry.mojom";
++
++struct HelloInfo {
++  uint32 version;            // 1
++  uint64 gpu_luid;           // adapter LUID of the browser GPU process (0 = unknown/software)
++  bool software_compositing;
++};
++
++struct WindowInfo {
++  uint32 window_id;          // PRTS-assigned, stable for the life of the browser window
++  gfx.mojom.Size size_dip;   // root window size in DIP
++  float device_scale_factor;
++  gfx.mojom.Size size_px;    // host pixel size
++  string title;
++};
++
++struct CaptureParams {
++  uint32 max_fps;            // SetMinCapturePeriod(1/max_fps)
++  bool nv12;                 // false = ARGB (M1 default)
++};
++
++struct FrameInfo {
++  uint32 buffer_id;          // stable per capturer pool buffer (assigned by browser, see NewBuffer)
++  uint64 frame_seq;
++  gfx.mojom.Size coded_size;
++  gfx.mojom.Rect visible_rect;
++  gfx.mojom.Rect content_rect;
++  mojo_base.mojom.TimeTicks capture_begin;
++  mojo_base.mojom.TimeTicks capture_end;
++  mojo_base.mojom.TimeTicks reference_time;
++};
++
++// Implemented by the endpoint, one per capture. Bound on a non-UI browser sequence.
++interface RbFrameSink {
++  // A pool buffer seen for the first time: D3D11 shared NT handle (keyed mutex, key 0) duplicated for the endpoint.
++  NewBuffer(uint32 buffer_id, handle<platform> texture, gfx.mojom.Size coded_size);
++  // A captured frame in buffer `buffer_id`. The endpoint replies once it no longer reads the buffer
++  // (M1: after CopyResource into a private texture); the browser then calls Done() on the viz callbacks.
++  OnFrame(FrameInfo info) => ();
++  // Capturer stopped / pool rebuilt: forget all buffers.
++  Reset();
++};
++
++enum PointerType { kMouse, kTouch, kPen };
++enum PointerAction { kDown, kMove, kUp, kCancel, kLeave };
++
++struct PointerInput {
++  PointerAction action;
++  PointerType type;
++  uint8 pid;                 // 0 mouse, 1-15 touch/pen slots
++  float x;                   // normalized 0..1 of the root (viewer frame), browser multiplies by root DIP size
++  float y;
++  uint8 buttons;             // DOM buttons mask after the event
++  int8 button;               // DOM button that changed, -1 for move
++  uint8 mods;                // 1 Shift 2 Ctrl 4 Alt 8 Meta 16 Caps 32 Num 64 AltGr
++  float pressure;            // 0..1
++  float radius_x;            // DIP
++  float radius_y;
++  mojo_base.mojom.TimeTicks timestamp; // already mapped to the browser/endpoint monotonic clock (same machine)
++};
++
++struct WheelInput {
++  float x; float y;          // normalized
++  float dx; float dy;        // DIP pixels (endpoint converts lines/pages: 1 line = 40 px)
++  uint8 mods;
++  mojo_base.mojom.TimeTicks timestamp;
++};
++
++struct KeyInput {
++  bool down;
++  uint8 mods;
++  bool repeat;
++  uint16 key_code;           // DOM legacy keyCode, fallback only
++  string code;               // DOM code, e.g. "KeyA"
++  string key;                // DOM key, e.g. "a", "Enter"
++  mojo_base.mojom.TimeTicks timestamp;
++};
++
++struct ImeState {
++  uint32 seq;
++  bool focused;
++  string type;               // design/06 3.2 names
++  string mode;
++  uint32 flags;
++  gfx.mojom.RectF caret_norm; // normalized 0..1 in root
++  string reason;
++  bool composing;
++  uint32 context;            // changes on focused-client switch or cancellation
++};
++
++// Implemented by the endpoint (browser -> endpoint).
++interface RbBrowserClient {
++  Hello(HelloInfo info);
++  WindowAdded(WindowInfo info);
++  WindowChanged(WindowInfo info);
++  WindowRemoved(uint32 window_id);
++  WindowActivated(uint32 window_id);
++  CursorChanged(string css);
++  ImeStateChanged(ImeState state);
++  VirtualKeyboard(bool show, uint32 seq);
++};
++
++// Implemented by the browser (endpoint -> browser). Bound on the browser UI thread.
++interface RbBrowser {
++  SetClient(pending_remote<RbBrowserClient> client);
++  StartCapture(uint32 window_id, CaptureParams params, pending_remote<RbFrameSink> sink);
++  StopCapture(uint32 window_id);
++  RequestRefreshFrame(uint32 window_id);
++  ActivateWindow(uint32 window_id);   // D8: also deactivates the other roots
++  Pointer(uint32 window_id, PointerInput input);
++  Wheel(uint32 window_id, WheelInput input);
++  Key(uint32 window_id, KeyInput input);
++  ResetInput();                        // release held keys/buttons, cancel touches
++  ImeCommit(string text, uint32 context);
++  ImeCompose(string text, int32 cursor, uint32 context);
++  ImeDelete(int32 before, int32 after, uint32 context);
++  Focus(bool focused);
++  NewWindow(string url);               // debug helper; empty = NTP
++  SetViewport(gfx.mojom.Size dip, float dsf);
++  ImeHidden(uint32 context);           // local OSK dismissed; preserve remote focus
++  SetTouchCapabilities(uint8 touch_points, bool touch_only);
++};
+diff --git a/chrome/browser/rb/rb_capture.cc b/chrome/browser/rb/rb_capture.cc
+new file mode 100644
+index 0000000000..b37e4b6ba2
+--- /dev/null
++++ b/chrome/browser/rb/rb_capture.cc
+@@ -0,0 +1,369 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_capture.h"
++
++#include <windows.h>
++
++#include <algorithm>
++#include <utility>
++
++#include "base/check.h"
++#include "base/check_op.h"
++#include "base/command_line.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/logging.h"
++#include "base/sequence_checker.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/task/bind_post_task.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/task/thread_pool.h"
++#include "base/threading/sequence_bound.h"
++#include "base/time/time.h"
++#include "base/win/scoped_handle.h"
++#include "chrome/browser/rb/rb_switches.h"
++#include "components/viz/common/surfaces/video_capture_target.h"
++#include "components/viz/host/host_frame_sink_manager.h"
++#include "content/public/browser/browser_thread.h"
++#include "content/public/browser/gpu_data_manager.h"
++#include "gpu/config/gpu_info.h"
++#include "media/base/video_types.h"
++#include "media/capture/mojom/video_capture_buffer.mojom.h"
++#include "mojo/public/cpp/bindings/callback_helpers.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "mojo/public/cpp/system/platform_handle.h"
++#include "services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/compositor/compositor.h"
++#include "ui/gfx/gpu_memory_buffer_handle.h"
++
++namespace rb {
++namespace {
++
++using FrameCallbacks = viz::mojom::FrameSinkVideoConsumerFrameCallbacks;
++
++// Constructed, bound and destroyed on frame_runner_, never on the UI thread.
++class FrameConsumer final : public viz::mojom::FrameSinkVideoConsumer {
++ public:
++  FrameConsumer(
++      mojo::PendingReceiver<viz::mojom::FrameSinkVideoConsumer> receiver,
++      mojo::PendingRemote<mojom::RbFrameSink> sink,
++      gfx::Size size,
++      base::OnceClosure stop)
++      : receiver_(this, std::move(receiver)),
++        sink_(std::move(sink)),
++        size_(size),
++        stop_(std::move(stop)) {
++    receiver_.set_disconnect_handler(
++        base::BindOnce(&FrameConsumer::Disconnected, base::Unretained(this)));
++    sink_.set_disconnect_handler(
++        base::BindOnce(&FrameConsumer::Disconnected, base::Unretained(this)));
++    sink_->Reset();
++  }
++  ~FrameConsumer() override { Shutdown(); }
++
++  void SetSize(gfx::Size size) {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (size_ != size) {
++      size_ = size;
++      buffers_.clear();
++      if (sink_) {
++        sink_->Reset();
++      }
++    }
++  }
++
++  void OnFrameCaptured(media::mojom::VideoBufferHandlePtr data,
++                       media::mojom::VideoFrameInfoPtr info,
++                       const gfx::Rect& content_rect,
++                       mojo::PendingRemote<FrameCallbacks> callbacks) override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    if (captured_++ % 300 == 0) {
++      LOG(INFO) << "PRTS: captured frame #" << captured_
++                << (data && data->is_gpu_memory_buffer_handle() ? " gmb"
++                                                                 : " other");
++    }
++    mojo::Remote<FrameCallbacks> lease(std::move(callbacks));
++    // Moving the Remote into the reply closure retains the Viz lease until
++    // endpoint completion. Disconnect/teardown also runs Done() via the
++    // wrapper.
++    base::ScopedClosureRunner done(base::BindOnce(
++        [](mojo::Remote<FrameCallbacks> lease) { lease->Done(); },
++        std::move(lease)));
++    if (!sink_ || !info || !data) {
++      return;
++    }
++    if (!data->is_gpu_memory_buffer_handle() ||
++        data->get_gpu_memory_buffer_handle().type != gfx::DXGI_SHARED_HANDLE) {
++      if (!warned_software_) {
++        LOG(WARNING) << "PRTS: dropping non-DXGI capture buffers; CPU fallback "
++                        "is not implemented in M1";
++        warned_software_ = true;
++      }
++      return;
++    }
++    // Discard old-size or letterboxed frames while Viz applies new constraints.
++    if (info->pixel_format != media::PIXEL_FORMAT_ARGB ||
++        info->coded_size != size_ || info->visible_rect != gfx::Rect(size_) ||
++        content_rect != gfx::Rect(size_) ||
++        (info->metadata.source_size && *info->metadata.source_size != size_)) {
++      return;
++    }
++    const auto& dxgi = data->get_gpu_memory_buffer_handle().dxgi_handle();
++    if (!dxgi.IsValid()) {
++      return;
++    }
++    auto it = buffers_.find(dxgi.token());
++    if (it == buffers_.end()) {
++      HANDLE duplicate = nullptr;
++      // Duplicate locally; Mojo's platform-handle transport duplicates this
++      // owned NT handle into the endpoint process. Never send a HANDLE integer.
++      if (!::DuplicateHandle(::GetCurrentProcess(), dxgi.buffer_handle(),
++                             ::GetCurrentProcess(), &duplicate, 0, FALSE,
++                             DUPLICATE_SAME_ACCESS)) {
++        PLOG(ERROR) << "PRTS: DuplicateHandle for captured texture";
++        return;
++      }
++      CHECK_NE(next_buffer_id_, 0u);
++      const uint32_t id = next_buffer_id_++;
++      mojo::PlatformHandle texture{base::win::ScopedHandle(duplicate)};
++      if (!texture.is_valid()) {
++        return;
++      }
++      it = buffers_.emplace(dxgi.token(), id).first;
++      sink_->NewBuffer(id, std::move(texture), info->coded_size);
++    }
++    auto frame = mojom::FrameInfo::New();
++    frame->buffer_id = it->second;
++    frame->frame_seq = ++frame_seq_;
++    frame->coded_size = info->coded_size;
++    frame->visible_rect = info->visible_rect;
++    frame->content_rect = content_rect;
++    frame->capture_begin =
++        info->metadata.capture_begin_time.value_or(base::TimeTicks());
++    frame->capture_end =
++        info->metadata.capture_end_time.value_or(base::TimeTicks());
++    frame->reference_time =
++        info->metadata.reference_time.value_or(base::TimeTicks());
++    sink_->OnFrame(std::move(frame),
++                   mojo::WrapCallbackWithDefaultInvokeIfNotRun(done.Release()));
++  }
++  void OnNewCaptureVersion(const media::CaptureVersion& version) override {}
++  void OnFrameWithEmptyRegionCapture() override {}
++  void OnStopped() override {
++    LOG(INFO) << "PRTS: capturer stopped";
++    Disconnected();
++  }
++  void OnLog(const std::string& message) override {
++    LOG(INFO) << "PRTS Viz: " << message;
++  }
++
++ private:
++  void Shutdown() {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    receiver_.reset();
++    if (sink_) {
++      sink_->Reset();
++      sink_.reset();  // Drops reply closures, explicitly returning every lease.
++    }
++    buffers_.clear();
++  }
++  void Disconnected() {
++    Shutdown();
++    if (stop_) {
++      // A BindPostTask closure; only control goes to UI.
++      std::move(stop_).Run();
++    }
++  }
++
++  mojo::Receiver<viz::mojom::FrameSinkVideoConsumer> receiver_;
++  mojo::Remote<mojom::RbFrameSink> sink_;
++  gfx::Size size_;
++  base::OnceClosure stop_;
++  std::map<gfx::DXGIHandleToken, uint32_t> buffers_;
++  uint32_t next_buffer_id_ = 1;
++  uint64_t frame_seq_ = 0;
++  uint64_t captured_ = 0;
++  bool warned_software_ = false;
++  SEQUENCE_CHECKER(sequence_checker_);
++};
++
++}  // namespace
++
++void FillRbGpuHelloInfo(mojom::HelloInfo& info) {
++  info.gpu_luid = 0;
++  info.software_compositing = true;
++  if (!content::GpuDataManager::Initialized()) {
++    return;
++  }
++  auto* manager = content::GpuDataManager::GetInstance();
++  if (!manager->IsEssentialGpuInfoAvailable()) {
++    // GPU info arrives asynchronously after startup; assume hardware unless
++    // acceleration is disabled. The endpoint then uses the default adapter.
++    info.software_compositing = !manager->HardwareAccelerationEnabled();
++    return;
++  }
++  const gpu::GPUInfo gpu = manager->GetGPUInfo();
++  const auto& active = gpu.active_gpu();
++  info.software_compositing = !manager->HardwareAccelerationEnabled() ||
++                              gpu.UsesSwiftShader() ||
++                              active.IsSoftwareRenderer();
++  if (!info.software_compositing) {
++    info.gpu_luid =
++        (static_cast<uint64_t>(static_cast<uint32_t>(active.luid.HighPart))
++         << 32) |
++        static_cast<uint64_t>(active.luid.LowPart);
++  }
++}
++
++class RbCapture::Session {
++ public:
++  Session(aura::WindowTreeHost* host,
++          uint32_t fps,
++          uint64_t generation,
++          scoped_refptr<base::SequencedTaskRunner> frame_runner,
++          mojo::PendingRemote<mojom::RbFrameSink> sink,
++          base::OnceClosure stopped,
++          bool software)
++      : generation_(generation),
++        size_(host->GetBoundsInPixels().size()),
++        capture_lock_(host->CreateVideoCaptureLock()) {
++    mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumer> consumer;
++    consumer_.emplace(
++        frame_runner, consumer.InitWithNewPipeAndPassReceiver(),
++        std::move(sink), size_,
++        base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
++                           std::move(stopped)));
++    auto* compositor = host->compositor();
++    compositor->context_factory()
++        ->GetHostFrameSinkManager()
++        ->CreateVideoCapturer(capturer_.BindNewPipeAndPassReceiver());
++    capturer_->SetFormat(media::PIXEL_FORMAT_ARGB);
++    capturer_->SetMinCapturePeriod(base::Seconds(1) / fps);
++    capturer_->SetMinSizeChangePeriod(base::TimeDelta());
++    capturer_->SetAutoThrottlingEnabled(false);
++    capturer_->SetAnimationFpsLockIn(false, 0.0f);
++    capturer_->SetResolutionConstraints(size_, size_, true);
++    capturer_->ChangeTarget(
++        viz::VideoCaptureTarget(compositor->frame_sink_id()), 0);
++    capturer_->Start(
++        std::move(consumer),
++        software
++            ? viz::mojom::BufferFormatPreference::kDefault
++            : viz::mojom::BufferFormatPreference::kPreferMappableSharedImage);
++  }
++  ~Session() {
++    capturer_->Stop();
++    capturer_.reset();
++    consumer_.Reset();
++  }
++  void Resize(const gfx::Size& size) {
++    if (size == size_) {
++      return;
++    }
++    size_ = size;
++    consumer_.AsyncCall(&FrameConsumer::SetSize).WithArgs(size);
++    if (!size.IsEmpty()) {
++      capturer_->SetResolutionConstraints(size, size, true);
++      capturer_->RequestRefreshFrame();
++    }
++  }
++
++  const uint64_t generation_;
++  mojo::Remote<viz::mojom::FrameSinkVideoCapturer> capturer_;
++
++ private:
++  gfx::Size size_;
++  std::unique_ptr<aura::WindowTreeHost::VideoCaptureLock> capture_lock_;
++  base::SequenceBound<FrameConsumer> consumer_;
++};
++
++RbCapture::RbCapture(RbWindowRegistry* registry)
++    : registry_(registry),
++      frame_runner_(base::ThreadPool::CreateSequencedTaskRunner(
++          {base::TaskPriority::USER_BLOCKING,
++           base::TaskShutdownBehavior::BLOCK_SHUTDOWN})) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  registry_->AddObserver(this);
++}
++RbCapture::~RbCapture() {
++  StopAll();
++  registry_->RemoveObserver(this);
++}
++void RbCapture::FillHelloInfo(mojom::HelloInfo& info) {
++  FillRbGpuHelloInfo(info);
++}
++void RbCapture::StartCapture(uint32_t id,
++                               mojom::CaptureParamsPtr params,
++                               mojo::PendingRemote<mojom::RbFrameSink> sink) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  StopCapture(id);
++  auto* host = registry_->GetHost(id);
++  if (!ui::IsRbRemoteMode() || !host || !host->compositor() ||
++      host->GetBoundsInPixels().size().IsEmpty() || !params ||
++      !sink.is_valid()) {
++    return;
++  }
++  LOG(INFO) << "PRTS: StartCapture window=" << id << " size="
++            << host->GetBoundsInPixels().size().ToString();
++  if (params->nv12) {
++    LOG(WARNING) << "PRTS: M1 supports only ARGB capture";
++    return;
++  }
++  uint32_t fps = params->max_fps ? params->max_fps : 60;
++  const auto fps_override =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          switches::kRbCaptureFps);
++  unsigned override_fps = 0;
++  if (base::StringToUint(fps_override, &override_fps) && override_fps) {
++    fps = override_fps;
++  }
++  fps = std::clamp(fps, 1u, 120u);
++  const uint64_t generation = next_generation_++;
++  auto stopped = base::BindRepeating(
++      &RbCapture::StopIfCurrent, weak_factory_.GetWeakPtr(), id, generation);
++  auto hello = mojom::HelloInfo::New();
++  FillHelloInfo(*hello);
++  auto session = std::make_unique<Session>(host, fps, generation, frame_runner_,
++                                           std::move(sink), stopped,
++                                           hello->software_compositing);
++  session->capturer_.set_disconnect_handler(stopped);
++  sessions_.emplace(id, std::move(session));
++}
++void RbCapture::StopCapture(uint32_t id) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  sessions_.erase(id);
++}
++void RbCapture::StopAll() {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  sessions_.clear();
++}
++void RbCapture::RequestRefreshFrame(uint32_t id) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  auto it = sessions_.find(id);
++  if (it != sessions_.end()) {
++    it->second->capturer_->RequestRefreshFrame();
++  }
++}
++void RbCapture::OnRbWindowChanged(uint32_t id) {
++  auto it = sessions_.find(id);
++  auto* host = registry_->GetHost(id);
++  if (it != sessions_.end() && host) {
++    it->second->Resize(host->GetBoundsInPixels().size());
++  }
++}
++void RbCapture::OnRbWindowRemoving(uint32_t id) {
++  StopCapture(id);
++}
++void RbCapture::StopIfCurrent(uint32_t id, uint64_t generation) {
++  auto it = sessions_.find(id);
++  if (it != sessions_.end() && it->second->generation_ == generation) {
++    StopCapture(id);
++  }
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_capture.h b/chrome/browser/rb/rb_capture.h
+new file mode 100644
+index 0000000000..f66665c278
+--- /dev/null
++++ b/chrome/browser/rb/rb_capture.h
+@@ -0,0 +1,58 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_CAPTURE_H_
++#define CHROME_BROWSER_RB_RB_CAPTURE_H_
++
++#include <cstdint>
++#include <map>
++#include <memory>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/rb/rb_delegates.h"
++#include "chrome/browser/rb/rb_window_registry.h"
++
++namespace base {
++class SequencedTaskRunner;
++}
++
++namespace rb {
++
++// Browser GPU-process information, not the adapter selected by a new local
++// D3D device. Unknown/software reports LUID zero. Call after GPU info
++// collection.
++void FillRbGpuHelloInfo(mojom::HelloInfo& info);
++
++// UI-thread owner. Registry must outlive this object; destroy controller first.
++class RbCapture final : public RbCaptureDelegate,
++                          public RbWindowRegistry::Observer {
++ public:
++  explicit RbCapture(RbWindowRegistry* registry);
++  ~RbCapture() override;
++  void FillHelloInfo(mojom::HelloInfo& info) override;
++  void StartCapture(uint32_t window_id,
++                    mojom::CaptureParamsPtr params,
++                    mojo::PendingRemote<mojom::RbFrameSink> sink) override;
++  void StopCapture(uint32_t window_id) override;
++  void RequestRefreshFrame(uint32_t window_id) override;
++  void StopAll() override;
++
++ private:
++  class Session;
++  void OnRbWindowChanged(uint32_t id) override;
++  void OnRbWindowRemoving(uint32_t id) override;
++  void StopIfCurrent(uint32_t id, uint64_t generation);
++
++  const raw_ptr<RbWindowRegistry> registry_;
++  const scoped_refptr<base::SequencedTaskRunner> frame_runner_;
++  std::map<uint32_t, std::unique_ptr<Session>> sessions_;
++  uint64_t next_generation_ = 1;
++  base::WeakPtrFactory<RbCapture> weak_factory_{this};
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_CAPTURE_H_
+diff --git a/chrome/browser/rb/rb_controller.cc b/chrome/browser/rb/rb_controller.cc
+new file mode 100644
+index 0000000000..ec82ca9f67
+--- /dev/null
++++ b/chrome/browser/rb/rb_controller.cc
+@@ -0,0 +1,347 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_controller.h"
++
++#include <cmath>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/task/sequenced_task_runner.h"
++#include "chrome/browser/rb/rb_capture.h"
++#include "chrome/browser/rb/rb_cursor_bridge.h"
++#include "chrome/browser/rb/rb_content_browser_client_part.h"
++#include "chrome/browser/rb/rb_ime_bridge.h"
++#include "chrome/browser/rb/rb_input.h"
++#include "chrome/browser/rb/rb_window_registry.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "content/public/browser/browser_thread.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/network_service_instance.h"
++#include "content/public/browser/service_process_info.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_observer.h"
++#include "net/base/net_errors.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
++#include "url/gurl.h"
++
++namespace rb {
++
++// A Network Service bootstrap crash can silently abort the startup GET, leaving
++// an initial empty document (and therefore no animation or compositor damage).
++// Retry that one navigation after the replacement service has connected. Keep
++// the usual process/sandbox configuration and never replay a committed load.
++class RbStartupNavigationRecovery final
++    : public content::WebContentsObserver,
++      public content::NetworkServiceProcessObserver,
++      public BrowserCollectionObserver {
++ public:
++  RbStartupNavigationRecovery() {
++    browser_observation_.Observe(GlobalBrowserCollection::GetInstance());
++    AttachStartupContents();
++    content::AddNetworkServiceProcessObserver(this);
++  }
++  ~RbStartupNavigationRecovery() override { Retire(); }
++
++ private:
++  void Retire() {
++    Observe(nullptr);
++    browser_observation_.Reset();
++    if (observing_network_) {
++      content::RemoveNetworkServiceProcessObserver(this);
++      observing_network_ = false;
++    }
++    weak_factory_.InvalidateWeakPtrs();
++  }
++  void WebContentsDestroyed() override {
++    retried_ = true;
++    Retire();
++  }
++  void OnBrowserCreated(BrowserWindowInterface* browser) override {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RbStartupNavigationRecovery::AttachStartupContents,
++                       weak_factory_.GetWeakPtr()));
++  }
++  void AttachStartupContents() {
++    if (web_contents() || retried_) {
++      return;
++    }
++    GlobalBrowserCollection::GetInstance()->ForEach(
++        [this](BrowserWindowInterface* browser) {
++          auto* tabs = browser->GetTabStripModel();
++          auto* contents = tabs ? tabs->GetActiveWebContents() : nullptr;
++          if (!contents || !contents->GetController().IsInitialNavigation()) {
++            return true;
++          }
++          Observe(contents);
++          return false;
++        });
++  }
++  void DidStartNavigation(content::NavigationHandle* handle) override {
++    if (handle->IsInPrimaryMainFrame()) {
++      aborted_url_ = GURL();
++    }
++  }
++  void DidFinishNavigation(content::NavigationHandle* handle) override {
++    if (handle->IsInPrimaryMainFrame() && handle->HasCommitted()) {
++      Retire();
++      return;
++    }
++    if (handle->IsInPrimaryMainFrame() && !handle->IsRendererInitiated() &&
++        handle->IsNavigatingFromInitialEmptyDocument() &&
++        handle->GetRequestMethod() == "GET" && !handle->IsPost() &&
++        !handle->HasCommitted() && handle->GetNetErrorCode() == net::ERR_ABORTED &&
++        handle->GetURL().SchemeIsHTTPOrHTTPS()) {
++      aborted_url_ = handle->GetURL();
++      ScheduleRetry();
++    }
++  }
++  void DidStopLoading() override { ScheduleRetry(); }
++  void OnServiceCrashed(const content::ServiceProcessInfo& info) override {
++    service_ready_ = false;
++    bootstrap_crashed_ |= info.crashed_pre_ipc().value_or(false);
++    if (bootstrap_crashed_) {
++      LOG(INFO) << "PRTS: Network Service bootstrap crashed";
++    }
++  }
++  void OnServiceLaunched(const content::ServiceProcessInfo& info) override {
++    service_ready_ = true;
++    ScheduleRetry();
++  }
++  void ScheduleRetry() {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RbStartupNavigationRecovery::MaybeRetry,
++                       weak_factory_.GetWeakPtr()));
++  }
++  void MaybeRetry() {
++    auto* contents = web_contents();
++    if (retried_ || !bootstrap_crashed_ || !service_ready_ ||
++        aborted_url_.is_empty() || !contents || contents->IsLoading() ||
++        !contents->GetController().IsInitialNavigation()) {
++      return;
++    }
++    // The failed initial load retains its pending entry for the omnibox. It is
++    // safe to replace that entry, but never replace a different navigation.
++    auto* pending = contents->GetController().GetPendingEntry();
++    if (pending && pending->GetURL() != aborted_url_) {
++      return;
++    }
++    retried_ = true;
++    Retire();
++    LOG(INFO) << "PRTS: retrying startup GET after Network Service bootstrap";
++    content::NavigationController::LoadURLParams params(aborted_url_);
++    contents->GetController().LoadURLWithParams(params);
++  }
++
++  GURL aborted_url_;
++  bool bootstrap_crashed_ = false;
++  bool service_ready_ = false;
++  bool retried_ = false;
++  bool observing_network_ = true;
++  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
++      browser_observation_{this};
++  base::WeakPtrFactory<RbStartupNavigationRecovery> weak_factory_{this};
++};
++
++RbController::RbController()
++    : registry_(std::make_unique<RbWindowRegistry>()),
++      capture_(std::make_unique<RbCapture>(registry_.get())),
++      input_(std::make_unique<RbInput>()),
++      ime_(std::make_unique<RbImeBridge>(
++          base::BindRepeating(&RbController::OnImeState,
++                              base::Unretained(this)),
++          base::BindRepeating(&RbController::OnVirtualKeyboard,
++                              base::Unretained(this)))),
++      cursor_(std::make_unique<RbCursorBridge>(
++          base::BindRepeating(&RbController::OnCursor,
++                              base::Unretained(this)))),
++      delegates_{registry_.get(), capture_.get(), nullptr, nullptr},
++      link_(this,
++            base::BindOnce(&RbController::OnDisconnect,
++                           base::Unretained(this))) {
++  if (ui::IsRbRemoteMode()) {
++    startup_navigation_recovery_ =
++        std::make_unique<RbStartupNavigationRecovery>();
++  }
++}
++RbController::~RbController() {
++  link_.Close();
++  ime_->SetActiveHost(nullptr);
++  cursor_->SetActiveHost(nullptr);
++}
++
++void RbController::OnCursor(const std::string& css) {
++  if (link_.client()) {
++    link_.client()->CursorChanged(css);
++  }
++}
++
++void RbController::OnImeState(mojom::ImeStatePtr state) {
++  if (link_.client()) {
++    link_.client()->ImeStateChanged(std::move(state));
++  }
++}
++
++void RbController::OnVirtualKeyboard(bool show, uint32_t seq) {
++  if (link_.client()) {
++    link_.client()->VirtualKeyboard(show, seq);
++  }
++}
++
++void RbController::SetActiveWindow(uint32_t window_id) {
++  aura::WindowTreeHost* host = registry_->GetHost(window_id);
++  if (host != active_host_) {
++    input_->ResetInput();
++    active_host_ = host;
++    ime_->SetActiveHost(host);
++    cursor_->SetActiveHost(host);
++  }
++}
++bool RbController::Start() {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  return link_.Start();
++}
++
++void RbController::SetClient(
++    mojo::PendingRemote<mojom::RbBrowserClient> client) {
++  if (!link_.SetClient(std::move(client))) {
++    return;
++  }
++  auto hello = mojom::HelloInfo::New();
++  hello->version = 1;
++  hello->gpu_luid = 0;
++  hello->software_compositing = true;  // Conservative link-only spike default.
++  if (delegates_.capture) {
++    delegates_.capture->FillHelloInfo(*hello);
++  }
++  link_.client()->Hello(std::move(hello));
++  if (delegates_.windows) {
++    delegates_.windows->SetClient(link_.client());
++  }
++}
++
++void RbController::SetTouchCapabilities(uint8_t touch_points, bool touch_only) {
++  if (!RbContentBrowserClientPart::SetTouchCapabilities(touch_points,
++                                                        touch_only)) {
++    return;
++  }
++  // The initial page can exist before ctl hello; also refresh background tabs.
++  GlobalBrowserCollection::GetInstance()->ForEach(
++      [](BrowserWindowInterface* browser) {
++        auto* tabs = browser->GetTabStripModel();
++        for (int i = 0; tabs && i < tabs->count(); ++i) {
++          tabs->GetWebContentsAt(i)->OnWebPreferencesChanged();
++        }
++        return true;
++      });
++}
++
++void RbController::StartCapture(
++    uint32_t window_id,
++    mojom::CaptureParamsPtr params,
++    mojo::PendingRemote<mojom::RbFrameSink> sink) {
++  if (delegates_.capture) {
++    SetActiveWindow(window_id);
++    delegates_.capture->StartCapture(window_id, std::move(params),
++                                     std::move(sink));
++  }
++}
++void RbController::StopCapture(uint32_t window_id) {
++  if (delegates_.capture) {
++    delegates_.capture->StopCapture(window_id);
++  }
++}
++void RbController::RequestRefreshFrame(uint32_t window_id) {
++  if (delegates_.capture) {
++    delegates_.capture->RequestRefreshFrame(window_id);
++  }
++}
++void RbController::ActivateWindow(uint32_t window_id) {
++  SetActiveWindow(window_id);
++  if (delegates_.windows) {
++    delegates_.windows->ActivateWindow(window_id);
++  }
++}
++void RbController::Pointer(uint32_t window_id, mojom::PointerInputPtr input) {
++  SetActiveWindow(window_id);
++  if (aura::WindowTreeHost* host = registry_->GetHost(window_id)) {
++    input_->Pointer(host, *input);
++  }
++}
++void RbController::Wheel(uint32_t window_id, mojom::WheelInputPtr input) {
++  SetActiveWindow(window_id);
++  if (aura::WindowTreeHost* host = registry_->GetHost(window_id)) {
++    input_->Wheel(host, *input);
++  }
++}
++void RbController::Key(uint32_t window_id, mojom::KeyInputPtr input) {
++  SetActiveWindow(window_id);
++  if (aura::WindowTreeHost* host = registry_->GetHost(window_id)) {
++    input_->Key(host, *input);
++  }
++}
++void RbController::ResetInput() {
++  input_->ResetInput();
++}
++void RbController::ImeCommit(const std::string& text, uint32_t context) {
++  ime_->ImeCommit(text, context);
++}
++void RbController::ImeCompose(const std::string& text,
++                                int32_t cursor,
++                                uint32_t context) {
++  ime_->ImeCompose(text, cursor, context);
++}
++void RbController::ImeDelete(int32_t before,
++                               int32_t after,
++                               uint32_t context) {
++  ime_->ImeDelete(before, after, context);
++}
++void RbController::ImeHidden(uint32_t context) {
++  ime_->ImeHidden(context);
++}
++void RbController::Focus(bool focused) {
++  if (!focused) {
++    ResetInput();
++  }
++  if (delegates_.windows) {
++    delegates_.windows->Focus(focused);
++  }
++}
++void RbController::SetViewport(const gfx::Size& dip, float dsf) {
++  if (!ui::IsRbRemoteMode() || dip.IsEmpty() || dip.width() > 8192 ||
++      dip.height() > 8192 || !std::isfinite(dsf) || dsf < 1.0f || dsf > 4.0f) {
++    return;
++  }
++  auto* screen = display::win::GetScreenWinHeadless();
++  screen->SetPrimaryDisplayGeometry(dip, dsf);
++  registry_->MaximizeAll();
++}
++
++void RbController::NewWindow(const std::string& url) {
++  if (delegates_.windows) {
++    delegates_.windows->NewWindow(url);
++  }
++}
++void RbController::OnDisconnect() {
++  startup_navigation_recovery_.reset();
++  if (delegates_.windows) {
++    delegates_.windows->SetClient(nullptr);
++  }
++  ResetInput();
++  if (delegates_.capture) {
++    delegates_.capture->StopAll();
++  }
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_controller.h b/chrome/browser/rb/rb_controller.h
+new file mode 100644
+index 0000000000..dd0c54139b
+--- /dev/null
++++ b/chrome/browser/rb/rb_controller.h
+@@ -0,0 +1,77 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_CONTROLLER_H_
++#define CHROME_BROWSER_RB_RB_CONTROLLER_H_
++
++#include "chrome/browser/rb/rb_delegates.h"
++#include "chrome/browser/rb/rb_link.h"
++
++#include <memory>
++
++#include "base/memory/raw_ptr.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++
++namespace rb {
++
++class RbWindowRegistry;
++class RbCapture;
++class RbInput;
++class RbImeBridge;
++class RbCursorBridge;
++class RbStartupNavigationRecovery;
++
++// UI-thread dispatcher; owns only the link, never the implementation delegates.
++class RbController : public mojom::RbBrowser {
++ public:
++  RbController();
++  ~RbController() override;
++  bool Start();
++
++  void SetClient(mojo::PendingRemote<mojom::RbBrowserClient> client) override;
++  void StartCapture(uint32_t window_id,
++                    mojom::CaptureParamsPtr params,
++                    mojo::PendingRemote<mojom::RbFrameSink> sink) override;
++  void StopCapture(uint32_t window_id) override;
++  void RequestRefreshFrame(uint32_t window_id) override;
++  void ActivateWindow(uint32_t window_id) override;
++  void Pointer(uint32_t window_id, mojom::PointerInputPtr input) override;
++  void Wheel(uint32_t window_id, mojom::WheelInputPtr input) override;
++  void Key(uint32_t window_id, mojom::KeyInputPtr input) override;
++  void ResetInput() override;
++  void ImeCommit(const std::string& text, uint32_t context) override;
++  void ImeCompose(const std::string& text,
++                  int32_t cursor,
++                  uint32_t context) override;
++  void ImeDelete(int32_t before, int32_t after, uint32_t context) override;
++  void ImeHidden(uint32_t context) override;
++  void Focus(bool focused) override;
++  void SetTouchCapabilities(uint8_t touch_points, bool touch_only) override;
++  void NewWindow(const std::string& url) override;
++  void SetViewport(const gfx::Size& dip, float dsf) override;
++
++ private:
++  void OnDisconnect();
++  void OnCursor(const std::string& css);
++  void OnImeState(mojom::ImeStatePtr state);
++  void OnVirtualKeyboard(bool show, uint32_t seq);
++  void SetActiveWindow(uint32_t window_id);
++  // Declared before link_ so they outlive it.
++  std::unique_ptr<RbWindowRegistry> registry_;
++  std::unique_ptr<RbCapture> capture_;
++  std::unique_ptr<RbInput> input_;
++  std::unique_ptr<RbImeBridge> ime_;
++  std::unique_ptr<RbCursorBridge> cursor_;
++  raw_ptr<aura::WindowTreeHost> active_host_ = nullptr;
++  RbDelegates delegates_;
++  RbLink link_;
++  std::unique_ptr<RbStartupNavigationRecovery> startup_navigation_recovery_;
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_CONTROLLER_H_
+diff --git a/chrome/browser/rb/rb_cursor_bridge.cc b/chrome/browser/rb/rb_cursor_bridge.cc
+new file mode 100644
+index 0000000000..e5aa24b656
+--- /dev/null
++++ b/chrome/browser/rb/rb_cursor_bridge.cc
+@@ -0,0 +1,209 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_cursor_bridge.h"
++
++#include <algorithm>
++#include <cmath>
++#include <utility>
++
++#include "base/base64.h"
++#include "base/strings/string_number_conversions.h"
++#include "skia/ext/image_operations.h"
++#include "ui/aura/client/cursor_client.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/gfx/codec/png_codec.h"
++
++namespace rb {
++namespace {
++
++std::string CustomCss(const ui::Cursor& cursor) {
++  const SkBitmap& source = cursor.custom_bitmap();
++  if (source.drawsNothing()) {
++    return "default";
++  }
++  // CSS cursor images and hotspots use CSS pixels, not source image pixels.
++  const float image_scale = cursor.image_scale_factor();
++  if (!std::isfinite(image_scale) || image_scale <= 0) {
++    return "default";
++  }
++  float scale = std::min(1.0f / image_scale,
++                         128.0f / std::max(source.width(), source.height()));
++  // Keep the complete JSON message below 64 KiB, including base64 overhead.
++  for (int attempt = 0; attempt < 2; ++attempt, scale *= 0.5f) {
++    const int width = std::clamp(
++        static_cast<int>(std::lround(source.width() * scale)), 1, 128);
++    const int height = std::clamp(
++        static_cast<int>(std::lround(source.height() * scale)), 1, 128);
++    SkBitmap bitmap = skia::ImageOperations::Resize(
++        source, skia::ImageOperations::RESIZE_BEST, width, height);
++    auto png = gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false);
++    if (!png) {
++      return "default";
++    }
++    if (png->size() > 45000) {
++      continue;
++    }
++    const auto& hotspot = cursor.custom_hotspot();
++    const int x = std::clamp(
++        static_cast<int>(std::lround(hotspot.x() * static_cast<float>(width) /
++                                     source.width())),
++        0, width - 1);
++    const int y = std::clamp(
++        static_cast<int>(std::lround(hotspot.y() * static_cast<float>(height) /
++                                     source.height())),
++        0, height - 1);
++    return "url(data:image/png;base64," + base::Base64Encode(*png) + ") " +
++           base::NumberToString(x) + " " + base::NumberToString(y) + ", auto";
++  }
++  return "default";
++}
++
++std::string CursorCss(const ui::Cursor& cursor) {
++  using Type = ui::mojom::CursorType;
++  switch (cursor.type()) {
++    case Type::kNull:
++    case Type::kPointer:
++      return "default";
++    case Type::kCross:
++      return "crosshair";
++    case Type::kHand:
++      return "pointer";
++    case Type::kIBeam:
++      return "text";
++    case Type::kWait:
++      return "wait";
++    case Type::kHelp:
++      return "help";
++    case Type::kEastResize:
++    case Type::kEastPanning:
++      return "e-resize";
++    case Type::kNorthResize:
++    case Type::kNorthPanning:
++      return "n-resize";
++    case Type::kNorthEastResize:
++    case Type::kNorthEastPanning:
++      return "ne-resize";
++    case Type::kNorthWestResize:
++    case Type::kNorthWestPanning:
++      return "nw-resize";
++    case Type::kSouthResize:
++    case Type::kSouthPanning:
++      return "s-resize";
++    case Type::kSouthEastResize:
++    case Type::kSouthEastPanning:
++      return "se-resize";
++    case Type::kSouthWestResize:
++    case Type::kSouthWestPanning:
++      return "sw-resize";
++    case Type::kWestResize:
++    case Type::kWestPanning:
++      return "w-resize";
++    case Type::kNorthSouthResize:
++    case Type::kMiddlePanningVertical:
++      return "ns-resize";
++    case Type::kEastWestResize:
++    case Type::kMiddlePanningHorizontal:
++      return "ew-resize";
++    case Type::kNorthEastSouthWestResize:
++      return "nesw-resize";
++    case Type::kNorthWestSouthEastResize:
++      return "nwse-resize";
++    case Type::kColumnResize:
++      return "col-resize";
++    case Type::kRowResize:
++      return "row-resize";
++    case Type::kMiddlePanning:
++    case Type::kMove:
++    case Type::kDndMove:
++      return "move";
++    case Type::kVerticalText:
++      return "vertical-text";
++    case Type::kCell:
++      return "cell";
++    case Type::kContextMenu:
++      return "context-menu";
++    case Type::kAlias:
++    case Type::kDndLink:
++      return "alias";
++    case Type::kProgress:
++      return "progress";
++    case Type::kNoDrop:
++    case Type::kDndNone:
++      return "no-drop";
++    case Type::kCopy:
++    case Type::kDndCopy:
++      return "copy";
++    case Type::kNone:
++      return "none";
++    case Type::kNotAllowed:
++    case Type::kEastWestNoResize:
++    case Type::kNorthSouthNoResize:
++    case Type::kNorthEastSouthWestNoResize:
++    case Type::kNorthWestSouthEastNoResize:
++      return "not-allowed";
++    case Type::kZoomIn:
++      return "zoom-in";
++    case Type::kZoomOut:
++      return "zoom-out";
++    case Type::kGrab:
++      return "grab";
++    case Type::kGrabbing:
++      return "grabbing";
++    case Type::kCustom:
++      return CustomCss(cursor);
++  }
++  return "default";
++}
++
++}  // namespace
++
++RbCursorBridge::RbCursorBridge(
++    base::RepeatingCallback<void(const std::string&)> send)
++    : send_(std::move(send)) {
++  if (ui::IsRbRemoteMode()) {
++    views::RemoteCursorSink::SetInstance(this);
++  }
++}
++
++RbCursorBridge::~RbCursorBridge() {
++  if (views::RemoteCursorSink::GetInstance() == this) {
++    views::RemoteCursorSink::SetInstance(nullptr);
++  }
++}
++
++void RbCursorBridge::SetActiveHost(aura::WindowTreeHost* host) {
++  host_ = host ? host->GetWeakPtr() : nullptr;
++  last_cursor_.reset();
++  last_css_.clear();
++  if (host_) {
++    auto* client = aura::client::GetCursorClient(host_->window());
++    ui::Cursor cursor(ui::mojom::CursorType::kPointer);
++    if (client) {
++      cursor = client->IsCursorVisible()
++                   ? client->GetCursor()
++                   : ui::Cursor(ui::mojom::CursorType::kNone);
++    }
++    OnCursorChanged(host_->window(), cursor);
++  }
++}
++
++void RbCursorBridge::OnCursorChanged(aura::Window* root,
++                                       const ui::Cursor& cursor) {
++  if (!ui::IsRbRemoteMode() || !host_ || root != host_->window() ||
++      (last_cursor_ && *last_cursor_ == cursor)) {
++    return;
++  }
++  last_cursor_ = cursor;
++  std::string css = CursorCss(cursor);
++  if (css == last_css_) {
++    return;
++  }
++  last_css_ = css;
++  auto send = send_;
++  send.Run(css);
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_cursor_bridge.h b/chrome/browser/rb/rb_cursor_bridge.h
+new file mode 100644
+index 0000000000..f98ba0f85a
+--- /dev/null
++++ b/chrome/browser/rb/rb_cursor_bridge.h
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_CURSOR_BRIDGE_H_
++#define CHROME_BROWSER_RB_RB_CURSOR_BRIDGE_H_
++
++#include <optional>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "ui/base/cursor/cursor.h"
++#include "ui/views/widget/desktop_aura/remote_cursor_sink.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++
++namespace rb {
++
++// UI sequence only. Owns the Views sink registration for the controller's life.
++class RbCursorBridge : public views::RemoteCursorSink {
++ public:
++  explicit RbCursorBridge(
++      base::RepeatingCallback<void(const std::string&)> send);
++  ~RbCursorBridge() override;
++  void SetActiveHost(aura::WindowTreeHost* host);
++  void OnCursorChanged(aura::Window* root, const ui::Cursor& cursor) override;
++
++ private:
++  base::RepeatingCallback<void(const std::string&)> send_;
++  base::WeakPtr<aura::WindowTreeHost> host_;
++  std::optional<ui::Cursor> last_cursor_;
++  std::string last_css_;
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_CURSOR_BRIDGE_H_
+diff --git a/chrome/browser/rb/rb_delegates.h b/chrome/browser/rb/rb_delegates.h
+new file mode 100644
+index 0000000000..b38c8ae7dd
+--- /dev/null
++++ b/chrome/browser/rb/rb_delegates.h
+@@ -0,0 +1,75 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_DELEGATES_H_
++#define CHROME_BROWSER_RB_RB_DELEGATES_H_
++
++#include <cstdint>
++#include <string>
++
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/rb/mojom/rb.mojom.h"
++#include "mojo/public/cpp/bindings/pending_remote.h"
++
++namespace rb {
++
++// UI-thread interfaces, implemented by the other M1 tasks. Delegates outlive
++// RbController. SetClient(nullptr) must detach observers without
++// dereferencing the previous proxy. Non-null SetClient sends the initial
++// window/IME snapshot.
++class RbWindowRegistryDelegate {
++ public:
++  virtual ~RbWindowRegistryDelegate() = default;
++  virtual void SetClient(mojom::RbBrowserClient* client) = 0;
++  virtual void ActivateWindow(uint32_t window_id) = 0;
++  virtual void Focus(bool focused) = 0;
++  virtual void NewWindow(const std::string& url) = 0;
++};
++
++class RbCaptureDelegate {
++ public:
++  virtual ~RbCaptureDelegate() = default;
++  virtual void FillHelloInfo(mojom::HelloInfo& info) = 0;
++  // Move sink to the capture sequence before binding; read kRbCaptureFps
++  // here.
++  virtual void StartCapture(uint32_t window_id,
++                            mojom::CaptureParamsPtr params,
++                            mojo::PendingRemote<mojom::RbFrameSink> sink) = 0;
++  virtual void StopCapture(uint32_t window_id) = 0;
++  virtual void RequestRefreshFrame(uint32_t window_id) = 0;
++  // Stop all captures; release pending frame callbacks even on IPC loss.
++  virtual void StopAll() = 0;
++};
++
++class RbInputDelegate {
++ public:
++  virtual ~RbInputDelegate() = default;
++  virtual void Pointer(uint32_t window_id, mojom::PointerInputPtr input) = 0;
++  virtual void Wheel(uint32_t window_id, mojom::WheelInputPtr input) = 0;
++  virtual void Key(uint32_t window_id, mojom::KeyInputPtr input) = 0;
++  virtual void ResetInput() = 0;
++};
++
++class RbImeBridgeDelegate {
++ public:
++  virtual ~RbImeBridgeDelegate() = default;
++  virtual void SetClient(mojom::RbBrowserClient* client) = 0;
++  virtual void ImeCommit(const std::string& text) = 0;
++  virtual void ImeCompose(const std::string& text, int32_t cursor) = 0;
++  virtual void ImeDelete(int32_t before, int32_t after) = 0;
++  virtual void Focus(bool focused) = 0;
++};
++
++// Null delegates deliberately allow a link-only spike with no window/capture
++// implementation. Integrators inject the four concrete delegates at creation.
++struct RbDelegates {
++  raw_ptr<RbWindowRegistryDelegate> windows = nullptr;
++  raw_ptr<RbCaptureDelegate> capture = nullptr;
++  raw_ptr<RbInputDelegate> input = nullptr;
++  raw_ptr<RbImeBridgeDelegate> ime = nullptr;
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_DELEGATES_H_
+diff --git a/chrome/browser/rb/rb_ime_bridge.cc b/chrome/browser/rb/rb_ime_bridge.cc
+new file mode 100644
+index 0000000000..3ac67f3ea5
+--- /dev/null
++++ b/chrome/browser/rb/rb_ime_bridge.cc
+@@ -0,0 +1,285 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/rb/rb_ime_bridge.h"
++
++#include <algorithm>
++#include <array>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "ui/aura/window.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/base/ime/composition_text.h"
++#include "ui/base/ime/remote_input_method.h"
++#include "ui/base/ime/text_input_client.h"
++#include "ui/base/ime/text_input_flags.h"
++#include "ui/base/ime/virtual_keyboard_controller.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/wm/core/coordinate_conversion.h"
++
++namespace rb {
++namespace {
++constexpr std::array<const char*, 18> kTypes = {
++    "none", "text", "password", "search",          "email",    "number",
++    "tel",  "url",  "date",     "datetime",        "datetime", "month",
++    "time", "week", "textarea", "contenteditable", "date",     "null"};
++static_assert(kTypes.size() == ui::TEXT_INPUT_TYPE_MAX + 1);
++constexpr std::array<const char*, 9> kModes = {"default", "none",    "text",
++                                               "tel",     "url",     "email",
++                                               "numeric", "decimal", "search"};
++static_assert(kModes.size() == ui::TEXT_INPUT_MODE_MAX + 1);
++// design/06 flags are a compact wire mask, not the ui::TextInputFlags bit
++// values.
++uint32_t WireFlags(int flags) {
++  constexpr std::array<int, 7> kFlags = {
++      ui::TEXT_INPUT_FLAG_AUTOCOMPLETE_OFF,
++      ui::TEXT_INPUT_FLAG_AUTOCORRECT_OFF,
++      ui::TEXT_INPUT_FLAG_SPELLCHECK_OFF,
++      ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_NONE,
++      ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_CHARACTERS,
++      ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_WORDS,
++      ui::TEXT_INPUT_FLAG_AUTOCAPITALIZE_SENTENCES};
++  uint32_t result = 0;
++  for (size_t i = 0; i < kFlags.size(); ++i) {
++    if (flags & kFlags[i]) {
++      result |= 1u << i;
++    }
++  }
++  return result;
++}
++const char* Reason(ui::TextInputClient::FocusReason reason) {
++  switch (reason) {
++    case ui::TextInputClient::FOCUS_REASON_NONE:
++      return "none";
++    case ui::TextInputClient::FOCUS_REASON_MOUSE:
++      return "mouse";
++    case ui::TextInputClient::FOCUS_REASON_TOUCH:
++      return "touch";
++    case ui::TextInputClient::FOCUS_REASON_PEN:
++      return "pen";
++    case ui::TextInputClient::FOCUS_REASON_OTHER:
++      return "other";
++  }
++  return "other";
++}
++bool DecodeText(const std::string& text, std::u16string* decoded) {
++  if (text.size() > 16384 || !base::IsStringUTF8(text)) {
++    return false;
++  }
++  *decoded = base::UTF8ToUTF16(text);
++  return decoded->size() <= 4096;
++}
++}  // namespace
++
++RbImeBridge::RbImeBridge(StateCallback state, KeyboardCallback keyboard)
++    : state_callback_(std::move(state)),
++      keyboard_callback_(std::move(keyboard)) {}
++RbImeBridge::~RbImeBridge() {
++  if (input_method_) {
++    input_method_->SetVirtualKeyboardCallback({});
++    input_method_->SetCompositionCancelledCallback({});
++    input_method_->RemoveObserver(this);
++  }
++}
++
++void RbImeBridge::SetActiveHost(aura::WindowTreeHost* host) {
++  if (!ui::IsRbRemoteMode()) {
++    return;
++  }
++  if (input_method_) {
++    input_method_->SetVirtualKeyboardCallback({});
++    input_method_->SetCompositionCancelledCallback({});
++    input_method_->RemoveObserver(this);
++  }
++  host_ = host ? host->GetWeakPtr() : nullptr;
++  // Factory selects RemoteInputMethod for every PRTS root. Do not replace it
++  // with a testing IME while this bridge is attached.
++  input_method_ =
++      host ? static_cast<ui::RemoteInputMethod*>(host->GetInputMethod())
++           : nullptr;
++  focused_ = host != nullptr;
++  ++context_;
++  if (input_method_) {
++    input_method_->AddObserver(this);
++    input_method_->SetVirtualKeyboardCallback(base::BindRepeating(
++        &RbImeBridge::OnKeyboard, weak_factory_.GetWeakPtr()));
++    input_method_->SetCompositionCancelledCallback(base::BindRepeating(
++        &RbImeBridge::OnCompositionCancelled, weak_factory_.GetWeakPtr()));
++  }
++  Publish();
++}
++
++ui::TextInputClient* RbImeBridge::EditableClient() const {
++  if (!ui::IsRbRemoteMode() || !host_ || !focused_ || !input_method_) {
++    return nullptr;
++  }
++  auto* client = input_method_->GetTextInputClient();
++  return client && client->GetTextInputType() != ui::TEXT_INPUT_TYPE_NONE
++             ? client
++             : nullptr;
++}
++
++void RbImeBridge::Publish() {
++  auto* client = EditableClient();
++  if (client != client_.get()) {
++    client_ = client ? client->AsWeakPtr() : nullptr;
++    ++context_;
++  }
++  auto state = mojom::ImeState::New();
++  state->seq = ++seq_;
++  state->context = context_;
++  state->focused = false;
++  state->type = "none";
++  state->mode = "default";
++  state->flags = 0;
++  state->reason = "none";
++  if (client) {
++    state->focused = true;
++    const size_t type = static_cast<size_t>(client->GetTextInputType());
++    const size_t mode = static_cast<size_t>(client->GetTextInputMode());
++    state->type = type < kTypes.size() ? kTypes[type] : "none";
++    state->mode = mode < kModes.size() ? kModes[mode] : "default";
++    state->flags = WireFlags(client->GetTextInputFlags());
++    state->reason = Reason(client->GetFocusReason());
++    state->composing = client->HasCompositionText();
++    gfx::Rect caret = client->GetCaretBounds();
++    wm::ConvertRectFromScreen(host_->window(), &caret);
++    const auto size = host_->window()->bounds().size();
++    if (!size.IsEmpty()) {
++      // Collapsed renderer carets can have zero width. Rect::Intersect would
++      // erase their position; clamp edges independently instead.
++      const int x = std::clamp(caret.x(), 0, size.width());
++      const int y = std::clamp(caret.y(), 0, size.height());
++      const int right = std::clamp(caret.right(), x, size.width());
++      const int bottom = std::clamp(caret.bottom(), y, size.height());
++      state->caret_norm =
++          gfx::RectF(static_cast<float>(x) / size.width(),
++                     static_cast<float>(y) / size.height(),
++                     static_cast<float>(right - x) / size.width(),
++                     static_cast<float>(bottom - y) / size.height());
++    }
++  }
++  // Copy callbacks before invoking embedder code, which may destroy the bridge.
++  auto state_callback = state_callback_;
++  auto keyboard_callback = keyboard_callback_;
++  const bool hide = !state->focused || state->mode == "none";
++  // State precedes its visibility decision; every message has a unique seq.
++  const uint32_t hide_seq = hide ? ++seq_ : 0;
++  if (state_callback) {
++    state_callback.Run(std::move(state));
++  }
++  if (hide && keyboard_callback) {
++    keyboard_callback.Run(false, hide_seq);
++  }
++}
++
++void RbImeBridge::OnKeyboard(bool show) {
++  auto* client = EditableClient();
++  show =
++      show && client && client->GetTextInputMode() != ui::TEXT_INPUT_MODE_NONE;
++  if (keyboard_callback_) {
++    keyboard_callback_.Run(show, ++seq_);
++  }
++}
++void RbImeBridge::OnCompositionCancelled() {
++  if (!ui::IsRbRemoteMode()) {
++    return;
++  }
++  // Cancellation also marks node/selection changes on the same Aura client.
++  // Reject any older in-flight edits rather than applying them to the new node.
++  ++context_;
++  Publish();
++}
++void RbImeBridge::OnFocus() {
++  focused_ = true;
++  Publish();
++}
++void RbImeBridge::OnBlur() {
++  focused_ = false;
++  Publish();
++}
++void RbImeBridge::OnCaretBoundsChanged(const ui::TextInputClient* client) {
++  if (input_method_ && client == input_method_->GetTextInputClient()) {
++    Publish();
++  }
++}
++void RbImeBridge::OnTextInputStateChanged(const ui::TextInputClient* client) {
++  if (input_method_ && client == input_method_->GetTextInputClient()) {
++    Publish();
++  }
++}
++void RbImeBridge::OnInputMethodDestroyed(
++    const ui::InputMethod* input_method) {
++  // MockInputMethod's destructor sends this after the derived object is gone.
++  // Never call a RemoteInputMethod method from this callback.
++  input_method_ = nullptr;
++  host_.reset();
++  focused_ = false;
++  Publish();
++}
++
++void RbImeBridge::ImeCommit(const std::string& text, uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
++  std::u16string decoded;
++  if (!DecodeText(text, &decoded)) {
++    return;
++  }
++  if (auto* client = EditableClient()) {
++    client->InsertText(
++        decoded,
++        ui::TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
++  }
++}
++void RbImeBridge::ImeCompose(const std::string& text,
++                               int32_t cursor,
++                               uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
++  ui::CompositionText composition;
++  if (!DecodeText(text, &composition.text)) {
++    return;
++  }
++  auto* client = EditableClient();
++  if (!client) {
++    return;
++  }
++  if (composition.text.empty()) {
++    client->ClearCompositionText();
++    return;
++  }
++  const size_t offset = std::clamp<int32_t>(
++      cursor, 0, static_cast<int32_t>(composition.text.size()));
++  composition.selection = gfx::Range(offset);
++  composition.ime_text_spans.emplace_back(ui::ImeTextSpan::Type::kComposition,
++                                          0, composition.text.size());
++  client->SetCompositionText(composition);
++}
++void RbImeBridge::ImeDelete(int32_t before, int32_t after, uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
++  if (before < 0 || after < 0 || before > 4096 || after > 4096) {
++    return;
++  }
++  if (auto* client = EditableClient()) {
++    client->ExtendSelectionAndDelete(before, after);
++  }
++}
++void RbImeBridge::ImeHidden(uint32_t context) {
++  if (context && context != context_) {
++    return;
++  }
++  // Keep the content VK helper's observer state coherent so a subsequent tap
++  // can request another show without changing the remote editable focus.
++  if (ui::IsRbRemoteMode() && input_method_) {
++    input_method_->GetVirtualKeyboardController()->DismissVirtualKeyboard();
++  }
++}
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_ime_bridge.h b/chrome/browser/rb/rb_ime_bridge.h
+new file mode 100644
+index 0000000000..93efae60a8
+--- /dev/null
++++ b/chrome/browser/rb/rb_ime_bridge.h
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_RB_RB_IME_BRIDGE_H_
++#define CHROME_BROWSER_RB_RB_IME_BRIDGE_H_
++
++#include <cstdint>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/rb/mojom/rb.mojom.h"
++#include "ui/base/ime/input_method_observer.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++namespace ui {
++class RemoteInputMethod;
++class TextInputClient;
++}  // namespace ui
++namespace rb {
++// UI sequence only. One observer of the active root, shared by Views and
++// content. Call SetActiveHost(nullptr) before registry teardown. Callback sinks
++// normally forward to RbBrowserClient; seq is session-wide, not reset on host
++// switches.
++class RbImeBridge : public ui::InputMethodObserver {
++ public:
++  using StateCallback = base::RepeatingCallback<void(mojom::ImeStatePtr)>;
++  using KeyboardCallback = base::RepeatingCallback<void(bool, uint32_t)>;
++  RbImeBridge(StateCallback state, KeyboardCallback keyboard);
++  ~RbImeBridge() override;
++  void SetActiveHost(aura::WindowTreeHost* host);
++  void ImeCommit(const std::string& text, uint32_t context);
++  void ImeCompose(const std::string& text, int32_t cursor, uint32_t context);
++  void ImeDelete(int32_t before, int32_t after, uint32_t context);
++  void ImeHidden(uint32_t context);
++
++  void OnFocus() override;
++  void OnBlur() override;
++  void OnCaretBoundsChanged(const ui::TextInputClient* client) override;
++  void OnTextInputStateChanged(const ui::TextInputClient* client) override;
++  void OnInputMethodDestroyed(const ui::InputMethod* input_method) override;
++
++ private:
++  ui::TextInputClient* EditableClient() const;
++  void Publish();
++  void OnKeyboard(bool show);
++  void OnCompositionCancelled();
++  StateCallback state_callback_;
++  KeyboardCallback keyboard_callback_;
++  base::WeakPtr<aura::WindowTreeHost> host_;
++  base::WeakPtr<ui::TextInputClient> client_;
++  raw_ptr<ui::RemoteInputMethod> input_method_ = nullptr;
++  bool focused_ = false;
++  uint32_t seq_ = 0;
++  uint32_t context_ = 1;
++  base::WeakPtrFactory<RbImeBridge> weak_factory_{this};
++};
++}  // namespace rb
++#endif  // CHROME_BROWSER_RB_RB_IME_BRIDGE_H_
+diff --git a/chrome/browser/rb/rb_input.cc b/chrome/browser/rb/rb_input.cc
+new file mode 100644
+index 0000000000..19c19744c0
+--- /dev/null
++++ b/chrome/browser/rb/rb_input.cc
+@@ -0,0 +1,353 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/rb/rb_input.h"
++
++#include <windows.h>
++
++#include <algorithm>
++#include <cmath>
++#include <utility>
++
++#include "ui/aura/event_injector.h"
++#include "ui/aura/window.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
++#include "ui/events/event_dispatcher.h"
++#include "ui/events/keycodes/dom/keycode_converter.h"
++#include "ui/events/keycodes/keyboard_code_conversion.h"
++#include "ui/gfx/geometry/point_conversions.h"
++#include "ui/views/widget/desktop_aura/desktop_capture_client.h"
++#include "ui/wm/core/coordinate_conversion.h"
++
++namespace rb {
++namespace {
++int Modifiers(uint8_t mods) {
++  return ((mods & 1) ? ui::EF_SHIFT_DOWN : 0) |
++         ((mods & 2) ? ui::EF_CONTROL_DOWN : 0) |
++         ((mods & 4) ? ui::EF_ALT_DOWN : 0) |
++         ((mods & 8) ? ui::EF_COMMAND_DOWN : 0) |
++         ((mods & 16) ? ui::EF_CAPS_LOCK_ON : 0) |
++         ((mods & 32) ? ui::EF_NUM_LOCK_ON : 0) |
++         ((mods & 64) ? ui::EF_ALTGR_DOWN : 0);
++}
++int Button(int button) {
++  switch (button) {
++    case 0:
++      return ui::EF_LEFT_MOUSE_BUTTON;
++    case 1:
++      return ui::EF_MIDDLE_MOUSE_BUTTON;
++    case 2:
++      return ui::EF_RIGHT_MOUSE_BUTTON;
++    case 3:
++      return ui::EF_BACK_MOUSE_BUTTON;
++    case 4:
++      return ui::EF_FORWARD_MOUSE_BUTTON;
++    default:
++      return 0;
++  }
++}
++int Buttons(uint8_t buttons) {
++  return ((buttons & 1) ? ui::EF_LEFT_MOUSE_BUTTON : 0) |
++         ((buttons & 2) ? ui::EF_RIGHT_MOUSE_BUTTON : 0) |
++         ((buttons & 4) ? ui::EF_MIDDLE_MOUSE_BUTTON : 0) |
++         ((buttons & 8) ? ui::EF_BACK_MOUSE_BUTTON : 0) |
++         ((buttons & 16) ? ui::EF_FORWARD_MOUSE_BUTTON : 0);
++}
++gfx::PointF Location(aura::WindowTreeHost* host, float x, float y) {
++  const auto size = host->window()->bounds().size();
++  return {std::clamp(x, 0.0f, 1.0f) * size.width(),
++          std::clamp(y, 0.0f, 1.0f) * size.height()};
++}
++}  // namespace
++
++RbInput::RbInput() = default;
++// The owner must ResetInput while roots are live, before destroying this
++// object.
++RbInput::~RbInput() = default;
++
++void RbInput::InjectMouse(aura::WindowTreeHost* host, ui::MouseEvent* event) {
++  gfx::PointF screen = event->location_f();
++  wm::ConvertPointToScreen(host->window(), &screen);
++  // M1 reuses the existing public virtual-point setter; this never calls Win32.
++  if (auto* screen_win = display::win::GetScreenWinHeadless()) {
++    screen_win->SetCursorScreenPointForTesting(gfx::ToRoundedPoint(screen));
++  }
++  if (auto* capture = views::DesktopCaptureClient::GetCaptureWindowGlobal()) {
++    host = capture->GetHost();
++    wm::ConvertPointFromScreen(host->window(), &screen);
++    event->set_location_f(screen);
++    event->set_root_location_f(screen);
++  }
++  aura::EventInjector().Inject(host, event);
++}
++
++void RbInput::Pointer(aura::WindowTreeHost* host,
++                        const mojom::PointerInput& input) {
++  if (!ui::IsRbRemoteMode() || !host || !std::isfinite(input.x) ||
++      !std::isfinite(input.y)) {
++    return;
++  }
++  if (input.type != mojom::PointerType::kMouse) {
++    Touch(host, input);
++    return;
++  }
++  auto weak_this = weak_factory_.GetWeakPtr();
++  auto weak_host = host->GetWeakPtr();
++  const auto loc = Location(host, input.x, input.y);
++  mods_ = Modifiers(input.mods);
++  if (mouse_inside_ && mouse_host_ && mouse_host_.get() != host) {
++    ui::MouseEvent exit(ui::EventType::kMouseExited, mouse_location_,
++                        mouse_location_, input.timestamp, mods_ | buttons_, 0);
++    auto old_host = mouse_host_;
++    mouse_inside_ = false;
++    InjectMouse(old_host.get(), &exit);
++    if (!weak_this || !weak_host) {
++      return;
++    }
++  }
++  mouse_host_ = weak_host;
++  mouse_location_ = loc;
++  using Action = mojom::PointerAction;
++  if (input.action == Action::kCancel) {
++    ResetInput();
++    return;
++  }
++  if (input.action == Action::kLeave) {
++    mouse_inside_ = false;
++    ui::MouseEvent exit(ui::EventType::kMouseExited, loc, loc, input.timestamp,
++                        mods_ | buttons_, 0);
++    InjectMouse(host, &exit);
++    return;
++  }
++  if (!mouse_inside_) {
++    mouse_inside_ = true;
++    ui::MouseEvent enter(ui::EventType::kMouseEntered, loc, loc,
++                         input.timestamp, mods_ | buttons_, 0);
++    InjectMouse(host, &enter);
++    if (!weak_this || !weak_host) {
++      return;
++    }
++  }
++  const int changed = Button(input.button);
++  ui::EventType type = ui::EventType::kMouseMoved;
++  int flags = Buttons(input.buttons);
++  if (input.action == Action::kDown) {
++    if (!changed) {
++      return;
++    }
++    type = ui::EventType::kMousePressed;
++    const auto elapsed = input.timestamp - last_click_time_;
++    const bool repeat = last_click_button_ == changed &&
++                        !last_click_time_.is_null() && elapsed.is_positive() &&
++                        elapsed <= base::Milliseconds(::GetDoubleClickTime()) &&
++                        std::abs(loc.x() - last_click_location_.x()) <= 4 &&
++                        std::abs(loc.y() - last_click_location_.y()) <= 4;
++    click_count_ = repeat ? click_count_ % 3 + 1 : 1;
++    last_click_time_ = input.timestamp;
++    last_click_location_ = loc;
++    last_click_button_ = changed;
++    flags |= changed;
++    buttons_ = flags;
++  } else if (input.action == Action::kUp) {
++    if (!changed) {
++      return;
++    }
++    type = ui::EventType::kMouseReleased;
++    buttons_ = flags;
++    flags |= changed;  // Aura removes changed_button_flags on release.
++  } else {
++    flags = buttons_;
++    if (buttons_) {
++      type = ui::EventType::kMouseDragged;
++    }
++  }
++  ui::MouseEvent event(
++      type, loc, loc, input.timestamp, mods_ | flags,
++      type == ui::EventType::kMouseMoved || type == ui::EventType::kMouseDragged
++          ? 0
++          : changed);
++  if (type == ui::EventType::kMousePressed ||
++      type == ui::EventType::kMouseReleased) {
++    event.SetClickCount(std::max(1, click_count_));
++  }
++  InjectMouse(host, &event);
++}
++
++void RbInput::Wheel(aura::WindowTreeHost* host,
++                      const mojom::WheelInput& input) {
++  if (!ui::IsRbRemoteMode() || !host || !std::isfinite(input.x) ||
++      !std::isfinite(input.y) || !std::isfinite(input.dx) ||
++      !std::isfinite(input.dy)) {
++    return;
++  }
++  const auto loc = Location(host, input.x, input.y);
++  mods_ = Modifiers(input.mods);
++  // DOM positive deltas mean right/down; Aura offsets mean left/up.
++  gfx::Vector2d offset(
++      std::lround(-std::clamp(input.dx, -100000.0f, 100000.0f)),
++      std::lround(-std::clamp(input.dy, -100000.0f, 100000.0f)));
++  ui::MouseWheelEvent event(offset, loc, loc, input.timestamp, mods_ | buttons_,
++                            0);
++  InjectMouse(host, &event);
++}
++
++void RbInput::Touch(aura::WindowTreeHost* host,
++                      const mojom::PointerInput& input) {
++  if (input.pid == 0 || input.pid > 15 || !std::isfinite(input.radius_x) ||
++      !std::isfinite(input.radius_y) || !std::isfinite(input.pressure)) {
++    return;
++  }
++  using Action = mojom::PointerAction;
++  auto it = touches_.find(input.pid);
++  if ((input.action == Action::kDown) == (it != touches_.end())) {
++    return;  // No duplicate down or orphan move/up/cancel.
++  }
++  auto loc = Location(host, input.x, input.y);
++  ui::EventType type;
++  switch (input.action) {
++    case Action::kDown:
++      type = ui::EventType::kTouchPressed;
++      break;
++    case Action::kMove:
++      type = ui::EventType::kTouchMoved;
++      break;
++    case Action::kUp:
++      type = ui::EventType::kTouchReleased;
++      break;
++    case Action::kCancel:
++      type = ui::EventType::kTouchCancelled;
++      break;
++    case Action::kLeave:
++      return;  // Contact remains active until up/cancel/reset.
++  }
++  if (it != touches_.end()) {
++    if (!it->second.host) {
++      touches_.erase(it);
++      return;
++    }
++    if (it->second.host.get() != host) {
++      wm::ConvertPointToScreen(host->window(), &loc);
++      host = it->second.host.get();
++      wm::ConvertPointFromScreen(host->window(), &loc);
++    }
++  }
++  ui::PointerDetails details(
++      input.type == mojom::PointerType::kPen ? ui::EventPointerType::kPen
++                                             : ui::EventPointerType::kTouch,
++      input.pid, std::max(0.0f, input.radius_x), std::max(0.0f, input.radius_y),
++      std::clamp(input.pressure, 0.0f, 1.0f));
++  if (input.action == Action::kCancel) {
++    loc = it->second.location;
++    details = it->second.details;
++  }
++  if (input.action == Action::kUp || input.action == Action::kCancel) {
++    touches_.erase(input.pid);
++  } else {
++    touches_.insert_or_assign(input.pid,
++                              HeldTouch{host->GetWeakPtr(), loc, details});
++  }
++  mods_ = Modifiers(input.mods);
++  ui::TouchEvent event(type, loc, loc, input.timestamp, details, mods_);
++  aura::EventInjector().Inject(host, &event);
++}
++
++void RbInput::Key(aura::WindowTreeHost* host, const mojom::KeyInput& input) {
++  if (!ui::IsRbRemoteMode() || !host || input.code.size() > 32 ||
++      input.key.size() > 32 || input.key_code == 229) {
++    return;
++  }
++  const auto code = ui::KeycodeConverter::CodeStringToDomCode(input.code);
++  auto key = ui::KeycodeConverter::KeyStringToDomKey(input.key);
++  // KeyEvent::GetCharacter supports BMP only; supplementary text uses
++  // ImeCommit.
++  if (key.IsCharacter() && key.ToCharacter() > 0xffff) {
++    return;
++  }
++  if (key == ui::DomKey::NONE) {
++    key = ui::DomKey::UNIDENTIFIED;  // Never fall through to server layout
++                                     // lookup.
++  }
++  auto vkey = ui::DomCodeToUsLayoutKeyboardCode(code);
++  if (vkey == ui::VKEY_UNKNOWN) {
++    vkey = ui::NonPrintableDomKeyToKeyboardCode(key);
++  }
++  if (vkey == ui::VKEY_UNKNOWN && input.code.empty() && input.key_code <= 255) {
++    vkey = static_cast<ui::KeyboardCode>(input.key_code);
++  }
++  vkey = ui::LocatedToNonLocatedKeyboardCode(vkey);
++  mods_ = Modifiers(input.mods);
++  ui::KeyEvent event(
++      input.down ? ui::EventType::kKeyPressed : ui::EventType::kKeyReleased,
++      vkey, code, mods_ | (input.repeat ? ui::EF_IS_REPEAT : 0), key,
++      input.timestamp);
++  const std::string id = input.code.empty()
++                             ? "vk:" + std::to_string(static_cast<int>(vkey))
++                             : input.code;
++  if (input.down) {
++    keys_.insert_or_assign(id, HeldKey{host->GetWeakPtr(), event});
++  } else {
++    keys_.erase(id);
++  }
++  // Deliberately no EF_IS_SYNTHESIZED: RemoteInputMethod handles InsertChar.
++  aura::EventInjector().Inject(host, &event);
++}
++
++void RbInput::ResetInput() {
++  if (!ui::IsRbRemoteMode()) {
++    return;
++  }
++  auto weak_this = weak_factory_.GetWeakPtr();
++  auto keys = std::exchange(keys_, {});
++  auto touches = std::exchange(touches_, {});
++  auto host = mouse_host_;
++  const auto loc = mouse_location_;
++  int held_buttons = std::exchange(buttons_, 0);
++  const auto now = base::TimeTicks::Now();
++  const bool had_mouse = std::exchange(mouse_inside_, false);
++  mods_ = 0;
++  last_click_time_ = base::TimeTicks();
++  for (int button : {0, 1, 2, 3, 4}) {
++    const int flag = Button(button);
++    if (host && (held_buttons & flag)) {
++      ui::MouseEvent event(ui::EventType::kMouseReleased, loc, loc, now,
++                           held_buttons, flag);
++      held_buttons &= ~flag;
++      InjectMouse(host.get(), &event);
++      if (!weak_this) {
++        return;
++      }
++    }
++  }
++  if (host && had_mouse) {
++    ui::MouseEvent exit(ui::EventType::kMouseExited, loc, loc, now, 0, 0);
++    InjectMouse(host.get(), &exit);
++    if (!weak_this) {
++      return;
++    }
++  }
++  for (const auto& [id, held] : keys) {
++    if (!held.host) {
++      continue;
++    }
++    ui::KeyEvent event(ui::EventType::kKeyReleased, held.event.key_code(),
++                       held.event.code(), 0, held.event.GetDomKey(), now);
++    aura::EventInjector().Inject(held.host.get(), &event);
++    if (!weak_this) {
++      return;
++    }
++  }
++  for (const auto& [id, held] : touches) {
++    if (!held.host) {
++      continue;
++    }
++    ui::TouchEvent event(ui::EventType::kTouchCancelled, held.location,
++                         held.location, now, held.details);
++    aura::EventInjector().Inject(held.host.get(), &event);
++    if (!weak_this) {
++      return;
++    }
++  }
++}
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_input.h b/chrome/browser/rb/rb_input.h
+new file mode 100644
+index 0000000000..651a00bcf8
+--- /dev/null
++++ b/chrome/browser/rb/rb_input.h
+@@ -0,0 +1,59 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_RB_RB_INPUT_H_
++#define CHROME_BROWSER_RB_RB_INPUT_H_
++
++#include <cstdint>
++#include <map>
++#include <string>
++
++#include "base/memory/weak_ptr.h"
++#include "base/time/time.h"
++#include "chrome/browser/rb/mojom/rb.mojom.h"
++#include "ui/events/event.h"
++#include "ui/gfx/geometry/point_f.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++namespace rb {
++// One per remote session, UI sequence only. The registry supplies the requested
++// window's host; located events are rerouted through logical capture as needed.
++// Reset before changing active windows and on viewer blur/disconnect.
++class RbInput {
++ public:
++  RbInput();
++  ~RbInput();
++  void Pointer(aura::WindowTreeHost* host, const mojom::PointerInput& input);
++  void Wheel(aura::WindowTreeHost* host, const mojom::WheelInput& input);
++  void Key(aura::WindowTreeHost* host, const mojom::KeyInput& input);
++  void ResetInput();
++
++ private:
++  struct HeldKey {
++    base::WeakPtr<aura::WindowTreeHost> host;
++    ui::KeyEvent event;
++  };
++  struct HeldTouch {
++    base::WeakPtr<aura::WindowTreeHost> host;
++    gfx::PointF location;
++    ui::PointerDetails details;
++  };
++  void InjectMouse(aura::WindowTreeHost* host, ui::MouseEvent* event);
++  void Touch(aura::WindowTreeHost* host, const mojom::PointerInput& input);
++  int buttons_ = 0;
++  int mods_ = 0;
++  bool mouse_inside_ = false;
++  base::WeakPtr<aura::WindowTreeHost> mouse_host_;
++  gfx::PointF mouse_location_;
++  base::TimeTicks last_click_time_;
++  gfx::PointF last_click_location_;
++  int last_click_button_ = 0;
++  int click_count_ = 0;
++  std::map<std::string, HeldKey> keys_;
++  std::map<uint8_t, HeldTouch> touches_;
++  base::WeakPtrFactory<RbInput> weak_factory_{this};
++};
++}  // namespace rb
++#endif  // CHROME_BROWSER_RB_RB_INPUT_H_
+diff --git a/chrome/browser/rb/rb_link.cc b/chrome/browser/rb/rb_link.cc
+new file mode 100644
+index 0000000000..9d089d95fa
+--- /dev/null
++++ b/chrome/browser/rb/rb_link.cc
+@@ -0,0 +1,84 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_link.h"
++
++#include <windows.h>
++
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/functional/bind.h"
++#include "base/location.h"
++#include "base/logging.h"
++#include "base/task/thread_pool.h"
++#include "chrome/browser/rb/rb_switches.h"
++#include "content/public/browser/browser_thread.h"
++#include "mojo/public/cpp/platform/platform_channel.h"
++#include "mojo/public/cpp/system/invitation.h"
++#include "ui/base/ui_base_switches.h"
++
++namespace rb {
++
++RbLink::RbLink(mojom::RbBrowser* browser, base::OnceClosure disconnected)
++    : receiver_(browser), disconnected_(std::move(disconnected)) {}
++RbLink::~RbLink() = default;
++
++bool RbLink::Start() {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  auto* command_line = base::CommandLine::ForCurrentProcess();
++  if (started_ || !ui::IsRbRemoteMode() ||
++      !command_line->HasSwitch(switches::kRbMojo)) {
++    return false;
++  }
++  auto endpoint = mojo::PlatformChannel::RecoverPassedEndpointFromString(
++      command_line->GetSwitchValueASCII(switches::kRbMojo));
++  command_line->RemoveSwitch(switches::kRbMojo);
++  if (!endpoint.is_valid() ||
++      !::SetHandleInformation(endpoint.platform_handle().GetHandle().get(),
++                              HANDLE_FLAG_INHERIT, 0)) {
++    LOG(ERROR) << "PRTS: invalid inherited Mojo endpoint";
++    return false;
++  }
++  started_ = true;
++  return base::ThreadPool::PostTaskAndReplyWithResult(
++      FROM_HERE, {base::MayBlock()},
++      base::BindOnce(&mojo::IncomingInvitation::AcceptIsolated,
++                     std::move(endpoint)),
++      base::BindOnce(&RbLink::Bind, weak_factory_.GetWeakPtr()));
++}
++
++void RbLink::Bind(mojo::ScopedMessagePipeHandle pipe) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (!pipe.is_valid()) {
++    Close();
++    return;
++  }
++  receiver_.Bind(mojo::PendingReceiver<mojom::RbBrowser>(std::move(pipe)));
++  receiver_.set_disconnect_handler(
++      base::BindOnce(&RbLink::Close, weak_factory_.GetWeakPtr()));
++}
++
++bool RbLink::SetClient(mojo::PendingRemote<mojom::RbBrowserClient> client) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (!client.is_valid() || client_.is_bound()) {
++    return false;
++  }
++  client_.Bind(std::move(client));
++  client_.set_disconnect_handler(
++      base::BindOnce(&RbLink::Close, weak_factory_.GetWeakPtr()));
++  return true;
++}
++
++void RbLink::Close() {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  weak_factory_.InvalidateWeakPtrs();
++  receiver_.reset();
++  client_.reset();
++  if (disconnected_) {
++    std::move(disconnected_).Run();
++  }
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_link.h b/chrome/browser/rb/rb_link.h
+new file mode 100644
+index 0000000000..245a0d6378
+--- /dev/null
++++ b/chrome/browser/rb/rb_link.h
+@@ -0,0 +1,41 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_LINK_H_
++#define CHROME_BROWSER_RB_RB_LINK_H_
++
++#include "base/functional/callback.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/rb/mojom/rb.mojom.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++
++namespace rb {
++
++// Owned and used on browser UI. Chrome already initialized Mojo as a broker.
++class RbLink {
++ public:
++  RbLink(mojom::RbBrowser* browser, base::OnceClosure disconnected);
++  ~RbLink();
++  // Schedules invitation acceptance off UI, then binds the receiver on UI.
++  bool Start();
++  bool SetClient(mojo::PendingRemote<mojom::RbBrowserClient> client);
++  mojom::RbBrowserClient* client() {
++    return client_.is_bound() ? client_.get() : nullptr;
++  }
++  // Cancels acceptance, closes both bindings, runs disconnected at most once.
++  void Close();
++
++ private:
++  void Bind(mojo::ScopedMessagePipeHandle pipe);
++  mojo::Receiver<mojom::RbBrowser> receiver_;
++  mojo::Remote<mojom::RbBrowserClient> client_;
++  base::OnceClosure disconnected_;
++  bool started_ = false;
++  base::WeakPtrFactory<RbLink> weak_factory_{this};
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_LINK_H_
+diff --git a/chrome/browser/rb/rb_switches.cc b/chrome/browser/rb/rb_switches.cc
+new file mode 100644
+index 0000000000..a7bf6317b9
+--- /dev/null
++++ b/chrome/browser/rb/rb_switches.cc
+@@ -0,0 +1,10 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_switches.h"
++
++namespace rb::switches {
++const char kRbMojo[] = "rb-mojo";
++const char kRbCaptureFps[] = "rb-capture-fps";
++}  // namespace rb::switches
+diff --git a/chrome/browser/rb/rb_switches.h b/chrome/browser/rb/rb_switches.h
+new file mode 100644
+index 0000000000..27a99ff0e2
+--- /dev/null
++++ b/chrome/browser/rb/rb_switches.h
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_SWITCHES_H_
++#define CHROME_BROWSER_RB_RB_SWITCHES_H_
++
++namespace rb::switches {
++// PlatformChannel's decimal handle encoding, NOT its standard switch name.
++extern const char kRbMojo[];
++// Optional positive FPS override; parsing/policy belongs to
++// RbCaptureDelegate.
++extern const char kRbCaptureFps[];
++}  // namespace rb::switches
++
++#endif  // CHROME_BROWSER_RB_RB_SWITCHES_H_
+diff --git a/chrome/browser/rb/rb_window_registry.cc b/chrome/browser/rb/rb_window_registry.cc
+new file mode 100644
+index 0000000000..4eb13570c2
+--- /dev/null
++++ b/chrome/browser/rb/rb_window_registry.cc
+@@ -0,0 +1,340 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/rb/rb_window_registry.h"
++
++#include <utility>
++
++#include "base/auto_reset.h"
++#include "base/check.h"
++#include "base/check_op.h"
++#include "base/functional/bind.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "components/sessions/core/session_id.h"
++#include "content/public/browser/browser_thread.h"
++#include "ui/aura/window.h"
++#include "ui/aura/window_observer.h"
++#include "ui/aura/window_tree_host.h"
++#include "ui/aura/window_tree_host_observer.h"
++#include "ui/base/ui_base_switches.h"
++#include "ui/display/win/screen_win_headless.h"
++#include "ui/display/win/screen_win_display.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_observer.h"
++
++namespace rb {
++
++class RbWindowRegistry::Entry : public aura::WindowObserver,
++                                  public aura::WindowTreeHostObserver,
++                                  public views::WidgetObserver,
++                                  public TabStripModelObserver {
++ public:
++  Entry(RbWindowRegistry* owner,
++        uint32_t id,
++        BrowserWindowInterface* browser,
++        views::Widget* widget)
++      : owner_(owner),
++        id_(id),
++        browser_(browser),
++        widget_(widget),
++        native_(widget->GetNativeWindow()),
++        host_(native_->GetHost()),
++        tabs_(browser->GetTabStripModel()) {
++    native_->AddObserver(this);
++    if (host_->window() != native_) {
++      host_->window()->AddObserver(this);
++    }
++    host_->AddObserver(this);
++    widget_->AddObserver(this);
++    if (tabs_) {
++      tabs_->AddObserver(this);
++    }
++  }
++  ~Entry() override {
++    if (tabs_) {
++      tabs_->RemoveObserver(this);
++    }
++    widget_->RemoveObserver(this);
++    host_->RemoveObserver(this);
++    if (host_->window() != native_) {
++      host_->window()->RemoveObserver(this);
++    }
++    native_->RemoveObserver(this);
++  }
++
++  mojom::WindowInfoPtr Info() const {
++    auto info = mojom::WindowInfo::New();
++    info->window_id = id_;
++    info->size_dip = host_->window()->bounds().size();
++    info->size_px = host_->GetBoundsInPixels().size();
++    info->device_scale_factor = host_->device_scale_factor();
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser_);
++    info->title =
++        view ? base::UTF16ToUTF8(view->GetWindowTitle()) : std::string();
++    return info;
++  }
++  void OnHostResized(aura::WindowTreeHost* host) override {
++    owner_->Changed(id_);  // Includes DSF-only changes on Windows.
++  }
++  void OnHostMovedInPixels(aura::WindowTreeHost* host) override {
++    owner_->Changed(id_);
++  }
++  void OnWindowBoundsChanged(aura::Window* window,
++                             const gfx::Rect& old_bounds,
++                             const gfx::Rect& new_bounds,
++                             ui::PropertyChangeReason reason) override {
++    owner_->Changed(id_);
++  }
++  void OnWindowTitleChanged(aura::Window* window) override {
++    owner_->ScheduleChanged(id_);
++  }
++  void OnWindowDestroying(aura::Window* window) override {
++    // Deletes this; do not access members afterward.
++    owner_->RemoveWindow(id_);
++  }
++  void OnWidgetDestroying(views::Widget* widget) override {
++    owner_->RemoveWindow(id_);
++  }
++  void OnTabStripModelChanged(
++      TabStripModel* model,
++      const TabStripModelChange& change,
++      const TabStripSelectionChange& selection) override {
++    owner_->ScheduleChanged(id_);
++  }
++  void OnTabChangedAt(tabs::TabInterface* tab, TabChangeType type) override {
++    owner_->ScheduleChanged(id_);
++  }
++  void OnTabStripModelDestroyed(TabStripModel* model) override {
++    // TabStripModelObserver::ModelDestroyed already removed the observation.
++    tabs_ = nullptr;
++  }
++
++  const raw_ptr<RbWindowRegistry> owner_;
++  const uint32_t id_;
++  const raw_ptr<BrowserWindowInterface> browser_;
++  const raw_ptr<views::Widget> widget_;
++  const raw_ptr<aura::Window> native_;
++  const raw_ptr<aura::WindowTreeHost> host_;
++  raw_ptr<TabStripModel> tabs_;
++  mojom::WindowInfoPtr last_info_;
++};
++
++RbWindowRegistry::RbWindowRegistry() = default;
++RbWindowRegistry::~RbWindowRegistry() {
++  SetClient(nullptr);
++}
++
++void RbWindowRegistry::SetClient(mojom::RbBrowserClient* client) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  client_ = nullptr;  // The previous proxy may already have been destroyed.
++  weak_factory_.InvalidateWeakPtrs();
++  collection_observation_.Reset();
++  while (!entries_.empty()) {
++    RemoveWindow(entries_.begin()->first);
++  }
++  active_id_ = 0;
++  client_ = client;
++  if (!client_ || !ui::IsRbRemoteMode()) {
++    return;
++  }
++  auto* collection = GlobalBrowserCollection::GetInstance();
++  collection_observation_.Observe(collection);
++  collection->ForEach([this](BrowserWindowInterface* browser) {
++    AddWindow(browser->GetWeakPtr());
++    return true;
++  });
++  if (auto* active = collection->GetActiveBrowser()) {
++    OnBrowserActivated(active);
++  }
++}
++
++void RbWindowRegistry::OnBrowserCreated(BrowserWindowInterface* browser) {
++  // BrowserView may still be finishing construction in this notification.
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(&RbWindowRegistry::AddWindow, weak_factory_.GetWeakPtr(),
++                     browser->GetWeakPtr()));
++}
++
++void RbWindowRegistry::AddWindow(
++    base::WeakPtr<BrowserWindowInterface> browser) {
++  if (!browser || browser->IsDeleteScheduled()) {
++    return;
++  }
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser.get());
++  auto* widget = view ? view->GetWidget() : nullptr;
++  if (!widget || !widget->GetNativeWindow() ||
++      !widget->GetNativeWindow()->GetHost()) {
++    return;
++  }
++  const int32_t session = browser->GetSessionID().id();
++  auto it = session_ids_.find(session);
++  if (it == session_ids_.end()) {
++    CHECK_NE(next_id_, 0u);
++    it = session_ids_.emplace(session, next_id_++).first;
++  }
++  const uint32_t id = it->second;
++  if (entries_.contains(id)) {
++    return;
++  }
++  widget->Maximize();
++  widget->GetNativeWindow()->GetHost()->SetBoundsInPixels(
++      display::win::GetScreenWinHeadless()
++          ->GetPrimaryScreenWinDisplay().pixel_bounds());
++  auto entry = std::make_unique<Entry>(this, id, browser.get(), widget);
++  entry->last_info_ = entry->Info();
++  auto info = entry->last_info_->Clone();
++  entries_.emplace(id, std::move(entry));
++  client_->WindowAdded(std::move(info));
++  if (widget->IsActive()) {
++    OnBrowserActivated(browser.get());
++  }
++}
++
++void RbWindowRegistry::OnBrowserClosed(BrowserWindowInterface* browser) {
++  auto it = session_ids_.find(browser->GetSessionID().id());
++  if (it != session_ids_.end()) {
++    RemoveWindow(it->second);
++  }
++}
++
++void RbWindowRegistry::RemoveWindow(uint32_t id) {
++  auto it = entries_.find(id);
++  if (it == entries_.end()) {
++    return;
++  }
++  for (Observer& observer : observers_) {
++    observer.OnRbWindowRemoving(id);
++  }
++  entries_.erase(it);
++  if (active_id_ == id) {
++    active_id_ = 0;
++  }
++  if (client_) {
++    client_->WindowRemoved(id);
++  }
++}
++
++void RbWindowRegistry::Changed(uint32_t id) {
++  auto it = entries_.find(id);
++  if (it == entries_.end()) {
++    return;
++  }
++  auto info = it->second->Info();
++  if (info.Equals(it->second->last_info_)) {
++    return;
++  }
++  it->second->last_info_ = info->Clone();
++  for (Observer& observer : observers_) {
++    observer.OnRbWindowChanged(id);
++  }
++  if (client_) {
++    client_->WindowChanged(std::move(info));
++  }
++}
++
++void RbWindowRegistry::ScheduleChanged(uint32_t id) {
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&RbWindowRegistry::Changed,
++                                weak_factory_.GetWeakPtr(), id));
++}
++
++void RbWindowRegistry::OnBrowserActivated(BrowserWindowInterface* browser) {
++  auto it = session_ids_.find(browser->GetSessionID().id());
++  if (!activating_ && it != session_ids_.end()) {
++    ActivateWindow(it->second);
++  }
++}
++
++void RbWindowRegistry::ActivateWindow(uint32_t id) {
++  auto it = entries_.find(id);
++  if (it == entries_.end()) {
++    return;
++  }
++  base::AutoReset<bool> activating(&activating_, true);
++  for (auto& [other_id, entry] : entries_) {
++    if (other_id != id) {
++      entry->widget_->Deactivate();
++    }
++  }
++  const bool changed = active_id_ != id;
++  active_id_ = id;
++  if (focused_) {
++    it->second->widget_->Activate();
++  } else {
++    it->second->widget_->Deactivate();
++  }
++  if (changed && client_) {
++    client_->WindowActivated(id);
++  }
++}
++
++void RbWindowRegistry::Focus(bool focused) {
++  focused_ = focused;
++  if (focused) {
++    ActivateWindow(active_id_);
++  } else {
++    base::AutoReset<bool> activating(&activating_, true);
++    for (auto& [id, entry] : entries_) {
++      entry->widget_->Deactivate();
++    }
++  }
++}
++
++void RbWindowRegistry::MaximizeAll() {
++  for (auto& [id, entry] : entries_) {
++    // Headless Maximize() is a no-op for an already maximized window. Restore
++    // first to recompute its bounds and scale from the updated work area.
++    entry->widget_->Restore();
++    entry->widget_->Maximize();
++    // Avoid DIP-to-pixel round trips adding an odd capture pixel at fractional
++    // DSF. Preserve maximized state while making the root equal monitor pixels.
++    entry->host_->SetBoundsInPixels(display::win::GetScreenWinHeadless()
++                                      ->GetPrimaryScreenWinDisplay()
++                                      .pixel_bounds());
++  }
++}
++
++void RbWindowRegistry::NewWindow(const std::string& url) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  Profile* profile = ProfileManager::GetLastUsedProfileAllowedByPolicy();
++  if (!profile) {
++    return;
++  }
++  if (url.empty()) {
++    chrome::NewEmptyWindow(profile, false);
++    return;
++  }
++  GURL target(url);
++  if (!target.is_valid()) {
++    return;
++  }
++  NavigateParams params(profile, target, ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_WINDOW;
++  params.window_action = NavigateParams::WindowAction::kShowWindow;
++  Navigate(&params);
++}
++
++aura::WindowTreeHost* RbWindowRegistry::GetHost(uint32_t id) const {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  auto it = entries_.find(id);
++  return it == entries_.end() ? nullptr : it->second->host_.get();
++}
++void RbWindowRegistry::AddObserver(Observer* observer) {
++  observers_.AddObserver(observer);
++}
++void RbWindowRegistry::RemoveObserver(Observer* observer) {
++  observers_.RemoveObserver(observer);
++}
++
++}  // namespace rb
+diff --git a/chrome/browser/rb/rb_window_registry.h b/chrome/browser/rb/rb_window_registry.h
+new file mode 100644
+index 0000000000..8d6224454e
+--- /dev/null
++++ b/chrome/browser/rb/rb_window_registry.h
+@@ -0,0 +1,77 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_RB_RB_WINDOW_REGISTRY_H_
++#define CHROME_BROWSER_RB_RB_WINDOW_REGISTRY_H_
++
++#include <cstdint>
++#include <map>
++#include <memory>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/observer_list.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/rb/rb_delegates.h"
++#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++
++namespace aura {
++class WindowTreeHost;
++}
++
++namespace rb {
++
++// UI thread only. At this pin GlobalBrowserCollection replaces BrowserList.
++class RbWindowRegistry final : public RbWindowRegistryDelegate,
++                                 public BrowserCollectionObserver {
++ public:
++  class Observer : public base::CheckedObserver {
++   public:
++    virtual void OnRbWindowChanged(uint32_t id) = 0;
++    // Called before detaching the host, including when the client disconnects.
++    virtual void OnRbWindowRemoving(uint32_t id) = 0;
++  };
++
++  RbWindowRegistry();
++  ~RbWindowRegistry() override;
++  void SetClient(mojom::RbBrowserClient* client) override;
++  void ActivateWindow(uint32_t id) override;
++  void Focus(bool focused) override;
++  void NewWindow(const std::string& url) override;
++
++  aura::WindowTreeHost* GetHost(uint32_t id) const;
++  void MaximizeAll();
++  uint32_t active_window_id() const { return active_id_; }
++  void AddObserver(Observer* observer);
++  void RemoveObserver(Observer* observer);
++
++ private:
++  class Entry;
++  void OnBrowserCreated(BrowserWindowInterface* browser) override;
++  void OnBrowserClosed(BrowserWindowInterface* browser) override;
++  void OnBrowserActivated(BrowserWindowInterface* browser) override;
++  void AddWindow(base::WeakPtr<BrowserWindowInterface> browser);
++  void RemoveWindow(uint32_t id);
++  void Changed(uint32_t id);
++  void ScheduleChanged(uint32_t id);
++
++  raw_ptr<mojom::RbBrowserClient> client_ = nullptr;
++  std::map<uint32_t, std::unique_ptr<Entry>> entries_;
++  // Integer tombstones preserve assigned IDs over disconnect/reconnect without
++  // retaining pointers to browsers whose lifetimes are no longer observed.
++  std::map<int32_t, uint32_t> session_ids_;
++  uint32_t next_id_ = 1;
++  uint32_t active_id_ = 0;
++  bool focused_ = true;
++  bool activating_ = false;
++  base::ObserverList<Observer> observers_;
++  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
++      collection_observation_{this};
++  base::WeakPtrFactory<RbWindowRegistry> weak_factory_{this};
++};
++
++}  // namespace rb
++
++#endif  // CHROME_BROWSER_RB_RB_WINDOW_REGISTRY_H_

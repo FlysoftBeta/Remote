@@ -7,7 +7,7 @@
 ## 1. 管线总览
 
 ```text
-[GPU process / viz]                        [browser process]                 [prts_endpoint (C++, in-tree)]
+[GPU process / viz]                        [browser process]                 [rb_legacy_endpoint (C++, in-tree)]
 FrameSinkVideoCapturerImpl (per browser root)
   OnFrameDamaged → oracle → CopyOutputRequest (blit into D3D11 keyed-mutex pool, same DrawAndSwap)
   OnFrameCaptured(NT handle, info, rects) ──(Mojo; directly to endpoint if S10b, else via browser)──► FrameImport

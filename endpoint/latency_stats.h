@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PRTS_ENDPOINT_LATENCY_STATS_H_
-#define PRTS_ENDPOINT_LATENCY_STATS_H_
+#ifndef RB_LEGACY_ENDPOINT_LATENCY_STATS_H_
+#define RB_LEGACY_ENDPOINT_LATENCY_STATS_H_
 
 #include <stdlib.h>
 
@@ -19,13 +19,13 @@
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
 
-namespace prts {
-// m3-trace: per-frame / per-input TimeTicks trace lines ("PRTS TR ...", microseconds) when the environment variable PRTS_TRACE is set.
+namespace re {
+// m3-trace: per-frame / per-input TimeTicks trace lines ("PRTS TR ...", microseconds) when the environment variable RB_TRACE is set.
 inline bool TraceEnabled() {
   static const bool on = [] {
     char* v = nullptr;
     size_t n = 0;
-    bool set = _dupenv_s(&v, &n, "PRTS_TRACE") == 0 && v != nullptr;
+    bool set = _dupenv_s(&v, &n, "RB_TRACE") == 0 && v != nullptr;
     free(v);
     return set;
   }();
@@ -103,6 +103,6 @@ class LatencyStats {
   std::map<std::string, std::deque<Sample>> stages_;
   std::map<int64_t, base::TimeTicks> source_ready_;
 };
-}  // namespace prts
+}  // namespace re
 
-#endif  // PRTS_ENDPOINT_LATENCY_STATS_H_
+#endif  // RB_LEGACY_ENDPOINT_LATENCY_STATS_H_

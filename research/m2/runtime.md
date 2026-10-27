@@ -10,9 +10,9 @@ Started: 2026-10-26. Scope: existing Chromium build; no Chromium edits/builds or
 
 ## Work / files changed
 - Created task notes before investigation. Task completed approximately 10:17 SGT, 2026-10-26.
-- Repo files changed by this task: `scripts/grant-lpac-acl.ps1` (new), `tools/latency/remote-page.html`, `tools/latency/measure.js`, `tools/latency/run.mjs`. No endpoint C++ changes, Chromium source changes, Chrome builds, or git commits.
+- Repo files changed by this task: `tools/isolation/grant-lpac-acl.ps1` (new), `tools/latency/remote-page.html`, `tools/latency/measure.js`, `tools/latency/run.mjs`. No endpoint C++ changes, Chromium source changes, Chrome builds, or git commits.
 - Host changes: inheritable RX ACEs for S-1-15-2-1 / S-1-15-2-2 on `C:/src/chromium/src/out/dev` and `C:/src/tmp/m1`. Original and final SDDL in acl-before.txt / acl-final.txt. Script rerun successfully (acl-grant.txt / acl-reapply.txt), preserves other principals and adds no writes.
-- Deployment: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/grant-lpac-acl.ps1 -BuildDirectory C:\path\to\deployed\build -ProfileParent C:\path\to\dedicated\profiles`. Apply after deploying component binaries. Use elevation if directory ownership requires it. No sandbox-disabling flags are needed in the measured setup; H2 was not used.
+- Deployment: `powershell -NoProfile -ExecutionPolicy Bypass -File tools/isolation/grant-lpac-acl.ps1 -BuildDirectory C:\path\to\deployed\build -ProfileParent C:\path\to\dedicated\profiles`. Apply after deploying component binaries. Use elevation if directory ownership requires it. No sandbox-disabling flags are needed in the measured setup; H2 was not used.
 
 ## Evidence and API checks
 [V] = inspected at pinned checkout; [I] = inference.

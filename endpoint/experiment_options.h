@@ -1,13 +1,13 @@
 // Copyright 2026 The remotekit Authors
 // Use of this source code is governed by a BSD-style license.
 
-#ifndef PRTS_ENDPOINT_EXPERIMENT_OPTIONS_H_
-#define PRTS_ENDPOINT_EXPERIMENT_OPTIONS_H_
+#ifndef RB_LEGACY_ENDPOINT_EXPERIMENT_OPTIONS_H_
+#define RB_LEGACY_ENDPOINT_EXPERIMENT_OPTIONS_H_
 
 #include <optional>
 #include <string>
 
-namespace prts {
+namespace re {
 
 // Parsed once after CommandLine::Init; immutable on all encoder/RTC queues.
 struct ExperimentOptions {
@@ -32,6 +32,6 @@ struct ExperimentOptions {
 
 const ExperimentOptions& GetExperimentOptions();
 
-}  // namespace prts
+}  // namespace re
 
-#endif  // PRTS_ENDPOINT_EXPERIMENT_OPTIONS_H_
+#endif  // RB_LEGACY_ENDPOINT_EXPERIMENT_OPTIONS_H_

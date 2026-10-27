@@ -7,7 +7,7 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/endpoint_link.h"
+#include "rb_legacy_endpoint/endpoint_link.h"
 
 #include <d3d11_4.h>
 #include <wrl/client.h>
@@ -17,11 +17,11 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/process/launch.h"
-#include "chrome/browser/prts/prts_switches.h"
+#include "chrome/browser/rb/rb_switches.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
 
-namespace prts_endpoint {
+namespace re {
 
 EndpointLink::EndpointLink(Delegate* delegate)
     : delegate_(delegate), client_receiver_(delegate) {
@@ -42,9 +42,9 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
   }
   mojo::PlatformChannel channel;
   base::LaunchOptions options;
-  command_line.AppendSwitchASCII(prts::switches::kPrtsMojo,
+  command_line.AppendSwitchASCII(rb::switches::kRbMojo,
                                  channel.PrepareToPassRemoteEndpoint(options));
-  // PRTS: select timeline capture by default only if the consumer supports it.
+  // RB: select timeline capture by default only if the consumer supports it.
   auto mode = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
       "capture-sync");
   if (!mode.empty() && mode != "fence" && mode != "mutex") {
@@ -67,9 +67,9 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
                                      IID_PPV_ARGS(&fence)));
   LOG(INFO) << "PRTS capture sync=" << (supported ? "fence" : "mutex")
             << " requested=" << (mode.empty() ? "auto" : mode);
-  command_line.AppendSwitchASCII("prts-capture-sync",
+  command_line.AppendSwitchASCII("rb-capture-sync",
                                  supported ? "fence" : "mutex");
-  command_line.AppendSwitch("prts-remote");
+  command_line.AppendSwitch("rb-remote");
   command_line.AppendSwitchASCII("headless", "new");
   browser_process_ = base::LaunchProcess(command_line, options);
   channel.RemoteProcessLaunchAttempted();  // Required on success AND failure.
@@ -84,7 +84,7 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
     return false;
   }
   browser_.Bind(
-      mojo::PendingRemote<prts::mojom::PrtsBrowser>(std::move(pipe), 0));
+      mojo::PendingRemote<rb::mojom::RbBrowser>(std::move(pipe), 0));
   browser_.set_disconnect_handler(
       base::BindOnce(&EndpointLink::OnDisconnect, weak_factory_.GetWeakPtr()));
   auto client = client_receiver_.BindNewPipeAndPassRemote();
@@ -94,7 +94,7 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
   return true;
 }
 
-prts::mojom::PrtsBrowser* EndpointLink::browser() {
+rb::mojom::RbBrowser* EndpointLink::browser() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return browser_.is_bound() ? browser_.get() : nullptr;
 }
@@ -109,4 +109,4 @@ void EndpointLink::OnDisconnect() {
   delegate_->OnDisconnect();  // Last operation: delegate may delete this.
 }
 
-}  // namespace prts_endpoint
+}  // namespace re

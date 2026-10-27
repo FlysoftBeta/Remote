@@ -5,7 +5,7 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
-#include "prts_endpoint/d3d_native_frame.h"
+#include "rb_legacy_endpoint/d3d_native_frame.h"
 
 #include <d3d11_1.h>
 #include <dxgi1_4.h>
@@ -15,11 +15,11 @@
 #include <vector>
 
 #include "base/logging.h"
-#include "prts_endpoint/latency_stats.h"
+#include "rb_legacy_endpoint/latency_stats.h"
 #include "third_party/webrtc/api/make_ref_counted.h"
 #include "third_party/webrtc_overrides/rtc_base/logging.h"
 
-namespace prts {
+namespace re {
 using Microsoft::WRL::ComPtr;
 namespace {
 constexpr DXGI_COLOR_SPACE_TYPE kInputColor =
@@ -206,7 +206,7 @@ class D3DNativeFramePool::Impl {
     }
     const auto acquired = base::TimeTicks::Now();
     context_->CopyResource(slot->bgra.Get(), texture);
-    // PRTS: incoming GPU Wait was queued on this same context by the source.
+    // RB: incoming GPU Wait was queued on this same context by the source.
     if (source_read_done) {
       context_->End(source_read_done);
       *source_read_submitted = true;
@@ -290,4 +290,4 @@ bool D3DNativeFramePool::healthy() const {
 void D3DNativeFramePool::ClearImports() {
   impl_->ClearImports();
 }
-}  // namespace prts
+}  // namespace re

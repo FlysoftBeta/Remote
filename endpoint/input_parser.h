@@ -1,5 +1,5 @@
-#ifndef PRTS_ENDPOINT_INPUT_PARSER_H_
-#define PRTS_ENDPOINT_INPUT_PARSER_H_
+#ifndef RB_LEGACY_ENDPOINT_INPUT_PARSER_H_
+#define RB_LEGACY_ENDPOINT_INPUT_PARSER_H_
 
 #include <cstdint>
 #include <span>
@@ -7,10 +7,10 @@
 
 #include "base/time/time.h"
 #include "base/values.h"
-#include "prts_endpoint/frame_source.h"
+#include "rb_legacy_endpoint/frame_source.h"
 
-namespace prts {
-// Plain mirrors of contract/prts.mojom; no Mojo dependency in this skeleton.
+namespace re {
+// Plain mirrors of contract/rb.mojom; no Mojo dependency in this skeleton.
 enum class PointerAction { kDown, kMove, kUp, kCancel, kLeave };
 enum class PointerType { kMouse, kTouch, kPen };
 struct PointerInput {
@@ -71,5 +71,5 @@ class InputParser {
   InputSink& sink_;
   uint8_t mods_ = 0;
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_INPUT_PARSER_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_INPUT_PARSER_H_

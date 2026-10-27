@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef PRTS_ENDPOINT_BROWSER_SESSION_H_
-#define PRTS_ENDPOINT_BROWSER_SESSION_H_
+#ifndef RB_LEGACY_ENDPOINT_BROWSER_SESSION_H_
+#define RB_LEGACY_ENDPOINT_BROWSER_SESSION_H_
 
 #include <cstdint>
 #include <map>
@@ -13,13 +13,13 @@
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
-#include "prts_endpoint/d3d_frame_source.h"
-#include "prts_endpoint/endpoint_link.h"
-#include "prts_endpoint/input_parser.h"
+#include "rb_legacy_endpoint/d3d_frame_source.h"
+#include "rb_legacy_endpoint/endpoint_link.h"
+#include "rb_legacy_endpoint/input_parser.h"
 
-namespace prts {
+namespace re {
 // Main-sequence browser owner; InputSink methods marshal from RTC signaling.
-class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
+class BrowserSession final : public re::EndpointLink::Delegate,
                              public InputSink {
  public:
   using ControlSender = base::RepeatingCallback<void(base::DictValue)>;
@@ -30,13 +30,13 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
   void SetPeerCallbacks(ControlSender send, base::RepeatingClosure keyframe);
   bool Launch(base::CommandLine command);
   void Shutdown();
-  void Hello(mojom::HelloInfoPtr info) override;
-  void WindowAdded(mojom::WindowInfoPtr info) override;
-  void WindowChanged(mojom::WindowInfoPtr info) override;
+  void Hello(rb::mojom::HelloInfoPtr info) override;
+  void WindowAdded(rb::mojom::WindowInfoPtr info) override;
+  void WindowChanged(rb::mojom::WindowInfoPtr info) override;
   void WindowRemoved(uint32_t id) override;
   void WindowActivated(uint32_t id) override;
   void CursorChanged(const std::string& css) override;
-  void ImeStateChanged(mojom::ImeStatePtr state) override;
+  void ImeStateChanged(rb::mojom::ImeStatePtr state) override;
   void VirtualKeyboard(bool show, uint32_t seq) override;
   void OnDisconnect() override;
   void Pointer(const PointerInput& input) override;
@@ -57,8 +57,8 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
   ControlSender send_;
   base::RepeatingClosure keyframe_;
   scoped_refptr<base::SingleThreadTaskRunner> main_runner_;
-  prts_endpoint::EndpointLink link_{this};
-  std::map<uint32_t, mojom::WindowInfoPtr> windows_;
+  re::EndpointLink link_{this};
+  std::map<uint32_t, rb::mojom::WindowInfoPtr> windows_;
   // Latest browser state is replayed after each viewer ctl hello.
   std::map<std::string, base::DictValue> state_messages_;
   uint32_t ime_seq_ = 0;
@@ -68,5 +68,5 @@ class BrowserSession final : public prts_endpoint::EndpointLink::Delegate,
   base::WeakPtr<BrowserSession> weak_;
   base::WeakPtrFactory<BrowserSession> weak_factory_{this};
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_BROWSER_SESSION_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_BROWSER_SESSION_H_

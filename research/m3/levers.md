@@ -7,7 +7,7 @@ Evidence logs: C:\src\tmp\m2\latency\{fps60,baseline1080}-endpoint.log, fps60-ch
 - `chromium.diff` (git -C C:\src\chromium\src apply --check: OK): ui/gl/vsync_thread_win.cc, drift-free pacing for `--fake-vsync-rate`.
 - `remotekit.diff` (git -C ...\remotekit apply --check: OK): endpoint/main.cc, (a) 1 ms timer + power-throttling opt-out (default on, `--no-hires-timer` disables), (b) `--webrtc-field-trials=<Trial/Group/...>` (opt-in, default none).
   Base is the working-tree main.cc (staged by the vpl merge). peer.cc is UU (conflicted) so it is NOT touched; the stats snippet for peer.cc is in section 3.
-- a/ b/ trees: `chromium/{a,b}`, `remotekit/{a,b}`.
+- a/ b/ trees: `browser/{a,b}`, `remotekit/{a,b}`.
 
 ## 1. Why viz capture_begin -> capture_end is ~12.7 ms
 

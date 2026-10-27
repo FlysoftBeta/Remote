@@ -1,5 +1,5 @@
-#ifndef PRTS_ENDPOINT_SIGNALING_H_
-#define PRTS_ENDPOINT_SIGNALING_H_
+#ifndef RB_LEGACY_ENDPOINT_SIGNALING_H_
+#define RB_LEGACY_ENDPOINT_SIGNALING_H_
 
 #include <condition_variable>
 #include <functional>
@@ -11,7 +11,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 
-namespace prts {
+namespace re {
 // A QPC-derived wall clock shared by probe replies and synthetic markers.
 class Clock {
  public:
@@ -45,5 +45,5 @@ class Signaling {
   bool stopping_ = false;
   bool valid_ = true;  // Read only after joining reader_.
 };
-}  // namespace prts
-#endif  // PRTS_ENDPOINT_SIGNALING_H_
+}  // namespace re
+#endif  // RB_LEGACY_ENDPOINT_SIGNALING_H_

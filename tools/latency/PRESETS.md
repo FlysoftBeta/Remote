@@ -11,7 +11,7 @@ M4 endpoint start/max defaults are now **8000 kbps**. Shared-fence capture remai
 Stop the previous test chain first. Set `ENDPOINT_PATH` and `ENDPOINT_ARGS` as for the ordinary control plane, including the Chrome executable and a dedicated browser profile. PowerShell example from the repository root:
 
 ```powershell
-$env:ENDPOINT_PATH = 'C:/src/chromium/src/out/dev/prts_endpoint.exe'
+$env:ENDPOINT_PATH = 'C:/src/chromium/src/out/dev/rb_legacy_endpoint.exe'
 $env:ENDPOINT_ARGS = '--chrome=C:/src/chromium/src/out/dev/chrome.exe --user-data-dir=C:/src/tmp/m3/matrix2/adhoc-profile --cr-enable-logging --cr-remote-debugging-port=9333'
 $env:PTRACK_TMP = 'C:/src/tmp/m3/matrix2/adhoc'
 node tools/latency/run.mjs --preset m3-combined --scenario S --port 8300 --secs 60 --netem d25j5-c12 --remote-cdp 9333 --viewer-window-size 1928,1162 --endpoint-log C:/src/tmp/m3/matrix2/adhoc-chain.log *> C:/src/tmp/m3/matrix2/adhoc-chain.log
@@ -25,7 +25,7 @@ The M3 matrix found one runtime fallback under Wi-Fi shaping: Reset requested 20
 
 M4 endpoint tuning switches belong in `ENDPOINT_ARGS`: `--min-kbps`, `--start-kbps`, `--max-kbps` (min <= start <= max), `--vpl-rc=vbr|cbr`, `--vpl-max-frame-factor`, `--vpl-vbv-frames` or `--vpl-vbv-ms`, `--vpl-tu`, `--vpl-lowpower=on|off`, `--vpl-intra-refresh`, `--vpl-slices`, `--vpl-profile=cb`, `--playout-delay=0,0|none`, and `--fec=off|ulpfec|flexfec`. High profile is gated. Frame-size factor is applied at Init and retained on Reset. Reports preserve requested options, actual VPL readbacks and negotiated peer settings in `pipeline.encoder`; verify the actual backend throughout each run. ULPFEC disables generic NACK at this pin, retaining PLI/FIR, so it changes the recovery policy. Results and limitations: [M4 experiments](../../research/m4/experiments.md).
 
-M4 acceptance uses `summary.latDecoded` and `summary.i2decoded` ending at rVFC `presentationTime`. `summary.lat` and `summary.i2display` retain `expectedDisplayTime` glass estimates; real-endpoint `summary.i2p` is the legacy input-flip callback metric. Set `PRTS_TRACE=1`, `RELAY_TRACE=1`, `TRACE_OUT=<task trace directory>`, and pass `--trace` for correlated endpoint/relay/viewer/source traces.
+M4 acceptance uses `summary.latDecoded` and `summary.i2decoded` ending at rVFC `presentationTime`. `summary.lat` and `summary.i2display` retain `expectedDisplayTime` glass estimates; real-endpoint `summary.i2p` is the legacy input-flip callback metric. Set `RB_TRACE=1`, `RELAY_TRACE=1`, `TRACE_OUT=<task trace directory>`, and pass `--trace` for correlated endpoint/relay/viewer/source traces.
 
 For an alternate viewer, use `--viewer-exe <path>` (alias of `--viewer-browser`) and `--viewer-flags '<switches>'`. Extra flags apply only to the viewer; double-quote values containing spaces within that string. Edge remains the default. Genuine Google Chrome 89 on this Windows 11 host was measured headed with:
 

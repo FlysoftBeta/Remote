@@ -1,8 +1,8 @@
 // Copyright 2026 The remotekit Authors
 // Use of this source code is governed by a BSD-style license.
 
-#ifndef PRTS_ENDPOINT_VPL_ENCODER_H_
-#define PRTS_ENDPOINT_VPL_ENCODER_H_
+#ifndef RB_LEGACY_ENDPOINT_VPL_ENCODER_H_
+#define RB_LEGACY_ENDPOINT_VPL_ENCODER_H_
 
 #include <d3d11.h>
 #include <winsock2.h>
@@ -21,7 +21,7 @@
 #include "third_party/webrtc/api/video_codecs/video_encoder.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder_factory.h"
 
-namespace prts {
+namespace re {
 
 // Shared by import and encoder queues. Exact COM device identity gates native
 // output; an adapter/device replacement first travels through the I420 bridge.
@@ -136,6 +136,6 @@ class VplEncoderFactory final : public webrtc::VideoEncoderFactory {
   bool use_vpl_ = false;
 };
 
-}  // namespace prts
+}  // namespace re
 
-#endif  // PRTS_ENDPOINT_VPL_ENCODER_H_
+#endif  // RB_LEGACY_ENDPOINT_VPL_ENCODER_H_
