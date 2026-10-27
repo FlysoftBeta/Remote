@@ -6,6 +6,30 @@
 (function () {
   'use strict';
   var q = new URLSearchParams(location.search);
+  var picker = document.getElementById('instance-picker');
+  function refreshInstances() {
+    var api = (location.protocol === 'https:' ? 'https://' : 'http://') + (q.get('cp') || location.host) + '/api/instances';
+    fetch(api, { headers: q.get('token') ? { Authorization: 'Bearer ' + q.get('token') } : {} }).then(function (r) {
+      if (!r.ok) throw new Error('instance list unavailable');
+      return r.json();
+    }).then(function (rows) {
+      var selected = q.get('instance') || 'default';
+      picker.textContent = '';
+      // Preserve links to externally registered endpoints, which need no managed instance.
+      if (!rows.some(function (row) { return row.id === selected; })) rows.unshift({ id: selected, name: selected, state: 'external' });
+      rows.forEach(function (row) {
+        var option = document.createElement('option'); option.value = row.id;
+        option.textContent = row.name + ' (' + row.state + ')'; option.selected = row.id === selected;
+        picker.appendChild(option);
+      });
+      picker.hidden = false;
+    }).catch(function () {});
+  }
+  picker.addEventListener('change', function () {
+    var url = new URL(location.href); url.searchParams.set('instance', picker.value); location.href = url.href;
+  });
+  ['keydown', 'keyup'].forEach(function (type) { picker.addEventListener(type, function (e) { e.stopPropagation(); }); });
+  refreshInstances(); setInterval(refreshInstances, 10000);
   var field = window.RKField || null;
   var video = document.getElementById('video'), stage = document.getElementById('stage');
   var overlay = document.getElementById('overlay'), statusEl = document.getElementById('status');

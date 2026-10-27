@@ -68,7 +68,8 @@ function browser(exe, name, url, oldHeadless) {
 const alreadyUp = await up();
 if (preset && alreadyUp) throw new Error('--preset must launch its own control-plane; stop the existing one first');
 if (!alreadyUp) {
-  const env = { ...process.env };
+  // A harness launch owns disposable CP state, just as it owns browser profiles.
+  const env = { ...process.env, CP_DATA_DIR: path.join(TMP, `cp-${port}-${Date.now()}`) };
   if (preset) {
     const scenario = arg('scenario', 'marker');
     if (!['marker', 'S', 'V', 'G'].includes(scenario)) throw new Error('--scenario must be marker, S, V or G');

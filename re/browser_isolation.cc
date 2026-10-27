@@ -184,6 +184,9 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& command,
   }
   if (mode == "off") {
     if (endpoint.HasSwitch("job-ui-limits") ||
+        endpoint.HasSwitch("job-memory-mb") ||
+        endpoint.HasSwitch("job-cpu-rate") ||
+        endpoint.HasSwitch("job-process-count") ||
         endpoint.HasSwitch("isolation-capabilities")) {
       LOG(ERROR)
           << "Isolation options require --isolation=job|lpac|appcontainer";
@@ -191,6 +194,60 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& command,
     }
     return base::LaunchProcess(command, options);
   }
+  // Preserve the caller's kill-on-close flag while adding whole-browser limits.
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+  if (!::QueryInformationJobObject(options.job_handle,
+                                   JobObjectExtendedLimitInformation, &limits,
+                                   sizeof(limits), nullptr)) {
+    PLOG(ERROR) << "QueryInformationJobObject(limits)";
+    return base::Process();
+  }
+  unsigned int memory_mb = 0, process_count = 0, cpu_rate = 0;
+  const struct {
+    const char* name;
+    unsigned int* value;
+    unsigned int max;
+  } job_values[] = {{"job-memory-mb", &memory_mb, 1048576},
+                    {"job-process-count", &process_count, 65535},
+                    {"job-cpu-rate", &cpu_rate, 10000}};
+  for (const auto& value : job_values) {
+    if (endpoint.HasSwitch(value.name) &&
+        (!base::StringToUint(endpoint.GetSwitchValueASCII(value.name),
+                             value.value) ||
+         !*value.value || *value.value > value.max)) {
+      LOG(ERROR) << "Invalid --" << value.name;
+      return base::Process();
+    }
+  }
+  if (memory_mb) {
+    limits.JobMemoryLimit = static_cast<SIZE_T>(memory_mb) * 1024 * 1024;
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+  }
+  if (process_count) {
+    limits.BasicLimitInformation.ActiveProcessLimit = process_count;
+    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+  }
+  if (!::SetInformationJobObject(options.job_handle,
+                                 JobObjectExtendedLimitInformation, &limits,
+                                 sizeof(limits))) {
+    PLOG(ERROR) << "SetInformationJobObject(limits)";
+    return base::Process();
+  }
+  if (cpu_rate) {
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION cpu = {};
+    cpu.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE |
+                       JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    cpu.CpuRate = cpu_rate;  // 1..10000 = 0.01%..100% of all system CPUs.
+    if (!::SetInformationJobObject(options.job_handle,
+                                   JobObjectCpuRateControlInformation, &cpu,
+                                   sizeof(cpu))) {
+      PLOG(ERROR) << "SetInformationJobObject(cpu)";
+      return base::Process();
+    }
+  }
+  LOG(INFO) << "PRTS job_memory_mb=" << memory_mb
+            << " job_process_count=" << process_count
+            << " job_cpu_rate=" << cpu_rate;
   DWORD ui_limits = 0;
   const struct {
     const char* name;

@@ -177,7 +177,7 @@ async function main() {
   console.log(`INFO profiles=${runDir}`);
   await freePort(options.port); // Refuse to reuse or kill another server.
   const base = `http://127.0.0.1:${options.port}`;
-  const env = { ...process.env, CP_TOKEN: '', ENDPOINT_PATH: '', REPORT_FILE: '', TEMP: runDir, TMP: runDir };
+  const env = { ...process.env, CP_TOKEN: '', ENDPOINT_PATH: '', REPORT_FILE: '', CP_DATA_DIR: path.join(runDir, 'cp-data'), TEMP: runDir, TMP: runDir };
   const cp = child(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(options.port)], 'control-plane', env);
   await poll(async () => {
     if (cp.smokeError || cp.exitCode !== null) throw cp.smokeError || new Error('control-plane exited');

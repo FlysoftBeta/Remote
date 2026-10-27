@@ -16,6 +16,7 @@
          resize: none; overflow: hidden; color: transparent; background: transparent; caret-color: transparent; z-index: 1; font-size: 16px; }
   #kbd { position: fixed; right: 12px; bottom: 12px; z-index: 4; display: none; font: 22px sans-serif; padding: 10px 14px;
          border-radius: 8px; border: 0; background: rgba(255,255,255,.85); }
+  #instance-picker { position: fixed; right: 8px; top: 8px; z-index: 4; max-width: 220px; font: 13px sans-serif; }
 </style>
 <div id="stage" tabindex="0"><video id="video" autoplay playsinline muted></video></div>
 <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
@@ -23,6 +24,7 @@
 <button id="kbd" type="button" aria-label="Show keyboard">&#9000;</button>
 <div id="overlay"></div>
 <div id="status">connecting</div>
+<select id="instance-picker" aria-label="Instance" hidden></select>
 <script src="presenter.js"></script>
 <script src="protocol.js"></script>
 <script src="/tools/latency/marker.js"></script>

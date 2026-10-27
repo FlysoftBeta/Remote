@@ -7,8 +7,9 @@ A Rust rewrite was tried and rolled back (kept in `archive/rust-re/`, [decisions
 
 ## Process structure
 One `re.exe` per instance, started by the [control-plane](control-plane.md) (`ENDPOINT_PATH`, `--instance=<id>`) and speaking the framed JSON
-signalling set on stdin/stdout (stderr = log; stdout carries only frames, sends are bounded to 8 MiB). There is no separate supervisor: the
-control-plane owns the endpoint and `re` owns its rb browser (it launches chrome.exe with the inherited Mojo end, `--rb-remote
+signalling set on stdin/stdout (stderr = log; stdout carries only frames, sends are bounded to 8 MiB). The
+control-plane supervises endpoints independently, persists their profiles/configuration and restarts crashes with backoff
+([management API and data layout](control-plane.md#instances-and-profiles)); `re` owns its rb browser (it launches chrome.exe with the inherited Mojo end, `--rb-remote
 --headless=new --screen-info --window-size --disable-legacy-window`, and forwards every `--cr-<switch>[=value]` as `--<switch>[=value]]`).
 A fault in one encoder, driver or browser takes down only that instance.
 
@@ -70,12 +71,17 @@ reorder).
 | Group | Switches |
 |---|---|
 | Launch | `--instance`, `--chrome=<exe>`, `--user-data-dir`, `--url`, `--window-size`, `--cr-<switch>` (forwarded to chrome, e.g. `--cr-enable-logging`, `--cr-fake-vsync-rate=60`, `--cr-remote-debugging-port`), `--synthetic` (no browser) |
+| Isolation / limits | `--isolation=off\|job\|lpac\|appcontainer` (default off), `--job-ui-limits=none` (see [isolation](isolation.md)); `--job-memory-mb=1..1048576` (whole browser job committed memory in MiB), `--job-cpu-rate=1..10000` (Windows hard cap in 0.01% units of all CPUs), `--job-process-count=1..65535` (whole browser job process count). Resource limits are opt-in and require isolation other than off |
 | Video | `--fps` (30/60, default 60), `--min-kbps --start-kbps --max-kbps`, `--capture-sync=fence` (default) or `mutex` |
 | Encoder | `--encoder`, `--vpl-rc --vpl-max-frame-factor --vpl-vbv-frames --vpl-vbv-ms --vpl-tu --vpl-lowpower --vpl-intra-refresh --vpl-slices --vpl-profile`, `--nvenc-preset` |
 | WebRTC | `--playout-delay=0,0` or `none`, `--fec=off`, `ulpfec`, `flexfec` (ULPFEC disables generic NACK), `--webrtc-field-trials=...` (e.g. `WebRTC-Video-Pacing/factor:2.5/`) |
 | Timing | hires 1 ms timer on by default, `--no-hires-timer` for A/B |
 
 Switch values and the old `--vpl-*` names are unchanged by the encoder refactor. Frame-size factor is applied at Init and retained on Reset.
+Job limits apply to the browser tree, not the endpoint/control-plane. They preserve `KILL_ON_JOB_CLOSE`; invalid limits fail launch.
+Too-small memory/process limits can prevent Chromium startup and cause CP backoff. An omitted limit leaves it uncapped.
+EOF on stdin requests clean endpoint shutdown; CP falls back to killing the tree when shutdown exceeds its grace period.
+Each managed instance receives its own profile under `<CP_DATA_DIR>/profiles/<profile-id>`; CP prevents concurrent use within that manager.
 
 ## Trace
 `RB_TRACE=1` in the environment makes `re` log per-frame and per-input `PRTS TR ...` lines (TimeTicks in microseconds, bounded to the last

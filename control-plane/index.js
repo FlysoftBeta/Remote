@@ -8,7 +8,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { spawnEndpoint } from './endpoint.js';
+import { endpointArgs } from './endpoint.js';
+import { InstanceManager, ApiError } from './manager.js';
 
 const V = 1;
 const repo = fileURLToPath(new URL('../', import.meta.url));
@@ -144,10 +145,44 @@ function readBody(req, limit = 1 << 20) {
   });
 }
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+const manager = new InstanceManager({
+  dataDir: arg('--data-dir', 'CP_DATA_DIR') || path.join(repo, '.data'), endpointPath: process.env.ENDPOINT_PATH,
+  legacyArgs: endpointArgs(), onMessage, onClose, log, viewerConnected: id => !!instances.get(id)?.viewer
+});
+
+async function management(req, res, url) {
+  if (TOKEN && req.headers.authorization !== `Bearer ${TOKEN}` && url.searchParams.get('token') !== TOKEN)
+    return json(res, 401, { error: 'auth' });
+  if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin &&
+      ![`http://${req.headers.host}`, `https://${req.headers.host}`].includes(req.headers.origin))
+    return json(res, 403, { error: 'origin mismatch' });
+  try {
+    const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    const [type, id, action] = parts.slice(1);
+    const body = async () => JSON.parse(await readBody(req, 64 * 1024));
+    if (type === 'instances') {
+      if (parts.length === 2 && req.method === 'GET') return json(res, 200, manager.list());
+      if (parts.length === 2 && req.method === 'POST') return json(res, 201, await manager.create(await body()));
+      if (parts.length === 3 && req.method === 'GET') return json(res, 200, manager.get(id));
+      if (parts.length === 3 && req.method === 'PATCH') return json(res, 200, await manager.patch(id, await body()));
+      if (parts.length === 3 && req.method === 'DELETE') { await manager.delete(id); return res.writeHead(204).end(); }
+      if (parts.length === 4 && req.method === 'POST' && ['start', 'stop', 'restart'].includes(action)) return json(res, 200, await manager[action](id));
+    } else if (type === 'profiles') {
+      if (parts.length === 2 && req.method === 'GET') return json(res, 200, manager.listProfiles());
+      if (parts.length === 2 && req.method === 'POST') return json(res, 201, await manager.createProfile(await body()));
+      if (parts.length === 3 && req.method === 'DELETE') { await manager.deleteProfile(id); return res.writeHead(204).end(); }
+    }
+    return json(res, 405, { error: 'unsupported management route or method' });
+  } catch (e) {
+    if (!(e instanceof ApiError) && !(e instanceof SyntaxError)) log(`management request failed: ${e.stack}`);
+    return json(res, e.status || (e instanceof SyntaxError ? 400 : 500), { error: e.status || e instanceof SyntaxError ? e.message : 'management operation failed; see server log' });
+  }
+}
 
 const server = makeServer(async (req, res) => {
   try {
   const url = new URL(req.url, 'http://x');
+  if (/^\/api\/(instances|profiles)(\/|$)/.test(url.pathname)) return await management(req, res, url);
   if (url.pathname === '/field-config') return json(res, fieldConfig ? 200 : 404, fieldConfig || { error: 'field mode disabled' });
   if (url.pathname === '/field-report') {
     if (!fieldDir) return json(res, 404, { error: 'field mode disabled' });
@@ -224,32 +259,12 @@ setInterval(() => wss.clients.forEach(ws => {
   c.once('pong', () => { c._rkDead = false; });
 }), 15000).unref();
 
-// Optional in-tree endpoint over stdio (06 section 1.4), restarted with backoff when it exits (crash, or the browser died and
-// the endpoint followed). The viewer keeps its signalling socket and renegotiates when the new endpoint registers.
-const RESTART_DELAYS_MS = [1000, 2000, 5000], STABLE_MS = 60000, MAX_FAST_FAILURES = 5;
-let stopping = false;
-function superviseEndpoint(exe) {
-  let failures = 0;
-  const launch = () => {
-    const started = Date.now();
-    const conn = spawnEndpoint(exe, 'default', onMessage, c => {
-      onClose(c);
-      if (stopping) return;
-      const upMs = Date.now() - started;
-      if (upMs >= STABLE_MS) failures = 0;
-      if (++failures > MAX_FAST_FAILURES) {
-        log(`endpoint failed ${failures} times without running ${STABLE_MS / 1000} s; giving up, restart the control plane`);
-        return;
-      }
-      const delay = RESTART_DELAYS_MS[Math.min(failures - 1, RESTART_DELAYS_MS.length - 1)];
-      log(`endpoint exited after ${(upMs / 1000).toFixed(1)} s; restart ${failures}/${MAX_FAST_FAILURES} in ${delay / 1000} s`);
-      setTimeout(launch, delay);
-    }, log);
-    conn.role = 'endpoint';
-  };
-  launch();
-}
-if (process.env.ENDPOINT_PATH) superviseEndpoint(process.env.ENDPOINT_PATH);
-
+await manager.boot();
 server.listen(PORT, process.env.HOST || undefined, () => log(`control-plane v${V} on ${TLS_ON ? 'https' : 'http'}://localhost:${server.address().port}/ (mock endpoint: /mock)`));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; process.exit(0); });
+let stopping = false;
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => {
+  if (stopping) return;
+  stopping = true; server.close();
+  try { await manager.shutdown(); process.exit(0); }
+  catch (e) { log(`shutdown failed: ${e.message}`); process.exit(1); }
+});
