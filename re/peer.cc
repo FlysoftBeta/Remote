@@ -7,6 +7,7 @@
 
 #include "re/encoder_factory.h"
 #include "re/vpl_encoder.h"
+#include <algorithm>
 #include <span>
 #include <string>
 #include <string_view>
@@ -209,12 +210,21 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
              webrtc::MediaType::VIDEO).codecs) {
       if ((codec.name == "H264" &&
            codec.parameters == H264Format().parameters) ||
-          codec.name == "rtx" ||
+          codec.name == "VP8" || codec.name == "rtx" ||
           (experiments.fec == "ulpfec" &&
            (codec.name == "red" || codec.name == "ulpfec")) ||
           (experiments.fec == "flexfec" && codec.name == "flexfec-03"))
         codecs.push_back(codec);
     }
+    // Sender capabilities need not follow our factory's advertised order.
+    // Keep the tuned H.264 path preferred, with VP8 as the primary fallback.
+    auto rank = [](const auto& codec) {
+      return codec.name == "H264" ? 0 : codec.name == "VP8" ? 1 : 2;
+    };
+    std::stable_sort(codecs.begin(), codecs.end(),
+                     [&](const auto& a, const auto& b) {
+                       return rank(a) < rank(b);
+                     });
     auto codec_error = transceiver_->SetCodecPreferences(codecs);
     if (!codec_error.ok()) {
       Fail(codec_error.message());
@@ -499,6 +509,8 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
                                   s.Fail("empty local SDP");
                                   return;
                                 }
+                                VLOG(1) << "PRTS offer SDP sid=" << s.sid_
+                                        << "\n" << sdp;
                                 s.owner_.signaling_.Send(base::DictValue()
                                     .Set("t", "offer").Set("sid", s.sid_)
                                     .Set("sdp", sdp));
@@ -696,7 +708,7 @@ bool Peer::Initialize() {
         webrtc::CreateAudioDecoderFactory<webrtc::AudioDecoderOpus>();
     auto encoder = std::make_unique<EncoderFactory>(encoder_state_, encoder_);
     if (encoder->GetSupportedFormats().empty()) {
-      LOG(ERROR) << "OpenH264 constrained baseline 42e01f unavailable";
+      LOG(ERROR) << "No supported video encoder (H264 or VP8) available";
       return false;
     }
     deps.video_encoder_factory = std::move(encoder);

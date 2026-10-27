@@ -220,6 +220,7 @@ int main(int argc, char** argv) {
       if (ready) {
         base::ListValue codecs;
         codecs.Append("H264");
+        codecs.Append("VP8");
         signaling.Send(base::DictValue()
                            .Set("t", "hello")
                            .Set("v", 1)

@@ -85,6 +85,7 @@
     if (!tr.setCodecPreferences || !RTCRtpReceiver.getCapabilities) return 'unsupported';
     var codecs = RTCRtpReceiver.getCapabilities('video').codecs;
     function rank(c) {
+      if (/vp8/i.test(c.mimeType)) return 4;
       if (!/h264/i.test(c.mimeType)) return /rtx|red|ulpfec|flexfec/i.test(c.mimeType) ? 5 : 8;
       var f = c.sdpFmtpLine || '';
       return (f.indexOf('packetization-mode=1') >= 0 ? 0 : 2) + (f.indexOf('42e01f') >= 0 ? 0 : 1);
@@ -174,6 +175,7 @@
     var s = session;
     if (!pc) createPc(s);
     var p = pc;
+    var step = 'applying the remote offer';
     s.negotiation = s.negotiation.then(async function () {
       if (!current(s, p)) return;
       s.remoteReady = false;
@@ -184,11 +186,21 @@
       p.getTransceivers().forEach(function (t) {
         if (t.receiver.track && t.receiver.track.kind === 'video') { t.direction = 'recvonly'; console.log('[viewer] setCodecPreferences: ' + preferH264(t)); applyHints(t.receiver); }
       });
+      step = 'creating the answer';
       var a = await p.createAnswer();
       if (!current(s, p)) return;
+      step = 'applying the local answer';
       await p.setLocalDescription(a);
       if (current(s, p)) sendSig({ t: 'answer', sid: s.sid, sdp: p.localDescription.sdp });
-    }).catch(function (e) { if (current(s, p)) status('negotiation failed: ' + e.message); });
+    }).catch(function (e) {
+      if (!current(s, p)) return;
+      console.error('[viewer] negotiation failed while ' + step, e);
+      var hint = /video|codec/i.test(e.message) ?
+        ' The browser and endpoint may not share a usable video codec (H.264 or VP8). Try updating the browser or contact the server operator.' : '';
+      sendSig({ t: 'bye', sid: s.sid, reason: 'negotiation-failed' });
+      closePc();
+      status('Video negotiation failed while ' + step + '.' + hint + ' Details: ' + e.message);
+    });
   }
   function onCtl(m) {
     if (m.t === 'hello') {

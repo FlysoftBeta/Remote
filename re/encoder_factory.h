@@ -25,7 +25,8 @@ void SetPlayoutDelay(webrtc::EncodedImage& output);
 
 // Selects a hardware backend (falling back to OpenH264 with a log line if it
 // is unavailable) and wraps every encoder with the low-latency output
-// decoration and the stock software fallback.
+// decoration and the stock software fallback. VP8 uses libvpx with the same
+// output decoration when the viewer cannot receive H.264.
 class EncoderFactory final : public webrtc::VideoEncoderFactory {
  public:
   EncoderFactory(std::shared_ptr<VplEncoderState> state, EncoderChoice choice);
@@ -36,7 +37,7 @@ class EncoderFactory final : public webrtc::VideoEncoderFactory {
       const webrtc::SdpVideoFormat& format) override;
 
  private:
-  std::unique_ptr<VideoEncoderBackend> hardware_;  // null: OpenH264 only
+  std::unique_ptr<VideoEncoderBackend> hardware_;  // null: H.264 uses OpenH264
   std::unique_ptr<VideoEncoderBackend> software_;
   EncoderParams base_;
 };

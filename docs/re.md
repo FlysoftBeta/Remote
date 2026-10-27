@@ -17,7 +17,7 @@ A fault in one encoder, driver or browser takes down only that instance.
 | `main.cc` | switches, process setup (message loop, ThreadPool, Mojo as broker), hires 1 ms timer, browser launch |
 | `endpoint_link.*`, `browser_session.*` | Mojo link to rb ([protocol](protocol.md#browser-to-re-mojo)); main-sequence owner of the browser; marshals input/IME/window calls |
 | `signaling.*` | stdio JSON transport, QPC-derived wall clock shared by probe replies and synthetic markers |
-| `peer.*` | libwebrtc PeerConnection (offerer), H.264 track, `input`/`ctl`/`probe` channels, playout-delay, stats; all session state on the signaling thread |
+| `peer.*` | libwebrtc PeerConnection (offerer), H.264/VP8 track, `input`/`ctl`/`probe` channels, playout-delay, stats; all session state on the signaling thread |
 | `d3d_frame_source.*`, `d3d_native_frame.*` | frame import (open-once cache, fence/keyed-mutex wait), VPP BGRA->NV12 pool, native `VideoFrameBuffer`; import and CPU conversion on separate threads |
 | `input_parser.*` | validates and decodes the binary `input` messages into Mojo calls |
 | `encoder_params.*`, `video_encoder_backend.h`, `encoder_factory.*`, `vpl_encoder.*`, `nvenc_encoder.cc` | encoder layer |
@@ -59,6 +59,10 @@ reorder).
   mode, seamless rate reconfigure, device adoption/resize like VPL. **UNTESTED ON HARDWARE**: no NVIDIA GPU was available; only the compile
   and the no-GPU fallback ran (`PRTS NVENC probe failed: no NVIDIA adapter present` -> `fallback encoder=openh264`). Not validated:
   zero-copy ordering against VPP, reconfigure acceptance, SPS level/profile, performance.
+- The offer prefers H.264 constrained baseline (`42e01f`, packetization-mode=1), followed by VP8 for viewers without usable H.264.
+  VP8 uses libwebrtc's libvpx software encoder regardless of `--encoder`; both codecs retain the configured bitrate ceiling (8 Mbps by
+  default), `LowDelayOutput` and playout-delay metadata. `PRTS codec selected=...` logs encoder creation; sender/viewer stats confirm the
+  codec in use. `--v=1` logs the exact offer SDP to stderr for negotiation diagnostics.
 - Software fallback wrapper, `LowDelayOutput` and `SetPlayoutDelay` live in `encoder_factory.*`. The actual backend and input path are
   reported per run (`PRTS encoder selected=...`, report `pipeline.encoder`); always verify them instead of trusting the request.
 

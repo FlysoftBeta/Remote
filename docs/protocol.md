@@ -7,12 +7,13 @@ Version **v1**. Consistent with [decisions](decisions.md) D3, D7-D9, D13 and [vi
 ```text
 viewer --WS /signal (JSON)--> control-plane <--WS /signal?role=endpoint (JSON)-- mock endpoint / remote endpoint
                               <--stdio, 4-byte LE length + JSON (same message set)-- re.exe (spawned by the CP)
-viewer <======= WebRTC: H.264 video (re -> viewer) + 3 negotiated DataChannels =======> re
+viewer <======= WebRTC: H.264/VP8 video (re -> viewer) + 3 negotiated DataChannels =======> re
 re <--Mojo (rb.mojom)--> rb (chrome.exe)
 ```
 - The control-plane (CP) relays sessions and signalling only; it is not on the media or input path.
 - **re is the offerer**: it decides the H.264 fmtp (`profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1`) and the
-  `playout-delay` RTP extension. The viewer answers, putting H.264 first via `setCodecPreferences`.
+  `playout-delay` RTP extension. VP8 follows H.264 as a software fallback. The viewer answers, putting H.264 first via
+  `setCodecPreferences` while retaining VP8.
 - All DataChannels are `negotiated: true` with fixed ids, created on both sides (no DCEP round trip; Chrome 89 supports it).
 
 ## Browser to re (Mojo)
@@ -55,7 +56,7 @@ OS handle once per writer token, afterwards only token/value/LUID. Without a fen
 |---|---|---|---|
 | viewer->CP | `hello` | `v, role:"viewer", caps:{touch:int, dpr:num, osk:bool, codecs:[...]}, ua` | `touch` = `maxTouchPoints`; `osk` = touch-like device (wants the remote soft keyboard) |
 | CP->viewer | `welcome` | `v, sid, instance, iceServers:[...]` | `sid` = random 128-bit hex |
-| endpoint->CP | `hello` | `v, role:"endpoint", instance, name, caps:{codecs:["H264"], maxFps}` | registers the instance; a new endpoint replaces the old one |
+| endpoint->CP | `hello` | `v, role:"endpoint", instance, name, caps:{codecs:["H264","VP8"], maxFps}` | registers the instance; a new endpoint replaces the old one |
 | CP->endpoint | `session.open` | `sid, viewer:{caps, ua}, iceServers` | endpoint builds the PeerConnection, sends `offer` |
 | endpoint->CP->viewer | `offer` | `sid, sdp` | |
 | viewer->CP->endpoint | `answer` | `sid, sdp` | |

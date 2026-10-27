@@ -272,19 +272,36 @@ EncoderFactory::EncoderFactory(std::shared_ptr<VplEncoderState> state,
 EncoderFactory::~EncoderFactory() = default;
 std::vector<webrtc::SdpVideoFormat> EncoderFactory::GetSupportedFormats()
     const {
-  // The software encoder is the backstop of every configuration.
-  if (!software_->Probe())
-    return {};
-  return {H264Format()};
+  std::vector<webrtc::SdpVideoFormat> formats;
+  if (software_->Probe())
+    formats.push_back(H264Format());
+  // Some Android devices and non-proprietary Chromium builds have no H.264.
+  // InternalEncoderFactory supplies libvpx VP8 independently of that backend.
+  webrtc::InternalEncoderFactory builtin;
+  for (const auto& format : builtin.GetSupportedFormats()) {
+    if (format.name == "VP8")
+      formats.push_back(format);
+  }
+  return formats;
 }
 std::unique_ptr<webrtc::VideoEncoder> EncoderFactory::Create(
     const webrtc::Environment& env,
     const webrtc::SdpVideoFormat& format) {
+  if (format.name == "VP8") {
+    webrtc::InternalEncoderFactory builtin;
+    auto encoder = builtin.Create(env, format);
+    if (!encoder)
+      return nullptr;
+    LOG(INFO) << "PRTS codec selected=VP8 encoder=libvpx";
+    return std::make_unique<LowDelayOutput>(std::move(encoder));
+  }
   if (format.name != "H264" || format.parameters != H264Format().parameters)
     return nullptr;
   auto software = software_->Create(env, format, base_);
   if (!software)
     return nullptr;
+  LOG(INFO) << "PRTS codec selected=H264 encoder="
+            << (hardware_ ? hardware_->name() : "openh264");
   if (!hardware_)
     return std::make_unique<LowDelayOutput>(std::move(software));
   auto encoder = webrtc::CreateVideoEncoderSoftwareFallbackWrapper(
