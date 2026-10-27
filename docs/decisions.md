@@ -153,9 +153,11 @@ The CDM is fetched from the component updater source and placed under `third_par
 User target (2026-10-26): Job Object + `JOB_OBJECT_UILIMIT_*` + LPAC managed by the endpoint, fallback Job + AppContainer if more than ~1k
 Chromium LOC are needed ([isolation](isolation.md)).
 
-### D24 Outer isolation experiment blocked; keep default off (2026-10-27)
-All eight individual outer Job UI bits fail the real browser pipeline (seven: child CreateProcessAsUserW/SBOX18/Win32 50; DESKTOP: browser
-alternate-desktop CHECK). LPAC and plain AppContainer prototypes fix startup pipes, desktop provisioning and profile ACLs, but both stop in
-Chromium's nested child-AppContainer policy path. Invoke the high-conflict give-up rule; keep Chromium's child sandbox enabled. The usable
-fallback is atomic kill-on-close Job with no UI limits, which supplies lifecycle containment only. All new behavior is opt-in via
-`--isolation=off|job|lpac|appcontainer`, default off until v0.2.0. No tenant-isolation claim; [evidence, switches and gaps](isolation.md).
+### D24 Opt-in LPAC + outer UI limits + private desktop (2026-10-28; supersedes Stage 6 block)
+Stage 8 resolved SBOX44 by disabling nested network AppContainer sandboxing for an already-contained browser, with five minimal LPAC
+capabilities. Chromium retains restricted child tokens and its jobs/process/memory limits; clearing child job UI masks lets the outer
+Job own all eight UI restrictions. Broker-provisioned private startup desktops close the observed FindWindow/hook gap. Profile DACLs
+are protected from shared package inheritance. LPAC/all and plain AC/all pass Intel D3D11 capture, input/IME and MediaKeys readiness;
+controlled cross-tenant file/desktop/window/hook/clipboard checks and browser/GPU recovery pass. Keep the default off as instructed;
+production ACL/path/broker review, unexercised nested-container utilities, packaged builds and full DRM playback remain open.
+[evidence, enabling and limitations](isolation.md). Patch20 remains a small maintenance unit; no core IPC/job tracking redesign.

@@ -1,165 +1,168 @@
-# Multi-tenant isolation (Stage 6 experiment; default off)
+# Multi-tenant isolation (Stage 8; default off)
 
-**2026-10-27, m6-iso1:** Job lifecycle containment works. All eight outer-job UI-limit bits fail the real browser pipeline. Whole-browser
-LPAC and plain AppContainer launch prototypes exist behind `re --isolation=...`, but neither passes child sandbox initialization. They are
-experimental and unsuitable for deployment. **The usable fallback is Job with zero UI bits; it is not a tenant security boundary.** Default
-is `--isolation=off` until v0.2.0. Builds and tests below use `out/dev` only; the concurrent release was not modified.
+**2026-10-28, m6-iso2:** [V] Whole-browser LPAC + all eight outer-job UI bits + a private desktop passes hardware streaming,
+input/IME, Widevine MediaKeys creation and the controlled cross-tenant probes. Plain AppContainer and Job with the full UI mask
+also pass functional smoke. **Default remains `--isolation=off`.** These are dev-build checks, not a completed production security review.
 
 ## 1. Trust boundary
-- An instance = one rb process tree (browser + GPU + network + utility + renderers) + one user-data-dir. Tabs inside an instance are
-  **not** different tenants.
-- `re` and the control-plane are outside the tenant container and act as trusted brokers; a compromised browser must not obtain the
-  endpoint's process handle, other tenants' texture handles, files or network rights.
-- Chromium's renderer/GPU sandbox still protects page -> browser; the outer boundary protects compromised browser -> host/other tenants.
 
-## 2. Stages
-| Stage | Mechanism | Provides | Prior evidence (earlier project) |
-|---|---|---|---|
-| I0 (from MVP) | one Job Object per instance (`PROC_THREAD_ATTRIBUTE_JOB_LIST` at `CreateProcess`, `KILL_ON_JOB_CLOSE`), process/memory limits, explicit `--user-data-dir`, `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` for inheritance | lifecycle, limits, whole-tree reclaim on endpoint crash | implemented and passing there |
-| I1 | per-tenant local Windows account (or low-privilege token) + profile/temp ACLs | minimum boundary between mutually distrusting tenants | designed, untested |
-| I2 (experiment) | whole browser tree in a unique AppContainer SID (plain AC, then LPAC) | file/registry/named-object/network capability isolation | partial: Crashpad `CreateNamedPipe` ACCESS_DENIED (fixed), `SBOX12/OpenWindowStation 5` with the pre-created alternate desktop, LPAC not working |
-| I3 (optional) | per-tenant desktop (`CreateDesktop` + AC SID ACL) | cross-tenant `FindWindow/PostMessage`, hooks, clipboard isolation | named window station needs admin; private desktop in the same station stalled |
+One tenant is one browser process tree and one dedicated user-data directory. Tabs share the tenant. `re`, the control-plane,
+the Windows account running them, and OS brokers are trusted. Containers protect against an untrusted browser; ordinary processes
+outside the containers running as the broker account can read all profiles. No per-tenant Windows accounts are required.
 
-## 3. Known pitfalls (from the earlier project, not yet re-verified here)
-- Confirmed here: seven individual outer UI bits cause child `CreateProcessAsUserW` failure (`SBOX18`, Win32 50); `DESKTOP` crashes the
-  browser earlier at alternate-desktop initialization. No nonempty combination is usable.
-- AppContainer needs `USERPROFILE/APPDATA/LOCALAPPDATA` on AC-writable paths; Crashpad pipe names must live in the AC namespace.
-- A D3D11 hardware device can be created inside AC (Intel LUID matched), but verify "not SwiftShader/WARP" at every start.
-- Shared texture NT handles: created by the browser, duplicated by `re` (`DuplicateHandle` with the browser process handle); keep that
-  direction; no named shared objects.
-- A Job does not isolate GPU scheduling or VRAM; mutually hostile tenants eventually need a VM boundary.
+LPAC supplies the package/capability access check; a protected profile DACL contains only the tenant SID, broker user, SYSTEM and
+Administrators. A private desktop separates window discovery and hooks. The outer Job supplies lifecycle, resource limits and UI
+restrictions. Chromium's restricted child tokens, mitigations and child process/memory job limits remain in use.
+
+## 2. Achieved modes
+
+| `re --isolation=` | Behavior | Stage 8 evidence |
+|---|---|---|
+| `off` (default) | Existing ordinary launch and kill-on-close Job | final S baseline |
+| `job` | Atomic job assignment; optional UI mask; private desktop when mask is nonzero | full-mask marker/input/GPU smoke |
+| `appcontainer` | Job + per-profile AC SID + private desktop | full-mask marker/input/GPU smoke |
+| `lpac` | Same, with `ALL_APPLICATION_PACKAGES_OPT_OUT` | chosen configuration; detailed checks below |
+
+`--job-ui-limits=none|all|<comma-separated names>` defaults to none; `all` is 255. The names are in section 6.
+Use **`--isolation=lpac --job-ui-limits=all`** for the verified configuration. Partial masks remove the child's separate UI mask too;
+they are useful for diagnosis and provide only the requested outer UI restrictions. Job mode has no filesystem/capability boundary.
+Unknown modes/options or container launch failures fail without retrying a weaker mode.
+
+## 3. Provisioning and bounded fixes
+
+`re/browser_isolation.*` creates/reuses `rb.<SHA1 of lowercase absolute profile path>` with CreateAppContainerProfile. Install and
+profile must be separate trees. Install grants are RX; profile grants are FullControl (Chromium needs WRITE_DAC/WRITE_OWNER) with
+low integrity. Profile DACL inheritance is disabled, so a shared parent's package RX cannot expose another tenant's data.
+Ancestor grants are package-specific, directory-only and non-inheritable. Updates use
+[MAXIMUM_ALLOWED handles](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo) to suppress recursive propagation. A provisioning mutex prevents concurrent DACL lost updates;
+identical explicit ACEs are retained to avoid reordering and propagating the whole install tree on each tenant switch.
+
+LPAC uses **five capabilities**: internetClient, registryRead (DLL activation), lpacCom (COM STA), lpacCryptoServices (OSCrypt), and
+lpacIdentityServices (identity probes). AC uses internetClient. `--isolation-capabilities=<names>` adds deduplicated explicit extras;
+server/network extras were unnecessary for the chosen mode. Environment contains only system paths, dedicated USERPROFILE/APPDATA/
+LOCALAPPDATA/TEMP/TMP and the desktop hand-off. Windows' redirected `LOCALAPPDATA/Packages/<name>/AC/Temp` is provisioned as well.
+
+Nested network AC profile creation formerly returned SBOX44. `re` now disables NetworkServiceSandbox, RendererAppContainer,
+PrintCompositorLPAC and WinSboxNetworkServiceSandboxIsLPAC for container launches. The network child inherits the outer token;
+the other exercised children retain restricted tokens derived from it. `--no-sandbox` remains rejected. NetworkServiceInProcess2
+also streamed during the runtime experiment, but the selected mode keeps a separate network process. There is no GpuLPAC feature
+in this pin's exercised Windows GPU policy.
+
+Patch **20-rb-outer-isolation** is 64 insertions/1 deletion across four upstream files. It uses LOCAL Crashpad pipes, opens the
+broker-provisioned sandbox desktop, reports child launch errors, and clears only nested child job UI masks when a nonzero outer
+UI mask is queried under rb-isolation. It retains the jobs, active-process restrictions, memory limits and tracking. No jobless
+sandbox lifecycle changes or core IPC changes were necessary. `re` also starts the browser on that private desktop; each launch
+gets a fresh UUID name. Its ACL includes the package SID and Chromium's Restricted-token deny mask, with untrusted integrity.
 
 ## 4. Decision
-**User target (2026-10-26):** Job Object + `JOB_OBJECT_UILIMIT_*` + LPAC, managed by `re` (creates the job, LPAC profile/capabilities and ACLs, and
-launches the whole rb tree with the LPAC token). Small Chromium patches are allowed (nested job, alternate desktop/window station,
-Crashpad pipe, GPU/D3D11 access). **Give up** if the Chromium change exceeds ~1k lines or is likely to conflict in future versions
-(core sandbox/IPC hot files): fall back to Job (+UILIMIT if possible) + plain AppContainer (no per-tenant accounts: too heavy) and record why.
 
-Current decision: retain I0, leave the new modes opt-in, and stop at the nested child-AppContainer policy boundary under the high-conflict
-give-up criterion. The ~1k-LOC threshold was not reached. No renderer/GPU/network sandbox was disabled. Rejected: `--no-sandbox` as an AC
-compatibility fix; outer Job UI bits as the UI-isolation mechanism; per-tenant named window stations.
+D24 now selects opt-in **LPAC + all UI bits + private desktop**; plain AC is a working functional fallback. The original Stage 6
+failures were resolved within the small-patch budget. Keep default off as instructed. Keep the tested network feature override;
+do not substitute a global no-sandbox launch. Do not present Job alone as a tenant security boundary.
 
-## 5. Implemented switches and provisioning
-
-| `re` mode | Behavior |
-|---|---|
-| `off` (default) | Existing kill-on-close Job and ordinary Chromium launch. |
-| `job` | Atomic `PROC_THREAD_ATTRIBUTE_JOB_LIST` assignment, kill on close, explicit Mojo handle inheritance. UI mask defaults to zero. |
-| `lpac` | Job + profile-specific AppContainer SID + `ALL_APPLICATION_PACKAGES_OPT_OUT`; startup prototype, blocked below. |
-| `appcontainer` | Same provisioning without the LPAC opt-out; startup prototype, blocked below. |
-
-`--job-ui-limits=none|all|<comma-separated names>` accepts the lowercase names in the table below. Unknown modes/names fail; container
-launch failures never retry with weaker isolation. `--isolation-capabilities=<comma-separated named capabilities>` adds explicitly requested
-capabilities to the default `internetClient`; it is only for container modes.
-
-`re/browser_isolation.*` creates/reuses `rb.<hash-of-absolute-profile-path>` via `CreateAppContainerProfile` (derive SID if it already exists).
-It grants that SID RX on the browser install tree, FullControl on its dedicated profile (Chromium needs WRITE_DAC/WRITE_OWNER for its own
-cache ACLs), and labels the profile low integrity. The host profile owner first receives FullControl so a medium-integrity endpoint can
-set the label without elevation. Profile and install must be separate trees. Existing deployment ALL APPLICATION PACKAGES / ALL RESTRICTED
-APPLICATION PACKAGES RX grants from `tools/isolation/grant-lpac-acl.ps1` were present on this dev build.
-
-The container environment contains Windows system paths, dedicated USERPROFILE/APPDATA/LOCALAPPDATA/TEMP/TMP under its profile, and the
-isolation hand-off variables; broker credentials and the host environment are not copied. Token AppContainer status, package SID and the
-observed `WIN://NOALLAPPPKG=1` attribute are checked. The latter is an internal Windows attribute, not a portable documented LPAC identity
-API; `GetTokenInformation(TokenIsLessPrivilegedAppContainer)` was unusable on this host and is not used.
-
-`RB_ISOLATION=lpac|appcontainer` selects `\\.\pipe\LOCAL\...` for both Crashpad and its self-monitor. `RB_SANDBOX_DESKTOP` names a private
-untrusted-integrity desktop created and retained by `re`, with the package SID and Chromium's Restricted-token UI deny mask; the guarded
-Chromium hook opens it instead of creating an alternate window station. This is the **child sandbox desktop**, not a separate desktop for
-the browser UI. Container cold startup gets a 60s Hello deadline; off/job keep 15s.
-
-## 6. One-bit UI experiment
-
-Each row used the real VPL/shared-fence chain, marker workload, a 20s viewer measurement, fresh profile and `--v=1` browser file logs.
-Chrome stderr is excluded by the explicit inherited-handle list, so equivalent `--enable-logging --log-file=...` logging was used.
-
-| Bit / value | Browser starts | Hardware GPU | Valid decoded markers | Input / IME | Failure |
-|---|---|---|---|---|---|
-| none / 0 | yes | Intel UHD 630, D3D11 | 690 | pass | none |
-| HANDLES / 1 | yes | yes | 0 | unreachable | renderer + sandboxed utility launch, `SBOX18`, Win32 50 |
-| READCLIPBOARD / 2 | yes | yes | 0 | unreachable | same |
-| WRITECLIPBOARD / 4 | yes | yes | 0 | unreachable | same |
-| SYSTEMPARAMETERS / 8 | yes | yes | 0 | unreachable | same |
-| DISPLAYSETTINGS / 16 | yes | yes | 0 | unreachable | same |
-| GLOBALATOMS / 32 | yes | yes | 0 | unreachable | same |
-| DESKTOP / 64 | process created; no Hello | not reached | 0 | unreachable | browser `Sandbox::Initialize -> CreateAlternateDesktop` CHECK; exit `0x80000003` |
-| EXITWINDOWS / 128 | yes | yes | 0 | unreachable | renderer + sandboxed utility launch, `SBOX18`, Win32 50 |
-
-All successful bits combined = **none (0)**. Seven failures are `CreateProcessAsUserW` returning `ERROR_NOT_SUPPORTED` (50), captured through
-CDP `Browser.getHistogram("Process.Sandbox.Launch.Error")`; `sandbox/win/src/broker_services.cc` maps that call's failure to SBOX18. Browser
-and hardware GPU survive while renderers/utility launches fail. Occasional startup blank frames do not count as decoded markers. The
-DESKTOP dump establishes the failing Chromium initialization call and exit code; its lower-level Win32 failure code was not captured.
-
-Chromium retains its own child jobs and UI restrictions; the unrestricted outer job works with those jobs, while the outer UI mask makes
-child creation fail. No breakaway or child-job suppression was enabled. Microsoft's [nested-job constraints](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)
-explain why Windows 10+ support for nested jobs does not make outer UI restrictions compatible.
-
-## 7. Container blockers and bounded fixes
-
-| Stage | Evidence | Outcome |
-|---|---|---|
-| Profile ACL/low label | Win32 5 on fresh directory with inherited Modify | fixed by owner DACL grant before label update |
-| LPAC DLL activation | `BasepCreateActCtx/BasepSxsCreateStreams`, `0xC0000022` loading chrome_elf/absl | `registryRead` gets past this |
-| Crashpad pipes | `CreateNamedPipe` 5 in browser, then handler `MonitorSelf` | fixed with inherited environment guard and LOCAL prefix |
-| Alternate window station | browser `Sandbox::Initialize` CHECK before logging/Hello | fixed by re-created sandbox desktop and guarded `OpenDesktopW` hook |
-| LPAC COM STA | `CoInitializeEx`, crash key HRESULT `0x80070005` | `lpacCom` gets past this |
-| LPAC OSCrypt | `CryptProtectData`, Win32 5 | `lpacCryptoServices` gets past this |
-| LPAC default-browser probe | `GetUserName` failure -> shell_util.cc:2206 NOTREACHED | `lpacIdentityServices` gets past this; exact GetLastError not logged |
-| Network cache/log ACLs | grants fail with 5 under profile Modify | fixed with package FullControl on its own profile; errors disappear |
-| Nested child AppContainer | both modes: network sandbox=5, result=44 (`SBOX_ERROR_CREATE_APPCONTAINER`), last Win32 error=0, then DCHECK | **blocked; give-up boundary** |
-
-LPAC reaches the final blocker with five capabilities total: internetClient, registryRead, lpacCom, lpacCryptoServices, lpacIdentityServices.
-Plain AppContainer reaches it with internetClient alone. Both root tokens and the LPAC opt-out attribute were verified. Result 44 maps to
-`ConfigBase::AddAppContainerProfile -> AppContainerBase::CreateProfile`; this path does not preserve its underlying HRESULT/Win32 error.
-The logged zero is not a successful registration. Continuing would
-change Chromium's core nested profile/token policy; that behavior was left intact. The added guarded failure log reports sandbox/result/
-Win32 error for this boundary. There is no usable AC fallback, no valid container marker smoke, and no meaningful container latency A/B.
-GPU/D3D11 access from the outer container, texture/fence imports, child-token confinement, external networking, fonts and crash/GPU recovery
-remain unverified. The early Mojo handshake alone does not validate these properties.
-
-## 8. Run, validation and next steps
+## 5. Build and enable
 
 ```powershell
 .\browser\cr.cmd build dev "chrome re"
-$env:ENDPOINT_PATH='C:/src/chromium/src/out/dev/re.exe'
-$env:ENDPOINT_ARGS='--chrome=C:/src/chromium/src/out/dev/chrome.exe --user-data-dir=C:/src/tmp/iso-profile --isolation=job --job-ui-limits=none'
-# Use the latency/soak commands in tools/latency/PRESETS.md and tools/soak/README.md.
-# Experimental startup only (currently fails child policy):
-# --isolation=lpac --isolation-capabilities=registryRead,lpacCom,lpacCryptoServices,lpacIdentityServices
-# --isolation=appcontainer
+# Elevated deployment provisioning, once per volume/install (dev paths shown):
+.\tools\isolation\grant-traversal.ps1 -Directory C:\
+.\tools\isolation\grant-lpac-acl.ps1 -BuildDirectory C:\src\chromium\src\out\dev
+C:\src\chromium\src\out\dev\re.exe --chrome=C:/src/chromium/src/out/dev/chrome.exe --user-data-dir=C:/tenants/a --isolation=lpac --job-ui-limits=all
 ```
 
-Final incremental `chrome re` build passed in 17s (`rb-build-20261027-192621.log`). Same-build job marker20s: **1,055 decoded, zero marker
-failures**, hardware Intel UHD630/D3D11, native VPL/shared fences. Viewer pointer/key/Unicode/IME preedit+commit probes passed with exact
-remote text `a中🙂你好`. The latency KeyI timer was suppressed during this separate DOM/IME probe; the S measurements kept it intact.
+The volume-root grant permits directory listing/traversal **without inheritance**, needed by GetLongPathName; it grants no descendant
+file access. `re` provisions the per-SID ancestors, install/profile and desktop. A shared ProfileParent passed to grant-lpac-acl now
+gets directory-only traversal, never inherited shared package RX. Root provisioning may need elevation; ordinary endpoint runs do not.
+Profile registrations and install/ancestor grants persist for reuse; removing a tenant must retire its registration and explicit SID ACEs.
 
-Scenario S, 60s/run, loopback/headless, m3-combined preset, order off1/job1/off2/job2. Actual video 1896x942, receiver ~59.94–60.06fps;
-all four runs have zero >200ms freezes and hardware VPL throughout. S has **173–185 marker-read failures per run** (cause not investigated);
-the percentiles below include valid marker samples only. These are marker-read failures, not a measured H.264 decoder-error count.
+For tests only, local HTTP fixtures need `CheckNetIsolation LoopbackExempt -a -p=<tenant SID>` (elevated). The test exemptions are
+removed after validation; none is added by `re`. Do not enable this in deployment merely to make a test fixture work: it grants the
+contained browser access to host loopback services. Browser CDP inbound loopback remained blocked, so input/GPU/MediaKeys assertions
+used a controlled fixture's outbound state report. The viewer's CDP connection drives real pointer/key/Unicode/IME events.
 
-| Run | capture→decoded P50 / P99 ms | input→decoded P50 / P99 ms | samples capture / input | marker failures |
+## 6. UI-bit experiment
+
+Original failure [V]: browser broker CreateProcessAsUserW returns 50/ERROR_NOT_SUPPORTED for renderer, network and storage utility
+children with overlapping job UI restrictions. GPU/browser survive. DESKTOP fails earlier in the browser's CreateAltDesktop:
+CreateDesktopW returns NULL and GetLastError=5, captured by CDB at the API return. The fix gives UI ownership to the outer Job and
+opens the desktop created before entering that job. Windows nested jobs themselves remain enabled.
+
+Each row below is [V], LPAC, 20s marker + pointer/key/Unicode/IME, four variants concurrently at 970x558, hardware Intel UHD630 D3D11
+and native VPL/shared fences. All input probes committed exact `a?????` and checked composition preedit.
+
+| Only outer bit | Value | Decoded marker frames | GPU / input |
+|---|---:|---:|---|
+| handles | 1 | 1023 | pass / pass |
+| readclipboard | 2 | 999 | pass / pass |
+| writeclipboard | 4 | 959 | pass / pass |
+| systemparameters | 8 | 993 | pass / pass |
+| displaysettings | 16 | 940 | pass / pass |
+| globalatoms | 32 | 1003 | pass / pass |
+| desktop | 64 | 968 | pass / pass |
+| exitwindows | 128 | 919 | pass / pass |
+
+Full-mask private-desktop smoke [V]: LPAC A/B **933/956**, Job **970**, AC **966** decoded markers, input/IME and Intel D3D11 pass.
+A later protected-profile run had concurrent LPAC A/B **947/935** decoded, both input pass. Widevine `requestMediaKeySystemAccess`
+followed by `createMediaKeys()` succeeded; licensed playback, VMP and high-security licences were not tested.
+
+## 7. Cross-tenant and recovery verification
+
+The standalone [probe](../tools/isolation/README.md) is launched through the re isolation path with A/B's package SIDs and dedicated
+profiles. Helpers have fresh per-launch jobs/desktops using the same policy, rather than the broker's token. Two real LPAC browser
+instances stream concurrently with Intel GPU; helpers check controlled B windows/files. Host positive controls pass file read,
+FindWindow, PostMessage, hook installation and clipboard canary read.
+
+| A operation against B | LPAC, no UI mask | LPAC, full UI mask |
+|---|---|---|
+| Read B canary file | denied 5 | denied 5 |
+| Open known B desktop | denied 5 | denied 5 |
+| FindWindow by B title | no HWND, error 0 | no HWND, error 0 |
+| PostMessage to known B HWND | denied 1400 | denied 1400 |
+| SetWindowsHookEx (valid DLL/thread) | denied 5 | denied 5 |
+| OpenClipboard/read canary | denied 5 | denied 5 |
+
+Before private startup desktops, FindWindow exposed B's HWND and hook installation returned success even with all UI bits. That
+failed candidate is not the chosen policy. Clipboard is still a window-station resource, not a per-desktop namespace; the observed
+AppContainer denial plus the full Job's read/write restrictions are the protection here. B itself could not open that clipboard.
+
+Token snapshot [V]: browser, Intel GPU, network, storage, unzip and five renderers (10 live processes) all retain the same tenant SID,
+AppContainer=1 and observed LPAC opt-out=1. The opt-out is Chromium's internal WIN://NOALLAPPPKG attribute, not a portable documented
+LPAC token-identity API. Windows rejected TokenIsLessPrivilegedAppContainer on this host.
+
+Selected `tools/soak --smoke` [V], final LPAC/all/private/protected-profile policy: browser crash recovered automatically in **19,707ms**;
+GPU kill/replacement plus new frames in **1,099ms**, within 30s. Marker-read failures during faults **143/4**, dropped-frame deltas **0/0**;
+recorded >500ms freeze deltas **0/0**. The browser test overlapped other functional checks; this is a recovery check, not a startup
+performance comparison. The harness used only a temporary adapter for the new viewer Connect flow and separate CP data directories.
+
+[V] Final dev build `rb-build-20261028-004750.log`: incremental chrome/re passed in 35s. One serial scenario S comparison,
+60s/run, m3-combined, loopback/headless, order off1/LPAC1/off2/LPAC2; actual 1890x938, native VPL and shared fences throughout.
+All four have zero >200ms freezes. Before each measurement the harness reapplies Idle to any siso/clang-cl/lld-link processes;
+all four snapshots are empty, so no background release build was observed.
+
+| Run | capture?decoded P50 / P99 ms | input?decoded P50 / P99 ms | samples capture / input | marker-read failures |
 |---|---|---|---|---|
-| off 1 | 34.7 / 45.7 | 43.9 / 62.9 | 2677 / 107 | 185 |
-| job 1 | 34.8 / 44.2 | 40.3 / 67.1 | 2671 / 107 | 183 |
-| off 2 | 34.8 / 42.8 | 41.9 / 60.5 | 2677 / 107 | 174 |
-| job 2 | 34.9 / 45.6 | 51.6 / 71.2 | 2677 / 108 | 173 |
+| off 1 | 49.4 / 56.3 | 66.1 / 87.3 | 2775 / 110 | 146 |
+| LPAC/all 1 | 34.3 / 44.7 | 44.3 / 63.1 | 2725 / 109 | 162 |
+| off 2 | 34.2 / 42.7 | 41.9 / 63.2 | 2738 / 110 | 141 |
+| LPAC/all 2 | 34.1 / 41.3 | 52.5 / 70.7 | 2714 / 109 | 163 |
 
-Paired capture P50 differences are +0.14/+0.13ms; input P50 differences -3.6/+9.7ms. Treat these as noise. Input P99 is +4.2/+10.7ms: the
-larger difference occurs in one pair only, so this does not establish a repeatable regression. This compares **off vs I0 job**, not container
-performance. Build-priority snapshots before every measurement are empty: no siso/clang-cl/lld-link or concurrent release build observed;
-the harness re-applies Idle if any appear.
+Capture P50 paired differences are -15.1/-0.2ms; input P50 differences -21.8/+10.6ms. The off baseline itself varies 15.2ms at
+capture P50 and 24.2ms at input P50. These two pairs do not establish a repeatable latency change attributable to isolation.
+Marker-read failures are not measured H.264 decoder errors; percentiles include valid markers only. No additional S trials were run.
+The six temporary test loopback exemptions were removed; the one pre-existing exemption was retained. No owned test processes remain.
 
-Selected `tools/soak --smoke` in job mode passed: browser-crash automatic recovery **2978ms**, endpoint-crash **2865ms**, GPU replacement plus
-three new frames **1013ms**, all within 30s. Each selected scenario recorded one freeze; marker-failure counts were 5/5/1, with dropped-frame
-deltas zero. This is a short recovery check, not a long-run leak/robustness certification.
 
-Evidence: `C:/src/tmp/m6/m6-iso1` (`job-final`, `S-*`, `soak/soak.json`, UI and container diagnostics); orchestrator report:
-`C:/src/tmp/m6/out/iso1.md`. Patch20 has 44 insertions/1 deletion across three upstream files and passes reverse `git apply --check`. It was
-exported as an exact working diff without commits; the orchestrator must commit the Chromium maintenance unit with its Patch-Name trailer
-before the normal `cr export` workflow, which exports committed units.
+## 8. Known gaps and next steps
 
-The usable job mode isolates **lifecycle only**. It adds no filesystem, registry, network, clipboard, window-message, GPU scheduling or VRAM
-boundary between tenants; Chromium's existing renderer/GPU sandbox remains essential. Do not host mutually hostile tenants on this basis.
-Next work is a separate design for trusted provisioning of Chromium's nested container profiles/tokens, then container GPU/IPC/network
-validation and restart testing. Profiles/SIDs and install RX grants persist for reuse; retiring a profile also needs removal of its explicit
-install ACL grant and its Windows AppContainer registration. Production ACL/reparse-path and broker access reviews remain outstanding.
+- These checks cover the exercised process tree and controlled canaries, not every Windows resource or a hostile-browser security audit.
+  Broker handle access, reparse/canonical-path races, profile retirement and least-privilege ACL review remain production work.
+- Network proxy/PAC, XR, WebNN, Media Foundation protected CDM and other unexercised utilities may still request nested AC profiles and
+  hit SBOX44. Keep those features out of the supported surface until separately validated with a bounded policy/provisioning fix.
+- Shared GPU scheduling/VRAM, driver/kernel attacks, OS broker attack surface and external-network policy are not isolated by a Job.
+  Private desktops share a window station; do not infer general clipboard-object separation from this test.
+- Component updater/SODA extraction logs FILE_ERROR_NOT_FOUND in container profiles. Speech/model update behavior was not validated.
+  Widevine MediaKeys readiness does not establish end-to-end DRM playback.
+- Default stays off. Next is production ACL/path/broker review and packaged-build validation; no release output was touched.
+
+Evidence: `C:/src/tmp/m8/iso2` (ui4-*, private-*, concurrent-*, boundary*, tokens-final, desktop-api-cdb, handles-api, soak, S-final-*).
+Report: `C:/src/tmp/m8/out/iso2.md`. Earlier failed candidates remain in the local Stage 6/8 evidence and are not deployment modes.
