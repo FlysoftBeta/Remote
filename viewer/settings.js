@@ -9,6 +9,27 @@
     if (el.name === 'fullscreen') { if (saved.fullscreen != null) el.checked = saved.fullscreen; }
     else el.value = params.has(el.name) ? params.get(el.name) : (saved[el.name] || '');
   });
+  var instance = form.elements.instance, picker = document.getElementById('instance-picker');
+  var pickerLabel = document.getElementById('instance-picker-label'), initialInstance = instance.value;
+  var api = '/api/instances' + (form.elements.token.value ? '?token=' + encodeURIComponent(form.elements.token.value) : '');
+  fetch(api).then(function (response) { if (!response.ok) throw new Error('Instances unavailable'); return response.json(); }).then(function (rows) {
+    if (!Array.isArray(rows) || !rows.length || screen.hidden || instance.value !== initialInstance) return;
+    var running = rows.filter(function (row) { return row && typeof row.id === 'string' && row.state === 'running'; });
+    var selected = instance.value || (running.filter(function (row) { return row.id === 'default'; })[0] || running[0] || rows[0] || {}).id;
+    if (!selected) return;
+    var found = false;
+    rows.forEach(function (row) {
+      if (!row || typeof row.id !== 'string' || !row.id) return;
+      var option = document.createElement('option'); option.value = row.id;
+      option.textContent = (row.name || row.id) + ' (' + row.state + ')';
+      if (row.id === selected) found = true;
+      picker.appendChild(option);
+    });
+    if (!found) { var option = document.createElement('option'); option.value = selected; option.textContent = selected + ' (unlisted)'; picker.appendChild(option); }
+    picker.value = selected; instance.value = selected; pickerLabel.hidden = false;
+  }).catch(function () {});
+  picker.addEventListener('change', function () { instance.value = picker.value; });
+  instance.addEventListener('input', function () { pickerLabel.hidden = true; });
   try { var message = sessionStorage.getItem('remotekit.viewer.error'); sessionStorage.removeItem('remotekit.viewer.error'); if (message) { error.textContent = message; error.hidden = false; } } catch (e) {}
   function finish(message) {
     if (window.rk && window.rk.disconnect) window.rk.disconnect();
