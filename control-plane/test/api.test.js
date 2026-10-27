@@ -46,6 +46,10 @@ test('management HTTP auth, validation, CRUD, persistence and existing signallin
   await api('instances', 'POST', { id: 'work', profile: 'work', name: 'Work browser' }, 201);
   await api('instances/work', 'PATCH', { name: 'Renamed' });
   assert.equal((await api('instances/work')).name, 'Renamed');
+  const list = await api('instances'), item = await api('instances/work');
+  assert.deepEqual(list.find(row => row.id === 'work'), item);
+  for (const key of ['id', 'name', 'profile', 'isolation', 'state', 'pid', 'restarts', 'lastExit', 'nextRestartAt', 'viewerConnected', 'autostart']) assert.ok(key in item, `picker metadata: ${key}`);
+  assert.equal(item.name, 'Renamed'); assert.equal(item.state, 'stopped'); assert.equal(item.viewerConnected, false);
   for (const action of ['start', 'restart']) await api('instances/work/' + action, 'POST', undefined, 409);
   assert.equal((await api('instances/work/stop', 'POST')).state, 'stopped');
   await api('profiles/work', 'DELETE', undefined, 409);

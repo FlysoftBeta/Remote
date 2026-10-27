@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Multi-instance test receiver</title>
+<style>html,body{margin:0;background:black}video{width:800px;height:600px;object-fit:contain}</style>
+<video id="video" autoplay muted playsinline></video>
+<script>
+// Test-only receiver for protocol v1, independent of the product viewer/settings UI.
+const query = new URLSearchParams(location.search), video = document.getElementById('video');
+let session = null;
+window.rk = { get pc() { return session && session.pc; } };
+const socket = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host +
+  '/signal?role=viewer&instance=' + encodeURIComponent(query.get('instance') || 'default') +
+  '&token=' + encodeURIComponent(query.get('token') || ''));
+const send = message => { if (socket.readyState === 1) socket.send(JSON.stringify(message)); };
+const current = s => session === s;
+function reset() { if (session && session.pc) session.pc.close(); session = null; video.srcObject = null; }
+function fail(error) { window.multiError = String(error.stack || error); console.error(error); }
+async function drain(s) {
+  while (current(s) && s.ready && s.candidates.length) {
+    const candidate = s.candidates.shift();
+    await s.pc.addIceCandidate(candidate === null ? { candidate: '' } : candidate);
+  }
+}
+function peer(s) {
+  const pc = s.pc = new RTCPeerConnection({ iceServers: s.iceServers, bundlePolicy: 'max-bundle' });
+  pc.createDataChannel('input', { negotiated: true, id: 0, ordered: true });
+  const ctl = pc.createDataChannel('ctl', { negotiated: true, id: 1, ordered: true });
+  pc.createDataChannel('probe', { negotiated: true, id: 2, ordered: false, maxRetransmits: 0 });
+  ctl.onopen = () => {
+    if (!current(s)) return;
+    for (const message of [
+      { t: 'hello', v: 1, input: 1, caps: { touch: 0, osk: false, dpr: 1 }, view: { w: 800, h: 600, dpr: 1 } },
+      { t: 'resize', w: 800, h: 600, dpr: 1 }, { t: 'focus', focused: true }
+    ]) ctl.send(JSON.stringify(message));
+  };
+  pc.onicecandidate = e => { if (current(s)) send({ t: 'ice', sid: s.sid, candidate: e.candidate ? e.candidate.toJSON() : null }); };
+  pc.ontrack = e => {
+    if (!current(s)) return;
+    video.srcObject = e.streams[0] || new MediaStream([e.track]); video.play().catch(fail);
+  };
+  return pc;
+}
+socket.onopen = () => send({ t: 'hello', v: 1, caps: { touch: 0, osk: false, codecs: ['42e01f'] }, ua: navigator.userAgent });
+socket.onmessage = event => {
+  try {
+    const m = JSON.parse(event.data);
+    if (m.t === 'welcome') {
+      reset(); session = { sid: m.sid, pc: null, iceServers: m.iceServers || [], candidates: [], ready: false, chain: Promise.resolve() }; return;
+    }
+    const s = session; if (!s || m.sid !== s.sid) return;
+    if (m.t === 'bye') { reset(); return; }
+    if (m.t === 'ice') {
+      s.candidates.push(m.candidate);
+      if (s.ready) s.chain = s.chain.then(() => drain(s)).catch(fail);
+    } else if (m.t === 'offer') {
+      const pc = s.pc || peer(s);
+      s.chain = s.chain.then(async () => {
+        if (!current(s)) return;
+        s.ready = false; await pc.setRemoteDescription({ type: 'offer', sdp: m.sdp });
+        if (!current(s)) return;
+        s.ready = true; await drain(s);
+        for (const tr of pc.getTransceivers()) if (tr.receiver.track.kind === 'video') tr.direction = 'recvonly';
+        await pc.setLocalDescription(await pc.createAnswer());
+        if (current(s)) send({ t: 'answer', sid: s.sid, sdp: pc.localDescription.sdp });
+      }).catch(fail);
+    }
+  } catch (e) { fail(e); }
+};
+socket.onclose = reset;
+</script>

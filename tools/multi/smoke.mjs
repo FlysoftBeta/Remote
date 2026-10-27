@@ -63,10 +63,12 @@ async function startCP() {
 }
 async function viewer(id, suffix = '') {
   const dir = path.join(output, 'viewer-' + id + suffix);
+  // Exercise the legacy URL for default; named instances use the existing query parameter.
+  const url = `${base}/tools/multi/receiver.html?token=multi-test${id === 'default' ? '' : '&instance=' + encodeURIComponent(id)}`;
   launch(edge, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion', '--window-size=800,600',
-    `${base}/?instance=${id}&token=multi-test&stats=0`], 'viewer-' + id + suffix);
+    url], 'viewer-' + id + suffix);
   const dp = await poll(() => { const f = path.join(dir, 'DevToolsActivePort'); return fs.existsSync(f) && Number(fs.readFileSync(f, 'utf8').split('\n')[0]); });
   const target = await poll(async () => (await (await fetch(`http://127.0.0.1:${dp}/json/list`)).json()).find(p => p.type === 'page' && p.url.startsWith(base)));
   const cdp = await CDP.connect(target.webSocketDebuggerUrl); viewers.set(id + suffix, cdp);
@@ -98,19 +100,20 @@ try {
   await poll(async () => (await api('instances')).every(c => c.state === 'running'));
   const state = await api('instances');
   assert.equal(new Set(state.map(c => c.pid)).size, 3); assert.equal(new Set(state.map(c => c.userDataDir)).size, 3);
+  for (const row of state) fs.writeFileSync(path.join(row.userDataDir, 'multi-persistence.txt'), row.id);
   log('three running endpoints with distinct profiles', state);
   await Promise.all(ids.map(id => viewer(id)));
   const before = await Promise.all(ids.map(snapshot)); await sleep(1200);
   const after = await Promise.all(ids.map(snapshot));
-  after.forEach((s, i) => { assert.ok(s.frames > before[i].frames); report.frames[ids[i]] = { decoded: s.inbound.framesDecoded, frames: s.frames, delta: s.frames - before[i].frames, width: s.width, height: s.height }; });
+  after.forEach((s, i) => { assert.ok(s.inbound?.framesDecoded >= 3, `${ids[i]} endpoint disconnected during concurrent check`); assert.ok(s.frames > before[i].frames); report.frames[ids[i]] = { decoded: s.inbound.framesDecoded, frames: s.frames, delta: s.frames - before[i].frames, width: s.width, height: s.height }; });
   assert.ok((await api('instances')).every(c => c.viewerConnected));
   log('all three viewers decode new frames concurrently', report.frames);
-  await poll(async () => (await viewers.get('default').evaluate('document.getElementById("instance-picker").options.length')) === 3);
-  await viewers.get('default').evaluate('document.getElementById("instance-picker").value="default"; document.getElementById("instance-picker").dispatchEvent(new Event("change")); true');
-  await poll(() => viewers.get('default').evaluate('new URL(location.href).searchParams.get("instance")==="default" && new URL(location.href).searchParams.get("token")==="multi-test" && !!window.rk?.pc'));
-  await viewers.get('default').evaluate(probe);
-  await poll(async () => (await snapshot('default')).frames >= 3);
-  log('picker uses instance query and preserves token');
+  const choices = await api('instances');
+  for (const choice of choices) {
+    assert.equal(typeof choice.name, 'string'); assert.equal(typeof choice.profile, 'string');
+    assert.equal(typeof choice.isolation, 'string'); assert.equal(choice.state, 'running'); assert.equal(choice.viewerConnected, true);
+  }
+  log('API provides instance IDs, labels, profiles, isolation and viewer status; legacy default and named URLs stream');
   await api('profiles/alpha', 'DELETE', undefined, 409);
   await api('instances', 'POST', { id: 'duplicate', profile: 'alpha' }, 201);
   await api('instances/duplicate/start', 'POST', undefined, 409); await api('instances/duplicate', 'DELETE', undefined, 204);
@@ -137,9 +140,10 @@ try {
   await startCP();
   await poll(async () => { const rows = await api('instances'); return rows.length === 3 && rows.every(c => c.state === 'running' && c.autostart); });
   assert.deepEqual((await api('instances')).map(c => c.userDataDir), preRestart.map(c => c.userDataDir));
+  for (const row of await api('instances')) assert.equal(fs.readFileSync(path.join(row.userDataDir, 'multi-persistence.txt'), 'utf8'), row.id);
   // Reattach viewers to prove the relaunched media path on the same CP address.
   await Promise.all(ids.map(id => viewer(id, '-after')));
-  log('forced CP restart reclaims old trees, preserves profiles and autostarts all three with decoded frames');
+  log('forced CP restart reclaims old trees, preserves profile files and autostarts all three with decoded frames');
 
   const finalState = await api('instances'), finalRows = track();
   const endpointRows = finalRows.filter(p => finalState.some(s => browserTree(finalRows, s.pid).some(old => old.ProcessId === p.ProcessId)));

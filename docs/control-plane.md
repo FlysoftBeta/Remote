@@ -18,8 +18,8 @@ stdio transport to `re`. It is **not** on the media or input path and exists for
 
 ## Instances and profiles
 
-The viewer's top-right picker lists managed instances and selects `?instance=<id>`. An omitted parameter still selects `default`;
-other URL parameters (including `token`) survive selection. External WS endpoints and explicit instance URLs continue to work.
+Clients select an instance with `?instance=<id>`; an omitted parameter still selects `default`.
+External WS endpoints and explicit instance URLs continue to work. Viewer/settings UI belongs to the separate viewer redesign task.
 
 Management routes use the same `CP_TOKEN` secret as signalling: supply `Authorization: Bearer <token>` or `?token=<token>`.
 With no configured token they are unauthenticated, as is signalling. Mutations reject a mismatched browser `Origin`.
@@ -60,7 +60,19 @@ Status adds `userDataDir`, `state` (`stopped`, `starting`, `running`, `crashed`,
 viewer connected means a controlling signalling socket is present, not that media is decoding. Runtime status/counters reset with the CP.
 `crashed` denotes an instance that could not be started; a retryable process exit immediately moves through it into `backoff`.
 
+For a future settings-screen picker, `GET /api/instances` returns the same full objects as the single-instance GET route.
+Use `id` as the selection value and `name` as the display label; `state`, `viewerConnected`, `profile` and `isolation` are available
+for status/details. Preserve the current URL's other parameters (especially `token` and `cp`) when changing `instance`.
+The route lists managed configurations, including stopped instances; externally registered WS-only IDs are not added to this list.
+Keep an explicit current URL selection even if it is absent from the response. No viewer implementation is required by this API.
+For example, a list entry includes:
+
+```json
+{"id":"work","name":"Work browser","profile":"work","isolation":"job","autostart":true,"jobLimits":{"memoryMB":4096,"cpuRate":5000,"processCount":64},"jobUiLimits":"none","reArgs":[],"chromeArgs":[],"userDataDir":"C:\\remotekit-data\\profiles\\work","state":"running","pid":1234,"restarts":0,"lastExit":null,"nextRestartAt":null,"viewerConnected":false}
+```
+
 Each unexpected exit retries indefinitely with exponential delays 1, 2, 4, 8, 16, then 30 s (cap). A 60 s run resets the failure streak.
+`restarts` counts automatic retry attempts during the current CP lifetime; explicit restart actions do not increment it.
 A 90 s startup timeout kills a stalled endpoint and retries. Stop/delete/shutdown cancel timers before closing the process.
 CP SIGINT/SIGTERM stops all owned endpoints; on forced CP death its pipes close, and re exits on EOF/broken pipe.
 re's browser job keeps kill-on-close enabled even with resource limits, so endpoint death reclaims its browser tree.
@@ -95,6 +107,7 @@ Example request bodies, using the routes above:
 Create the profile, create the instance, then POST `/api/instances/work/start`. To remove both, DELETE the instance before its profile.
 Run unit/API tests with `npm --prefix control-plane test`. The short real multi-instance harness is
 `node tools/multi/smoke.mjs --out C:/src/tmp/m8/multi/run` (Windows, built dev re/chrome and installed Edge required).
+It uses a test receiver under `tools/multi/`, independent of the product viewer UI; it does not take latency measurements.
 
 ## TLS
 

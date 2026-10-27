@@ -24,7 +24,8 @@ flowchart LR
 - The control-plane starts `re` (`ENDPOINT_PATH`); `re` starts rb. After WebRTC is up, media and input go `re` <-> viewer directly.
 - The control-plane persists named instances and profiles under `CP_DATA_DIR` (default `.data`), autostarts selected instances, and
   restarts each independently with backoff. Its [REST API](control-plane.md#instances-and-profiles) manages lifecycle and job limits;
-  the viewer picker selects `?instance=<id>` (`default` preserves the original endpoint URL).
+  clients select `?instance=<id>` (`default` preserves the original endpoint URL). `GET /api/instances` supplies metadata/status for
+  the separate viewer settings redesign.
 - Component docs: [browser](browser.md), [re](re.md), [control-plane](control-plane.md), [viewer](viewer.md), [protocol](protocol.md),
   [video-pipeline](video-pipeline.md), [tools](tools.md).
 
