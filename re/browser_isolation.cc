@@ -28,6 +28,7 @@
 #include "base/win/security_descriptor.h"
 #include "base/win/sid.h"
 #include "base/win/startup_information.h"
+#include "base/win/win_util.h"
 
 namespace re {
 namespace {
@@ -93,6 +94,20 @@ bool GrantDirectory(const base::FilePath& path,
       sd ? sd->ToSddl(DACL_SECURITY_INFORMATION) : std::nullopt;
   const DWORD inherit = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
   auto owner = base::win::AccessToken::FromCurrentProcess();
+  if (writable && sd) {
+    // A shared parent's ALL APPLICATION PACKAGES grant must never let other
+    // containers read this tenant's profile. Keep only the tenant and brokers.
+    sd->set_dacl(base::win::AccessControlList());
+    sd->set_dacl_protected(true);
+    if (!sd->SetDaclEntry(base::win::WellKnownSid::kLocalSystem,
+                          base::win::SecurityAccessMode::kGrant,
+                          FILE_ALL_ACCESS, inherit) ||
+        !sd->SetDaclEntry(base::win::WellKnownSid::kBuiltinAdministrators,
+                          base::win::SecurityAccessMode::kGrant,
+                          FILE_ALL_ACCESS, inherit)) {
+      return false;
+    }
+  }
   if (!sd ||
       !EnsureGrant(
           *sd, sid,
@@ -114,6 +129,50 @@ bool GrantDirectory(const base::FilePath& path,
     return false;
   }
   return true;
+}
+
+std::optional<std::wstring> PrepareSandboxDesktop(
+    const base::win::Sid* sid,
+    ScopedBrowserDesktop& sandbox_desktop) {
+  const std::wstring desktop_name =
+      L"rb-sandbox." +
+      base::ASCIIToWide(base::Uuid::GenerateRandomV4().AsLowercaseString());
+  auto desktop_sd = base::win::SecurityDescriptor::FromHandle(
+      ::GetThreadDesktop(::GetCurrentThreadId()),
+      base::win::SecurityObjectType::kDesktop, DACL_SECURITY_INFORMATION);
+  if (!desktop_sd ||
+      (sid &&
+       !desktop_sd->SetDaclEntry(*sid, base::win::SecurityAccessMode::kGrant,
+                                 GENERIC_ALL, 0)) ||
+      !desktop_sd->SetDaclEntry(
+          base::win::WellKnownSid::kRestricted,
+          base::win::SecurityAccessMode::kDeny,
+          WRITE_DAC | WRITE_OWNER | DELETE | DESKTOP_CREATEMENU |
+              DESKTOP_CREATEWINDOW | DESKTOP_HOOKCONTROL |
+              DESKTOP_JOURNALPLAYBACK | DESKTOP_JOURNALRECORD |
+              DESKTOP_SWITCHDESKTOP,
+          0)) {
+    PLOG(ERROR) << "Prepare browser sandbox desktop ACL";
+    return std::nullopt;
+  }
+  auto absolute_sd = desktop_sd->ToAbsolute();
+  SECURITY_ATTRIBUTES attributes = {sizeof(attributes), &absolute_sd, FALSE};
+  sandbox_desktop.reset(::CreateDesktopW(desktop_name.c_str(), nullptr, nullptr,
+                                         0, GENERIC_ALL, &attributes));
+  if (!sandbox_desktop.is_valid()) {
+    PLOG(ERROR) << "Create browser sandbox desktop";
+    return std::nullopt;
+  }
+  if (!desktop_sd->SetMandatoryLabel(SECURITY_MANDATORY_UNTRUSTED_RID, 0,
+                                     SYSTEM_MANDATORY_LABEL_NO_WRITE_UP) ||
+      !desktop_sd->WriteToHandle(sandbox_desktop.get(),
+                                 base::win::SecurityObjectType::kDesktop,
+                                 LABEL_SECURITY_INFORMATION)) {
+    PLOG(ERROR) << "Label browser sandbox desktop";
+    return std::nullopt;
+  }
+  LOG(INFO) << "PRTS sandbox desktop=" << base::WideToUTF8(desktop_name);
+  return desktop_name;
 }
 
 std::optional<base::win::Sid> PrepareContainer(
@@ -186,43 +245,9 @@ std::optional<base::win::Sid> PrepareContainer(
   if (!length || length >= MAX_PATH)
     return std::nullopt;
   const std::wstring system_root(windows, length);
-  const std::wstring desktop_name =
-      L"rb-sandbox." +
-      base::ASCIIToWide(base::Uuid::GenerateRandomV4().AsLowercaseString());
-  auto desktop_sd = base::win::SecurityDescriptor::FromHandle(
-      ::GetThreadDesktop(::GetCurrentThreadId()),
-      base::win::SecurityObjectType::kDesktop, DACL_SECURITY_INFORMATION);
-  if (!desktop_sd ||
-      !desktop_sd->SetDaclEntry(*sid, base::win::SecurityAccessMode::kGrant,
-                                GENERIC_ALL, 0) ||
-      !desktop_sd->SetDaclEntry(
-          base::win::WellKnownSid::kRestricted,
-          base::win::SecurityAccessMode::kDeny,
-          WRITE_DAC | WRITE_OWNER | DELETE | DESKTOP_CREATEMENU |
-              DESKTOP_CREATEWINDOW | DESKTOP_HOOKCONTROL |
-              DESKTOP_JOURNALPLAYBACK | DESKTOP_JOURNALRECORD |
-              DESKTOP_SWITCHDESKTOP,
-          0)) {
-    PLOG(ERROR) << "Prepare browser sandbox desktop ACL";
+  const auto desktop_name = PrepareSandboxDesktop(&*sid, sandbox_desktop);
+  if (!desktop_name)
     return std::nullopt;
-  }
-  auto absolute_sd = desktop_sd->ToAbsolute();
-  SECURITY_ATTRIBUTES attributes = {sizeof(attributes), &absolute_sd, FALSE};
-  sandbox_desktop.reset(::CreateDesktopW(desktop_name.c_str(), nullptr, nullptr,
-                                         0, GENERIC_ALL, &attributes));
-  if (!sandbox_desktop.is_valid()) {
-    PLOG(ERROR) << "Create browser sandbox desktop";
-    return std::nullopt;
-  }
-  if (!desktop_sd->SetMandatoryLabel(SECURITY_MANDATORY_UNTRUSTED_RID, 0,
-                                     SYSTEM_MANDATORY_LABEL_NO_WRITE_UP) ||
-      !desktop_sd->WriteToHandle(sandbox_desktop.get(),
-                                 base::win::SecurityObjectType::kDesktop,
-                                 LABEL_SECURITY_INFORMATION)) {
-    PLOG(ERROR) << "Label browser sandbox desktop";
-    return std::nullopt;
-  }
-  LOG(INFO) << "PRTS sandbox desktop=" << base::WideToUTF8(desktop_name);
   // Do not pass broker credentials or host profile paths into a tenant.
   environment = base::internal::AlterEnvironment(
       {}, {{L"SystemRoot", system_root},
@@ -234,7 +259,7 @@ std::optional<base::win::Sid> PrepareContainer(
            {L"TEMP", temp.value()},
            {L"TMP", temp.value()},
            {L"RB_ISOLATION", base::ASCIIToWide(mode)},
-           {L"RB_SANDBOX_DESKTOP", desktop_name}});
+           {L"RB_SANDBOX_DESKTOP", *desktop_name}});
   LOG(INFO) << "PRTS AppContainer name=" << base::WideToUTF8(name)
             << " sid=" << base::WideToUTF8(sid->ToSddlString().value());
   return sid;
@@ -413,6 +438,16 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& requested_command,
     security.Capabilities = capabilities.data();
     security.CapabilityCount = capabilities.size();
   }
+  if (mode == "job" && ui_limits) {
+    const auto desktop_name = PrepareSandboxDesktop(nullptr, sandbox_desktop);
+    if (!desktop_name)
+      return base::Process();
+    const auto inherited = base::internal::GetEnvironment();
+    environment = base::internal::AlterEnvironment(
+        inherited,
+        {{L"RB_ISOLATION", L"job"}, {L"RB_SANDBOX_DESKTOP", *desktop_name}});
+    command.AppendSwitchASCII("rb-isolation", "job");
+  }
   // Atomic job assignment prevents children escaping between launch and assign,
   // and leaves no suspended orphan if the endpoint is killed during launch.
   base::win::StartupInformation startup;
@@ -434,11 +469,22 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& requested_command,
     return base::Process();
   }
   PROCESS_INFORMATION process = {};
+  std::wstring desktop_name;
+  if (sandbox_desktop.is_valid()) {
+    // A different desktop is required even with HANDLES: FindWindow can reveal
+    // foreign HWNDs and SetWindowsHookEx can succeed across outer jobs.
+    desktop_name = base::win::GetWindowObjectName(sandbox_desktop.get());
+    if (desktop_name.empty()) {
+      LOG(ERROR) << "Get isolated browser desktop name";
+      return base::Process();
+    }
+    startup.startup_info()->lpDesktop = desktop_name.data();
+  }
   std::wstring line = command.GetCommandLineString();
   if (!::CreateProcessW(
           command.GetProgram().value().c_str(), line.data(), nullptr, nullptr,
           TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-          container ? environment.data() : nullptr, nullptr,
+          !environment.empty() ? environment.data() : nullptr, nullptr,
           startup.startup_info(), &process)) {
     PLOG(ERROR) << "CreateProcessW(isolation=" << mode << ")";
     return base::Process();

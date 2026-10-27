@@ -1,24 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
-Date: Tue, 27 Oct 2026 19:30:00 +0800
-Subject: [PATCH] rb: guarded whole-browser AppContainer startup support
+Date: Wed, 28 Oct 2026 00:15:04 +0800
+Subject: [PATCH] rb outer browser isolation hooks
 
-Use LOCAL pipes for Crashpad and its self-monitor; open the sandbox desktop
-pre-created by re rather than creating a window station inside AppContainer.
-Log the nested child-AppContainer policy failure without changing its policy.
-
-Guard: RB_ISOLATION=lpac|appcontainer set by re --isolation (default off),
-plus rb-isolation for the failure diagnostic. Normal startup is unchanged.
-Upstream files: three; no child sandbox/token/IPC policy is weakened.
-Design: docs/isolation.md. Whole-browser isolation is still blocked by nested
-network AppContainer profile creation (result 44); not ready for deployment.
-Upstreamability: LOCAL pipe support is generalizable; desktop hand-off is rb
-specific and would need a generic broker interface before upstreaming.
+Use broker-provisioned alternate desktops and AppContainer-local Crashpad pipes. Keep nested child job process/memory policy while allowing the outer job to own UI restrictions. Log isolated child launch failures with their Win32 API error.
 
 Patch-Name: 20-rb-outer-isolation
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 diff --git a/sandbox/policy/win/sandbox_win.cc b/sandbox/policy/win/sandbox_win.cc
-index b6eccdade4..570f15cce5 100644
+index b6eccdade4..36cacdaad7 100644
 --- a/sandbox/policy/win/sandbox_win.cc
 +++ b/sandbox/policy/win/sandbox_win.cc
 @@ -589,6 +589,11 @@ ResultCode GenerateConfigForSandboxedProcess(const base::CommandLine& cmd_line,
@@ -33,33 +24,52 @@ index b6eccdade4..570f15cce5 100644
        DCHECK(false);
        return result;
      }
+@@ -714,6 +719,18 @@ ResultCode SandboxWin::SetJobLevel(Sandbox sandbox_type,
+                                    TargetConfig* config) {
+   DCHECK(!config->IsConfigured());
+ 
++  // RB: let the outer job supply UI restrictions. Keep the child's process
++  // and memory limits, but avoid two jobs imposing UI limits on one process.
++  JOBOBJECT_BASIC_UI_RESTRICTIONS outer_ui = {};
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("rb-isolation") &&
++      ::QueryInformationJobObject(nullptr, JobObjectBasicUIRestrictions,
++                                  &outer_ui, sizeof(outer_ui), nullptr) &&
++      outer_ui.UIRestrictionsClass) {
++    ui_exceptions |= JOB_OBJECT_UILIMIT_ALL;
++    LOG(INFO) << "RB outer UI=" << outer_ui.UIRestrictionsClass
++              << " child sandbox=" << static_cast<int>(sandbox_type);
++  }
++
+   ResultCode ret = config->SetJobLevel(job_level, ui_exceptions);
+   if (ret != SBOX_ALL_OK)
+     return ret;
 diff --git a/sandbox/win/src/alternate_desktop.cc b/sandbox/win/src/alternate_desktop.cc
-index f6017becb0..4b3b419aec 100644
+index f6017becb0..95392235ce 100644
 --- a/sandbox/win/src/alternate_desktop.cc
 +++ b/sandbox/win/src/alternate_desktop.cc
-@@ -5,8 +5,10 @@
+@@ -5,7 +5,9 @@
  #include "sandbox/win/src/alternate_desktop.h"
  
  #include <windows.h>
 +#include <string_view>
  
- #include "base/win/win_util.h"
 +#include "base/logging.h"
+ #include "base/win/win_util.h"
  #include "sandbox/win/src/acl.h"
  #include "sandbox/win/src/window.h"
- 
-@@ -48,11 +50,36 @@ ResultCode AlternateDesktop::UpdateDesktopIntegrity(
+@@ -48,11 +50,37 @@ ResultCode AlternateDesktop::UpdateDesktopIntegrity(
  // true.
  ResultCode AlternateDesktop::Initialize(bool alternate_winstation) {
    DCHECK(!desktop_ && !winstation_);
-+  // RB: the outer AppContainer cannot create a window station. re owns a
-+  // private desktop with the package SID and the usual restricted-token deny.
++  // RB: an outer container/UI job cannot create the alternate desktop. re
++  // provisions it with the package SID and the usual restricted-token deny.
 +  wchar_t isolation[16] = {};
 +  const DWORD isolation_length =
 +      ::GetEnvironmentVariableW(L"RB_ISOLATION", isolation, 16);
 +  if (isolation_length > 0 && isolation_length < 16 &&
 +      (std::wstring_view(isolation) == L"lpac" ||
-+       std::wstring_view(isolation) == L"appcontainer")) {
++       std::wstring_view(isolation) == L"appcontainer" ||
++       std::wstring_view(isolation) == L"job")) {
 +    wchar_t name[128] = {};
 +    const DWORD length =
 +        ::GetEnvironmentVariableW(L"RB_SANDBOX_DESKTOP", name, 128);
@@ -86,6 +96,24 @@ index f6017becb0..4b3b419aec 100644
  
      // Verify that everything is fine.
      if (!winstation_ || base::win::GetWindowObjectName(winstation_).empty()) {
+diff --git a/sandbox/win/src/broker_services.cc b/sandbox/win/src/broker_services.cc
+index 1787c7f774..e791a8afc1 100644
+--- a/sandbox/win/src/broker_services.cc
++++ b/sandbox/win/src/broker_services.cc
+@@ -290,6 +290,13 @@ ResultCode CreateSandboxProcess(
+           nullptr,  // Use current directory of the caller.
+           startup_info->startup_info(), &temp_process_info)) {
+     win_error = ::GetLastError();
++    // RB: retain the failing child type and exact API error for isolation runs.
++    if (::GetEnvironmentVariableW(L"RB_ISOLATION", nullptr, 0)) {
++      LOG(ERROR) << "RB CreateProcessAsUserW type="
++                 << command_line.GetSwitchValueASCII("type") << " utility="
++                 << command_line.GetSwitchValueASCII("utility-sub-type")
++                 << " error=" << win_error;
++    }
+     return SBOX_ERROR_CREATE_PROCESS;
+   }
+ 
 diff --git a/third_party/crashpad/crashpad/client/crashpad_client_win.cc b/third_party/crashpad/crashpad/client/crashpad_client_win.cc
 index 3b4b34b5a6..d6cd5f318d 100644
 --- a/third_party/crashpad/crashpad/client/crashpad_client_win.cc
