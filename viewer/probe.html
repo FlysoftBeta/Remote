@@ -1,0 +1,177 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebRTC codec probe</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  h2 { font-size: 16px; margin: 20px 0 6px; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { border: 1px solid #ccc; padding: 4px 6px; text-align: left; vertical-align: top; }
+  .ok { color: #070; font-weight: bold; } .bad { color: #b00; font-weight: bold; }
+  pre { white-space: pre-wrap; word-break: break-all; background: #f4f4f4; padding: 8px; font-size: 12px; }
+  button { font-size: 15px; padding: 6px 14px; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>WebRTC codec probe</h1>
+<div id="ua"></div>
+
+<h2>1. Receiver / sender capabilities (getCapabilities)</h2>
+<div id="caps"></div>
+
+<h2>2. Codecs in a locally generated recvonly offer (SDP)</h2>
+<div id="sdp"></div>
+
+<h2>3. Media decode support (MSE / MediaCapabilities)</h2>
+<div id="mse"></div>
+
+<h2>4. Loopback encode → decode test (canvas, 320x240, 3 s each)</h2>
+<button id="run">Run loopback test</button>
+<div id="loop"></div>
+
+<h2>Report (copy this)</h2>
+<pre id="report"></pre>
+
+<script>
+// Written for old Chrome (79+): no optional chaining, no top-level await.
+var report = [];
+function log(s) { report.push(s); document.getElementById('report').textContent = report.join('\n'); }
+function esc(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
+function cls(b) { return b ? '<span class="ok">yes</span>' : '<span class="bad">no</span>'; }
+
+document.getElementById('ua').textContent = navigator.userAgent;
+log('UA: ' + navigator.userAgent);
+
+// 1. getCapabilities
+(function () {
+  var out = '';
+  ['RTCRtpReceiver', 'RTCRtpSender'].forEach(function (k) {
+    var C = window[k];
+    if (!C || !C.getCapabilities) { out += '<p>' + k + '.getCapabilities: not available</p>'; log(k + ': getCapabilities n/a'); return; }
+    var caps = C.getCapabilities('video');
+    var rows = caps.codecs.filter(function (c) { return !/rtx|red|ulpfec|flexfec/i.test(c.mimeType); });
+    out += '<p><b>' + k + '</b></p><table><tr><th>mimeType</th><th>sdpFmtpLine</th></tr>';
+    rows.forEach(function (c) {
+      out += '<tr><td>' + esc(c.mimeType) + '</td><td>' + esc(c.sdpFmtpLine || '') + '</td></tr>';
+      log(k + ': ' + c.mimeType + ' ' + (c.sdpFmtpLine || ''));
+    });
+    out += '</table>';
+  });
+  document.getElementById('caps').innerHTML = out;
+})();
+
+// 2. codecs in a local offer
+(function () {
+  var pc = new RTCPeerConnection();
+  try { pc.addTransceiver('video', { direction: 'recvonly' }); } catch (e) { pc.createOffer = pc.createOffer.bind(pc, { offerToReceiveVideo: true }); }
+  pc.createOffer({ offerToReceiveVideo: true }).then(function (o) {
+    var lines = o.sdp.split(/\r?\n/), map = {}, fmtp = {};
+    lines.forEach(function (l) {
+      var m = l.match(/^a=rtpmap:(\d+) ([^\/]+)/); if (m) map[m[1]] = m[2];
+      var f = l.match(/^a=fmtp:(\d+) (.*)/); if (f) fmtp[f[1]] = f[2];
+    });
+    var html = '<table><tr><th>PT</th><th>codec</th><th>fmtp</th></tr>';
+    Object.keys(map).forEach(function (pt) {
+      if (/rtx|red|ulpfec|flexfec/i.test(map[pt])) return;
+      html += '<tr><td>' + pt + '</td><td>' + esc(map[pt]) + '</td><td>' + esc(fmtp[pt] || '') + '</td></tr>';
+      log('offer: ' + pt + ' ' + map[pt] + ' ' + (fmtp[pt] || ''));
+    });
+    document.getElementById('sdp').innerHTML = html + '</table>';
+    pc.close();
+  }).catch(function (e) { document.getElementById('sdp').textContent = 'createOffer failed: ' + e; log('offer failed: ' + e); });
+})();
+
+// 3. MSE / MediaCapabilities
+(function () {
+  var types = [
+    ['H.264 Baseline 3.1', 'video/mp4; codecs="avc1.42E01F"'],
+    ['H.264 CB 4.2', 'video/mp4; codecs="avc1.42E02A"'],
+    ['H.264 High 4.2', 'video/mp4; codecs="avc1.64002A"'],
+    ['VP8', 'video/webm; codecs="vp8"'],
+    ['VP9', 'video/webm; codecs="vp9"']
+  ];
+  var html = '<table><tr><th>codec</th><th>MSE</th><th>MediaCapabilities 1080p60 (supported / smooth / powerEfficient)</th></tr>';
+  var pending = types.map(function (t, i) {
+    var mse = window.MediaSource && MediaSource.isTypeSupported(t[1]);
+    var cell = 'n/a';
+    var p = Promise.resolve();
+    if (navigator.mediaCapabilities && navigator.mediaCapabilities.decodingInfo) {
+      p = navigator.mediaCapabilities.decodingInfo({ type: 'media-source', video: { contentType: t[1], width: 1920, height: 1080, bitrate: 8000000, framerate: 60 } })
+        .then(function (r) { cell = r.supported + ' / ' + r.smooth + ' / ' + r.powerEfficient; })
+        .catch(function (e) { cell = 'error: ' + e; });
+    }
+    return p.then(function () { return '<tr><td>' + t[0] + '</td><td>' + cls(mse) + '</td><td>' + esc(cell) + '</td></tr>' + '|' + t[0] + ': MSE=' + mse + ' MC=' + cell; });
+  });
+  Promise.all(pending).then(function (rows) {
+    rows.forEach(function (r) { var p = r.split('|'); html += p[0]; log('decode ' + p[1]); });
+    document.getElementById('mse').innerHTML = html + '</table>';
+  });
+})();
+
+// 4. Loopback: encode a canvas stream with each codec and check frames arrive
+function munge(sdp, codec) {
+  // Keep only the payload types of the wanted codec (+ its rtx) in the video m-line.
+  var lines = sdp.split('\r\n'), pts = [], keep = {};
+  lines.forEach(function (l) { var m = l.match(/^a=rtpmap:(\d+) ([^\/]+)/); if (m && m[2].toUpperCase() === codec) pts.push(m[1]); });
+  if (!pts.length) return null;
+  pts.forEach(function (p) { keep[p] = 1; });
+  lines.forEach(function (l) { var m = l.match(/^a=fmtp:(\d+) apt=(\d+)/); if (m && keep[m[2]]) keep[m[1]] = 1; });
+  var out = [], inVideo = false;
+  lines.forEach(function (l) {
+    if (/^m=/.test(l)) { inVideo = /^m=video/.test(l); if (inVideo) { var f = l.split(' '); l = f.slice(0, 3).concat(f.slice(3).filter(function (p) { return keep[p]; })).join(' '); } }
+    else if (inVideo) { var m = l.match(/^a=(rtpmap|fmtp|rtcp-fb):(\d+)/); if (m && !keep[m[2]]) return; }
+    out.push(l);
+  });
+  return out.join('\r\n');
+}
+function loopback(codec) {
+  return new Promise(function (resolve) {
+    var c = document.createElement('canvas'); c.width = 320; c.height = 240;
+    var g = c.getContext('2d'), n = 0;
+    var timer = setInterval(function () { g.fillStyle = 'hsl(' + (n * 7 % 360) + ',80%,50%)'; g.fillRect(0, 0, 320, 240); g.fillStyle = '#000'; g.fillText(codec + ' ' + n++, 10, 20); }, 33);
+    var stream = c.captureStream(30);
+    var a = new RTCPeerConnection(), b = new RTCPeerConnection(), done = false;
+    a.onicecandidate = function (e) { if (e.candidate) b.addIceCandidate(e.candidate).catch(function () {}); };
+    b.onicecandidate = function (e) { if (e.candidate) a.addIceCandidate(e.candidate).catch(function () {}); };
+    stream.getTracks().forEach(function (t) { a.addTrack(t, stream); });
+    var v = document.createElement('video'); v.muted = true; v.autoplay = true; v.playsInline = true; v.width = 160;
+    b.ontrack = function (e) { v.srcObject = e.streams[0]; };
+    function finish(res) { if (done) return; done = true; clearInterval(timer); a.close(); b.close(); resolve(res); }
+    a.createOffer().then(function (o) {
+      var s = munge(o.sdp, codec); if (!s) { finish({ ok: false, why: 'not in local offer' }); return; }
+      return a.setLocalDescription({ type: 'offer', sdp: s })
+        .then(function () { return b.setRemoteDescription({ type: 'offer', sdp: s }); })
+        .then(function () { return b.createAnswer(); })
+        .then(function (ans) { return b.setLocalDescription(ans).then(function () { return a.setRemoteDescription(ans); }); })
+        .then(function () {
+          setTimeout(function () {
+            b.getStats().then(function (st) {
+              var frames = 0, impl = '';
+              st.forEach(function (r) { if (r.type === 'inbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) { frames = r.framesDecoded || 0; impl = r.decoderImplementation || ''; } });
+              a.getStats().then(function (sa) {
+                var eimpl = '';
+                sa.forEach(function (r) { if (r.type === 'outbound-rtp' && (r.kind === 'video' || r.mediaType === 'video')) eimpl = r.encoderImplementation || ''; });
+                finish({ ok: frames > 10, why: 'framesDecoded=' + frames + (impl ? ' decoder=' + impl : '') + (eimpl ? ' encoder=' + eimpl : '') });
+              });
+            });
+          }, 3000);
+        });
+    }).catch(function (e) { finish({ ok: false, why: String(e) }); });
+  });
+}
+document.getElementById('run').onclick = function () {
+  var el = document.getElementById('loop'); el.innerHTML = 'running...';
+  var codecs = ['H264', 'VP8', 'VP9'], html = '<table><tr><th>codec</th><th>works</th><th>detail</th></tr>';
+  codecs.reduce(function (p, codec) {
+    return p.then(function () { return loopback(codec).then(function (r) {
+      html += '<tr><td>' + codec + '</td><td>' + cls(r.ok) + '</td><td>' + esc(r.why) + '</td></tr>';
+      log('loopback ' + codec + ': ' + (r.ok ? 'OK' : 'FAIL') + ' ' + r.why);
+      el.innerHTML = html + '</table>';
+    }); });
+  }, Promise.resolve());
+};
+</script>
+</body>
+</html>
