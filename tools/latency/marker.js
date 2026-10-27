@@ -1,4 +1,4 @@
-// Frame marker encoded in pixels (design/06-protocol.md section 4.2, design/03 section 5).
+// Frame marker encoded in pixels (docs/protocol.md section 4.2, design/03 section 5).
 // One row at the top-left: 2 sync cells (white, black) + 72 data cells; integer sender geometry is shared below.
 // Data (big-endian bits): frameId u16 | t u32 (sender wall-clock ms, low 32 bits) | inputSeq u16 | crc8(poly 0x07).
 // Plain script: global RKMarker in browsers, module.exports in Node.

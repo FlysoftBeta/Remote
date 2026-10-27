@@ -1,4 +1,4 @@
-// remotekit control-plane sample (D13, design/06-protocol.md section 1): static files + WebSocket signalling + sessions.
+// remotekit control-plane sample (D13, docs/protocol.md section 1): static files + WebSocket signalling + sessions.
 // Not on the media/input path. Run: node control-plane [--port 8080]; env CP_TOKEN (auth placeholder), ENDPOINT_PATH (stdio endpoint).
 import http from 'node:http';
 import fs from 'node:fs';
@@ -190,11 +190,32 @@ setInterval(() => wss.clients.forEach(ws => {
   c.once('pong', () => { c._rkDead = false; });
 }), 15000).unref();
 
-// Optional in-tree endpoint over stdio (06 section 1.4).
-if (process.env.ENDPOINT_PATH) {
-  const conn = spawnEndpoint(process.env.ENDPOINT_PATH, 'default', onMessage, onClose, log);
-  conn.role = 'endpoint';
+// Optional in-tree endpoint over stdio (06 section 1.4), restarted with backoff when it exits (crash, or the browser died and
+// the endpoint followed). The viewer keeps its signalling socket and renegotiates when the new endpoint registers.
+const RESTART_DELAYS_MS = [1000, 2000, 5000], STABLE_MS = 60000, MAX_FAST_FAILURES = 5;
+let stopping = false;
+function superviseEndpoint(exe) {
+  let failures = 0;
+  const launch = () => {
+    const started = Date.now();
+    const conn = spawnEndpoint(exe, 'default', onMessage, c => {
+      onClose(c);
+      if (stopping) return;
+      const upMs = Date.now() - started;
+      if (upMs >= STABLE_MS) failures = 0;
+      if (++failures > MAX_FAST_FAILURES) {
+        log(`endpoint failed ${failures} times without running ${STABLE_MS / 1000} s; giving up, restart the control plane`);
+        return;
+      }
+      const delay = RESTART_DELAYS_MS[Math.min(failures - 1, RESTART_DELAYS_MS.length - 1)];
+      log(`endpoint exited after ${(upMs / 1000).toFixed(1)} s; restart ${failures}/${MAX_FAST_FAILURES} in ${delay / 1000} s`);
+      setTimeout(launch, delay);
+    }, log);
+    conn.role = 'endpoint';
+  };
+  launch();
 }
+if (process.env.ENDPOINT_PATH) superviseEndpoint(process.env.ENDPOINT_PATH);
 
 server.listen(PORT, process.env.HOST || undefined, () => log(`control-plane v${V} on http://localhost:${server.address().port}/ (mock endpoint: /mock)`));
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; process.exit(0); });

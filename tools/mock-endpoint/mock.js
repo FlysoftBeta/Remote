@@ -1,4 +1,4 @@
-// Mock endpoint (design/06-protocol.md): a browser page that plays the endpoint role.
+// Mock endpoint (docs/protocol.md): a browser page that plays the endpoint role.
 // canvas.captureStream -> H.264 (preferred) -> viewer, with the latency pixel marker, input echo and a fake
 // text field that drives the IME/OSK messages. Params: ?instance=default&w=1920&h=1080&fps=30&kbps=12000&token=&hint=
 (function () {

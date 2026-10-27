@@ -36,7 +36,7 @@ const opts = {
   longSecs: num('long-secs', smoke ? 16 : 5400), sampleSecs: num('sample-secs', smoke ? 4 : 30),
   resizeSecs: num('resize-secs', smoke ? 4 : 60), reconnects: num('reconnects', smoke ? 1 : 5, 1, 1000),
   sessions: num('sessions', smoke ? 2 : 3, 2, 3), concurrentSecs: num('concurrent-secs', smoke ? 5 : 30),
-  recoverySecs: num('recovery-secs', smoke ? 6 : 30), startupSecs: num('startup-secs', smoke ? 45 : 90),
+  recoverySecs: num('recovery-secs', 30), startupSecs: num('startup-secs', smoke ? 45 : 90),
   scenario: arg('scenario', 'S'), port: num('port', 8400, 1024, 63515),
   maxPrivateMiBHour: num('max-private-mib-hour', 100, 0), maxHandlesHour: num('max-handles-hour', 100, 0),
   maxFreezes: num('max-freezes', 0, 0), minFps: num('min-fps', 1),
@@ -73,7 +73,7 @@ function tableNumbers(r) {
   if (r.name === 'reconnect') return `first frame ms: ${n.attempts.map(a => fmt(a.firstFrameMs)).join(', ')}`;
   if (r.name === 'concurrent') return n.sessions.map(s => `port ${s.port}: ${fmt(s.fps)} fps, +${s.frameDelta} frames`).join('; ');
   if (r.name === 'resize') return `${n.resizes} resizes, ${n.width}x${n.height} (expected ${n.expectedWidth}x${n.expectedHeight}), recovery ${fmt(n.recoveryMs)}ms, marker failures ${n.markerFailures}`;
-  return `auto recovery ${fmt(n.automaticRecoveryMs)}ms, freezes ${n.freezesOver500ms}, marker failures ${n.markerFailuresDuringFault}, dropped delta ${n.framesDroppedDelta}; ${n.operatorRestart ? 'operator restart ' + fmt(n.operatorRestart.startupMs) + 'ms' : 'new GPU PID ' + n.replacementGpuPid}`;
+  return `auto recovery ${fmt(n.automaticRecoveryMs)}ms, freezes ${n.freezesOver500ms}, marker failures ${n.markerFailuresDuringFault}, dropped delta ${n.framesDroppedDelta}; ${n.replacementGpuPid !== undefined ? 'new GPU PID ' + n.replacementGpuPid : 'automatic'}`;
 }
 async function freePort(port) {
   await new Promise((resolve, reject) => {
@@ -231,12 +231,6 @@ async function sampleFor(session, secs) {
     write();
   }
 }
-async function restart(s, label) {
-  await s.stop();
-  const next = new Session(0, label);
-  await next.start();
-  return { startupMs: next.firstFrameMs, sample: await next.sample() };
-}
 async function scenario(name) {
   const r = { name, status: 'running', criterion: '', started: new Date().toISOString() };
   report.scenarios.push(r); write();
@@ -308,13 +302,9 @@ async function scenario(name) {
         r.numbers.replacementGpuPid = replacement?.ProcessId ?? null;
         r.status = recovery && replacement ? 'pass' : 'fail';
       } else {
-        const disconnected = health.instances.every(i => !i.endpoint && !i.session);
-        r.numbers.clearlyReported = disconnected && diagnostics.length > 0;
-        r.numbers.operatorRestart = await restart(s, name + '-operator-restart');
-        r.criterion = name === 'browser-crash'
-          ? `automatic frames within ${opts.recoverySecs}s OR endpoint/session cleared with crash diagnostic; operator chain restart decodes`
-          : `CP clears endpoint/session after kill; observe auto recovery for ${opts.recoverySecs}s; operator chain restart decodes`;
-        r.status = (name === 'browser-crash' ? recovery || r.numbers.clearlyReported : disconnected) && r.numbers.operatorRestart.sample.frames > 0 ? 'pass' : 'fail';
+        // The control plane restarts the endpoint (backoff) and the viewer renegotiates on its own.
+        r.criterion = `${name === 'browser-crash' ? 'browser' : 'endpoint'} killed: new viewer frames without operator action within ${opts.recoverySecs}s`;
+        r.status = recovery && health.instances.some(i => i.endpoint && i.session) ? 'pass' : 'fail';
       }
       r.samples = s.samples;
     } else if (name === 'concurrent') {

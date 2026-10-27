@@ -1,4 +1,4 @@
-// Input capture and coordinate mapping (design/06-protocol.md section 2). Chrome 89+, no newer APIs without fallback.
+// Input capture and coordinate mapping (docs/protocol.md section 2). Chrome 89+, no newer APIs without fallback.
 // RKInput(stage, video, send) ; send(arrayBuffer, seq, immediate) is provided by the viewer.
 (function (root) {
   'use strict';

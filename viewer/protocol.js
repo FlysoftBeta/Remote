@@ -1,4 +1,4 @@
-// remotekit protocol v1 (design/06-protocol.md): constants and the binary `input` DataChannel codec.
+// remotekit protocol v1 (docs/protocol.md): constants and the binary `input` DataChannel codec.
 // Plain ES2017 script: works as a <script> in Chrome 89+ (global RK) and via require() in Node.
 (function (root, factory) {
   var api = factory();

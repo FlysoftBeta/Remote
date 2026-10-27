@@ -338,7 +338,7 @@ The software presets emit Constrained Baseline `42c02a` at 60 fps, four slices, 
 
 ## Reproduction and artifacts
 
-Scripts and harness are in [tools/encoder-tuning](../tools/encoder-tuning/). `setup.ps1` downloads task-local FFmpeg and OpenH264, copies S7's upstream dispatcher/header artifacts into this task, extracts the natural source and generates the other references. `build.bat` compiles the standalone harness with VS 2026. No code is linked from a Chromium build.
+Scripts and harness are in [tools/encoder-tuning](../../tools/encoder-tuning/). `setup.ps1` downloads task-local FFmpeg and OpenH264, copies S7's upstream dispatcher/header artifacts into this task, extracts the natural source and generates the other references. `build.bat` compiles the standalone harness with VS 2026. No code is linked from a Chromium build.
 
 ```powershell
 ./tools/encoder-tuning/setup.ps1

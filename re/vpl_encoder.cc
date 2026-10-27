@@ -53,6 +53,9 @@ using SteadyClock = std::chrono::steady_clock;
 constexpr char kNativeTag[] = "rb-owned-nv12-v1";
 constexpr size_t kMaxBitstreamBytes = 16 * 1024 * 1024;
 constexpr auto kBusyTimeout = std::chrono::milliseconds(100);
+// A shared GPU (concurrent sessions, other media load) can stall an encode for
+// seconds without being broken; only a longer stall fails the encoder.
+constexpr auto kSyncStallLimit = std::chrono::seconds(5);
 
 bool ValidSize(int width, int height) {
   return width > 0 && height > 0 && width <= 4096 && height <= 4096 &&
@@ -905,7 +908,9 @@ class VplEncoder::Impl {
     // it before reset, upload, or buffer reuse; its picture was already dropped.
     if (pending_sync_) {
       const auto status =
-          MFXVideoCORE_SyncOperation(session_, pending_sync_, 100);
+          MFXVideoCORE_SyncOperation(session_, pending_sync_, 5);
+      if (status == MFX_WRN_IN_EXECUTION)
+        return DropStalled(frame);
       if (status != MFX_ERR_NONE)
         return Drop(frame, "pending SyncOperation", status, true);
       pending_sync_ = nullptr;
@@ -967,7 +972,10 @@ class VplEncoder::Impl {
       return Drop(frame, "EncodeFrameAsync", status, true);
     // Never hold ID3D10Multithread::Enter or an application mutex here.
     pending_sync_ = sync;
+    pending_since_ = SteadyClock::now();
     status = MFXVideoCORE_SyncOperation(session_, sync, 100);
+    if (status == MFX_WRN_IN_EXECUTION)
+      return DropStalled(frame);
     if (status != MFX_ERR_NONE)
       return Drop(frame, "SyncOperation", status, true);
     pending_sync_ = nullptr;
@@ -1010,6 +1018,7 @@ class VplEncoder::Impl {
       return Fail("IDR without SPS/PPS");
     ++frames_;
     consecutive_errors_ = 0;
+    stall_logged_ = false;
     encoded_bytes_ += bits.DataLength;
     if (idr)
       ++idrs_;
@@ -1099,6 +1108,20 @@ class VplEncoder::Impl {
     return WEBRTC_VIDEO_CODEC_OK;
   }
 
+  // The operation is still running on a busy GPU: drop the raw frame and keep
+  // draining it on later frames; fail only when it never completes.
+  int DropStalled(const webrtc::VideoFrame& frame) {
+    if (SteadyClock::now() - pending_since_ > kSyncStallLimit)
+      return Fail("SyncOperation stalled", MFX_WRN_IN_EXECUTION);
+    if (!stall_logged_) {
+      stall_logged_ = true;
+      LOG(WARNING) << "PRTS VPL SyncOperation in execution; GPU busy, dropping";
+    }
+    force_idr_ = true;
+    callback_->OnFrameDropped(frame.rtp_timestamp(), 0, true);
+    return WEBRTC_VIDEO_CODEC_OK;
+  }
+
   int Fail(const char* operation, mfxStatus status = MFX_ERR_UNKNOWN) {
     RTC_LOG(LS_ERROR) << "PRTS VPL " << operation << " status=" << status
                       << "; fallback encoder=openh264";
@@ -1145,6 +1168,8 @@ class VplEncoder::Impl {
   uint64_t cap_violations_ = 0;
   mfxBitstream bits_{};
   mfxSyncPoint pending_sync_ = nullptr;
+  SteadyClock::time_point pending_since_;
+  bool stall_logged_ = false;
 };
 
 VplEncoder::VplEncoder(std::shared_ptr<VplEncoderState> state,

@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
 #include "base/sequence_checker.h"
+#include "base/win/scoped_handle.h"
 #include "chrome/browser/rb/mojom/rb.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -42,6 +43,9 @@ class EndpointLink {
   void OnDisconnect();
   raw_ptr<Delegate> delegate_;  // Outlives link; callbacks may destroy link.
   base::Process browser_process_;
+  // Kill-on-close job: the browser dies with the endpoint, even when the
+  // endpoint is killed, so a restarted endpoint finds its profile free.
+  base::win::ScopedHandle job_;
   mojo::Remote<rb::mojom::RbBrowser> browser_;
   mojo::Receiver<rb::mojom::RbBrowserClient> client_receiver_;
   SEQUENCE_CHECKER(sequence_checker_);

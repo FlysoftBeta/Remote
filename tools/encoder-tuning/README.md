@@ -1,6 +1,6 @@
 # Standalone encoder tuning
 
-Report: [`research/t1-encoder-tuning.md`](../../research/t1-encoder-tuning.md).
+Report: [`research/t1-encoder-tuning.md`](../../docs/research/t1-encoder-tuning.md).
 Artifacts: `C:/src/tmp/t1-encoder-tuning/` only. No Chromium builds or product edits.
 
 Prerequisites: VS 2026 Community, Git's curl/bzip2, Node 24, Intel UHD 630 legacy Media SDK runtime, and the S7 dispatcher/header cache under `C:/src/tmp/s7/`. `s7_support.h` is a local copy of the S7 standalone GPU/allocator/parameter helpers, not a product encoder.

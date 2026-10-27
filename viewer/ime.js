@@ -1,4 +1,4 @@
-// Remote keyboard / IME bridge (design/06-protocol.md sections 3.2-3.3), Chrome 89+.
+// Remote keyboard / IME bridge (docs/protocol.md sections 3.2-3.3), Chrome 89+.
 (function (root) {
   'use strict';
   var INPUTMODE = { numeric: 'numeric', decimal: 'decimal', tel: 'tel', url: 'url', email: 'email', search: 'search', none: 'none', text: 'text' };

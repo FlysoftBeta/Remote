@@ -1,4 +1,4 @@
-// Clock-offset estimation over the `probe` DataChannel (design/06-protocol.md section 4.1).
+// Clock-offset estimation over the `probe` DataChannel (docs/protocol.md section 4.1).
 // Viewer side: new RKClock(channel) ; endpoint side: RKClock.answer(channel, msg).
 // offset = endpointClock - viewerClock, taken from the minimum-RTT sample of the last 32.
 (function (root) {

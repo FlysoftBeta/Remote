@@ -7,6 +7,8 @@
 #pragma allow_unsafe_libc_calls
 #endif
 
+#include <algorithm>
+
 #include "re/d3d_frame_source.h"
 #include "re/latency_stats.h"
 
@@ -182,8 +184,21 @@ class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
     if (native_pool_)
       native_pool_->ClearImports();
     if (!device_ || !handle.is_valid() || size.IsEmpty() ||
-        size.width() > 8192 || size.height() > 8192 || buffers_.size() >= 64) {
+        size.width() > 8192 || size.height() > 8192) {
+      LOG(ERROR) << "PRTS NewBuffer rejected id=" << id
+                 << " device=" << !!device_ << " handle=" << handle.is_valid()
+                 << " size=" << size.ToString();
       return;
+    }
+    // The browser never reuses an id, but can keep creating textures when
+    // Viz reallocates its pool (a stalled GPU does this). Retire the least
+    // recently used import instead of refusing every later buffer.
+    if (buffers_.size() >= kMaxBuffers) {
+      auto lru = std::min_element(
+          buffers_.begin(), buffers_.end(), [](const auto& a, const auto& b) {
+            return a.second.last_use < b.second.last_use;
+          });
+      buffers_.erase(lru);
     }
     Buffer buffer;
     HRESULT hr = device_->OpenSharedResource1(handle.GetHandle().get(),
@@ -200,8 +215,12 @@ class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
         desc.Height != static_cast<UINT>(size.height()) ||
         desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.ArraySize != 1 ||
         desc.MipLevels != 1 || desc.SampleDesc.Count != 1) {
+      LOG(ERROR) << "PRTS NewBuffer texture mismatch id=" << id << " "
+                 << desc.Width << "x" << desc.Height << " format=" << desc.Format
+                 << " array=" << desc.ArraySize << " mips=" << desc.MipLevels;
       return;
     }
+    buffer.last_use = ++buffer_use_;
     buffers_.emplace(id, std::move(buffer));
     // The owning PlatformHandle closes here; the opened COM resource persists.
   }
@@ -219,6 +238,8 @@ class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
       LOG(INFO) << "PRTS OnFrame #" << frames_in;
     }
     auto it = buffers_.find(info->buffer_id);
+    if (it != buffers_.end())
+      it->second.last_use = ++buffer_use_;
     FrameGeometry g;
     auto job = std::make_unique<Job>();
     job->received = received;
@@ -239,7 +260,7 @@ class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
         info->capture_end.is_null()) {
       static int drops = 0;
       if (drops++ % 100 == 0) {
-        LOG(WARNING) << "PRTS drop frame: known=" << (it != buffers_.end())
+        LOG(WARNING) << "PRTS drop frame: id=" << info->buffer_id << " known=" << (it != buffers_.end())
                      << " visible=" << visible.ToString()
                      << " coded=" << info->coded_size.ToString()
                      << " geometry=" << g.width << "x" << g.height
@@ -491,7 +512,10 @@ class D3DFrameSource::Impl final : public rb::mojom::RbFrameSink {
   struct Buffer {
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<IDXGIKeyedMutex> mutex;
+    uint64_t last_use = 0;
   };
+  static constexpr size_t kMaxBuffers = 64;
+  uint64_t buffer_use_ = 0;
   struct Job {
     ComPtr<ID3D11Texture2D> texture;
     webrtc::scoped_refptr<webrtc::VideoFrameBuffer> native;

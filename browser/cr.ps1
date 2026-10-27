@@ -1,5 +1,5 @@
 <#
-remotekit Chromium workflow (design/02-browser-patches.md section 4).
+remotekit Chromium workflow (docs/browser.md).
 
   Infra (this repo):  browser\PIN.json, browser\series, browser\patches\*.patch, browser\args\{dev,rel}.gn
   Checkout:           $env:CR_ROOT (default C:\src\chromium)\src ; depot_tools: C:\src\depot_tools

@@ -12,7 +12,7 @@ use_siso = true
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
 rtc_use_h264 = true
-# Widevine CDM bundled (design/07-widevine.md); the CDM files are copied into third_party/widevine/cdm/win/x64 outside the patch series.
+# Widevine CDM bundled (docs/browser.md); the CDM files are copied into third_party/widevine/cdm/win/x64 outside the patch series.
 enable_widevine = true
 enable_library_cdms = true
 bundle_widevine_cdm = true

@@ -33,8 +33,8 @@ Select any combination of these flags; `--all` runs them in the following order:
 |---|---|---|
 | `--long-run` | 5,400 seconds, sample every 30 seconds | Every window >=1 fps with valid decoded marker latency; no freezes >500ms. After >=15 min, regression slopes <=100 MiB/hour and <=100 handles/hour for each process group. |
 | `--reconnect` | 5 close/reopen cycles | Each new viewer tab decodes its first frame within 30s. The headless Edge process stays open with a temporary blank tab. |
-| `--browser-crash` | Kill owned browser root PID | New frames within 30s, or endpoint/session removed with an explicit diagnostic. Then a harness/operator chain restart must decode. |
-| `--endpoint-crash` | Kill owned endpoint PID | CP health clears endpoint/session; observe automatic recovery for 30s; a harness/operator chain restart must decode. |
+| `--browser-crash` | Kill owned browser root PID | The control plane restarts `re` (backoff 1/2/5 s); the viewer renegotiates; new frames within 30s without operator action. |
+| `--endpoint-crash` | Kill owned endpoint PID | Same: automatic restart and new viewer frames within 30s; health shows endpoint and session again. |
 | `--gpu-restart` | Kill owned Chrome GPU PID | A replacement GPU PID and three new viewer frames within 30s. |
 | `--concurrent` | 3 sessions, 30s observation | Independent CP/endpoint/browser profiles and ports all continue decoding with valid markers. |
 | `--resize` | 60s, alternate viewport at ~10 Hz | End at 1280x720 viewport; decoded dimensions equal the video rectangle in device pixels and three new frames arrive within 30s. |
@@ -45,7 +45,7 @@ Duration/count controls: `--long-secs`, `--sample-secs`, `--resize-secs`,
 `--smoke`), writes partial evidence and cleans up on expiry. This budget includes
 startup and cleanup; it does not shorten the 90 minute measurement silently.
 Smoke defaults: 16s long run / 4s samples, 4s resize, one reconnect, two concurrent
-sessions for 5s, 6s recovery and 45s startup. Smoke leak checks are `partial`, not a
+sessions for 5s, 30s recovery and 45s startup. Smoke leak checks are `partial`, not a
 leak pass. Change `--max-private-mib-hour`, `--max-handles-hour`, `--max-freezes`,
 `--min-fps` to adjust explicit acceptance limits.
 
@@ -82,9 +82,7 @@ Inspect the statuses before treating exit 0 as a full soak pass.
 Current limits:
 
 - The CP has one auto-launched endpoint and no endpoint respawn policy. The
-  endpoint-crash scenario reports automatic recovery separately from the explicit
-  operator restart, which restarts the owned CP+endpoint chain. A `pass` can mean
-  clear failure reporting plus successful operator restart; it does not imply HA.
+  browser/endpoint crash scenarios pass only on automatic recovery by the control-plane supervisor.
 - Concurrent checks exercise separate CP instances. Shared-CP instance routing
   exists, but the CP launcher does not provision multiple native endpoints.
 - GPU memory is omitted: no cheap/reliable per-process GPU counter is assumed.

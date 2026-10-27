@@ -1,4 +1,4 @@
-// stdio transport for the in-tree endpoint (design/06-protocol.md section 1.4): the same JSON messages as the
+// stdio transport for the in-tree endpoint (docs/protocol.md section 1.4): the same JSON messages as the
 // WebSocket endpoint role, framed as 4-byte LE length + UTF-8 JSON on stdin/stdout; stderr is the endpoint log.
 import { spawn } from 'node:child_process';
 import { Decoder, Writer } from './framing.js';

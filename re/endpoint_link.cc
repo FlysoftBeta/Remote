@@ -16,6 +16,8 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include <windows.h>
+
 #include "base/process/launch.h"
 #include "chrome/browser/rb/rb_switches.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
@@ -71,6 +73,16 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
                                  supported ? "fence" : "mutex");
   command_line.AppendSwitch("rb-remote");
   command_line.AppendSwitchASCII("headless", "new");
+  job_.Set(::CreateJobObject(nullptr, nullptr));
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!job_.is_valid() ||
+      !::SetInformationJobObject(job_.get(), JobObjectExtendedLimitInformation,
+                                 &limits, sizeof(limits))) {
+    LOG(ERROR) << "PRTS browser job object failed: " << ::GetLastError();
+    return false;
+  }
+  options.job_handle = job_.get();
   browser_process_ = base::LaunchProcess(command_line, options);
   channel.RemoteProcessLaunchAttempted();  // Required on success AND failure.
   if (!browser_process_.IsValid()) {
