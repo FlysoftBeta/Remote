@@ -1,0 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Tue, 27 Oct 2026 12:29:54 +0800
+Subject: [PATCH] re_native target
+
+Patch-Name: 20-re-native-target
+
+diff --git a/BUILD.gn b/BUILD.gn
+index df6edd0b82..f46443197d 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -861,7 +861,7 @@ group("gn_all") {
+   # RB: in-tree browser-endpoint (src/rb_legacy_endpoint is a junction to
+   # remotekit/endpoint, not part of the patch).
+   if (is_win && !is_cronet_build) {
+-    deps += [ "//rb_legacy_endpoint" ]
++    deps += [ "//rb_legacy_endpoint", "//re_native" ]
+   }
+ }
+ 

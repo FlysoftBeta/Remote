@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/re-encode"]
+members = ["crates/re-mojo", "crates/re-rtc", "crates/re-encode"]
 resolver = "2"
 
 [workspace.package]

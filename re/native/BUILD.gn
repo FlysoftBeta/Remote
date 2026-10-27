@@ -1,0 +1,16 @@
+import("rtc/sources.gni")
+import("mojo/sources.gni")
+
+shared_library("re_native") {
+  assert(is_win, "re_native is Windows-only")
+  sources = [ "include/re_native.h", "runtime.h", "runtime.cc" ] +
+            re_rtc_sources + re_mojo_sources
+  deps = [ "//base" ] + re_rtc_deps + re_mojo_deps
+  defines = [ "RE_NATIVE_IMPLEMENTATION" ]
+  configs += [ "//third_party/webrtc:common_config" ]
+  configs -= [ "//build/config/clang:find_bad_constructs" ]
+  cflags = [ "-Wno-unsafe-buffer-usage", "-Wno-unsafe-buffer-usage-in-libc-call" ]
+  libs = re_rtc_libs + re_mojo_libs
+  # Distribution uses out/rel (is_component_build=false); dependencies including
+  # WebRTC and Chromium libc++ then link into this DLL. out/dev is diagnostic.
+}

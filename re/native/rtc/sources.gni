@@ -1,0 +1,7 @@
+re_rtc_sources = [
+  "include/re_native_rtc.h",
+  "rtc/rtc_session.cc",
+  "rtc/latency_stats.h",
+]
+re_rtc_deps = [ "//third_party/webrtc_overrides:webrtc_component" ]
+re_rtc_libs = [ "ws2_32.lib" ]

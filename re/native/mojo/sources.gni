@@ -1,0 +1,17 @@
+re_mojo_sources = [
+  "include/re_native_mojo.h",
+  "mojo/mojo_bridge.cc",
+]
+re_mojo_deps = [
+  "//base",
+  "//chrome/browser/rb/mojom",
+  "//mojo/core/embedder",
+  "//mojo/public/cpp/bindings",
+  "//mojo/public/cpp/platform",
+  "//mojo/public/cpp/system",
+  "//ui/gfx/geometry",
+]
+re_mojo_libs = [
+  "d3d11.lib",
+  "dxgi.lib",
+]

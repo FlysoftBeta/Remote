@@ -1,0 +1,10 @@
+[package]
+name = "re-mojo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[example]]
+name = "re-mojo-probe"
+path = "examples/re-mojo-probe.rs"
