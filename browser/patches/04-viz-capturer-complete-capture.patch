@@ -7,14 +7,14 @@ Subject: [PATCH] viz: complete oracle capture on failed/invalidated frame
 Patch-Name: 04-viz-capturer-complete-capture
 
 diff --git a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
-index 017decb7bb..16a450a877 100644
+index 017decb7bb..39f432968e 100644
 --- a/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
 +++ b/components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc
 @@ -1544,6 +1544,12 @@ void FrameSinkVideoCapturerImpl::MaybeDeliverFrame(FrameCapture frame_capture) {
    }
  
    if (!frame_capture.success()) {
-+    // PRTS: Complete failed/invalidated captures exactly once, so passive
++    // RB: Complete failed/invalidated captures exactly once, so passive
 +    // refresh is not blocked by a permanently pending oracle capture.
 +    if (frame_capture.result() != CaptureResult::kOracleRejectedFrame) {
 +      oracle_->CompleteCapture(frame_capture.oracle_frame_number, false,

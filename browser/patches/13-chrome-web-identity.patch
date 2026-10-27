@@ -1,19 +1,19 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
 Date: Mon, 26 Oct 2026 13:44:18 +0800
-Subject: [PATCH] prts: web identity Google Chrome in remote mode
+Subject: [PATCH] rb: web identity Google Chrome in remote mode
 
 Patch-Name: 13-chrome-web-identity
 
 diff --git a/chrome/browser/headless/test/headless_mode_browsertest.cc b/chrome/browser/headless/test/headless_mode_browsertest.cc
-index af282d316c..81664cedb2 100644
+index af282d316c..163bd50a94 100644
 --- a/chrome/browser/headless/test/headless_mode_browsertest.cc
 +++ b/chrome/browser/headless/test/headless_mode_browsertest.cc
 @@ -65,6 +65,8 @@
  #include "ui/base/clipboard/scoped_clipboard_writer.h"
  #include "ui/base/clipboard/test/clipboard_test_util.h"
  #include "ui/base/models/dialog_model.h"
-+// PRTS: Shared runtime guard for the request-header expectation.
++// RB: Shared runtime guard for the request-header expectation.
 +#include "ui/base/ui_base_switches.h"
  #include "ui/display/display_switches.h"
  #include "ui/gfx/native_ui_types.h"
@@ -23,8 +23,8 @@ index af282d316c..81664cedb2 100644
    FlushPostedTasks();
  
 -  EXPECT_THAT(headers_.at("User-Agent"), testing::HasSubstr("HeadlessChrome/"));
-+  // PRTS: Verify both remote and ordinary headless request identity.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Verify both remote and ordinary headless request identity.
++  if (ui::IsRbRemoteMode()) {
 +    EXPECT_THAT(headers_.at("User-Agent"), testing::HasSubstr(" Chrome/"));
 +    EXPECT_THAT(headers_.at("User-Agent"),
 +                testing::Not(testing::HasSubstr("HeadlessChrome/")));
@@ -35,27 +35,27 @@ index af282d316c..81664cedb2 100644
  
  // Incognito mode tests ------------------------------------------------------
 diff --git a/components/embedder_support/BUILD.gn b/components/embedder_support/BUILD.gn
-index 4fcfc8913e..ab4ff27274 100644
+index 4fcfc8913e..332a166751 100644
 --- a/components/embedder_support/BUILD.gn
 +++ b/components/embedder_support/BUILD.gn
 @@ -95,6 +95,8 @@ source_set("unit_tests") {
      "//third_party/blink/public/common:headers",
      "//third_party/blink/public/mojom:mojom_platform_headers",
      "//third_party/re2",
-+    # PRTS: Runtime guard used by identity test expectations.
++    # RB: Runtime guard used by identity test expectations.
 +    "//ui/base",
    ]
  
    if (is_android) {
 diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
-index bf4a8960a0..00c513954b 100644
+index bf4a8960a0..99be9ec793 100644
 --- a/components/embedder_support/user_agent_utils.cc
 +++ b/components/embedder_support/user_agent_utils.cc
 @@ -30,6 +30,8 @@
  #include "net/http/http_util.h"
  #include "third_party/blink/public/common/features.h"
  #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
-+// PRTS: Use the shared runtime guard; this target already depends on //ui/base.
++// RB: Use the shared runtime guard; this target already depends on //ui/base.
 +#include "ui/base/ui_base_switches.h"
  
  #if BUILDFLAG(IS_WIN)
@@ -64,8 +64,8 @@ index bf4a8960a0..00c513954b 100644
  #if !BUILDFLAG(CHROMIUM_BRANDING)
    brand = version_info::GetProductName();
  #endif
-+  // PRTS: Keep the common GREASE and major/full-version generation unchanged.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Keep the common GREASE and major/full-version generation unchanged.
++  if (ui::IsRbRemoteMode()) {
 +    brand = "Google Chrome";
 +  }
  
@@ -76,21 +76,21 @@ index bf4a8960a0..00c513954b 100644
  std::string GetUserAgentInternal() {
    std::string product = GetProductAndVersion();
 -  if (base::CommandLine::ForCurrentProcess()->HasSwitch(kHeadless)) {
-+  // PRTS: Remote Chrome uses the ordinary Chrome product token in headless mode.
-+  if (!ui::IsPrtsRemoteMode() &&
++  // RB: Remote Chrome uses the ordinary Chrome product token in headless mode.
++  if (!ui::IsRbRemoteMode() &&
 +      base::CommandLine::ForCurrentProcess()->HasSwitch(kHeadless)) {
      product.insert(0, "Headless");
    }
  
 diff --git a/components/embedder_support/user_agent_utils_unittest.cc b/components/embedder_support/user_agent_utils_unittest.cc
-index 23fa11bc9e..7860449175 100644
+index 23fa11bc9e..482e46c4a4 100644
 --- a/components/embedder_support/user_agent_utils_unittest.cc
 +++ b/components/embedder_support/user_agent_utils_unittest.cc
 @@ -27,6 +27,8 @@
  #include "third_party/blink/public/common/user_agent/user_agent_brand_version_type.h"
  #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
  #include "third_party/re2/src/re2/re2.h"
-+// PRTS: Expectations follow the process-wide remote switch.
++// RB: Expectations follow the process-wide remote switch.
 +#include "ui/base/ui_base_switches.h"
  
  #if BUILDFLAG(IS_IOS)
@@ -101,12 +101,12 @@ index 23fa11bc9e..7860449175 100644
    // based on (i.e. Chromium in this case) as well as the actual product.
 -  // In CHROMIUM_BRANDING builds this will check chromium twice. That should be
 -  // ok though.
-+  // PRTS: Chromium builds omit the product brand even when BRANDING says PRTS.
++  // RB: Chromium builds omit the product brand even when BRANDING says PRTS.
 +  std::string expected_product_brand = "Chromium";
 +#if !BUILDFLAG(CHROMIUM_BRANDING)
 +  expected_product_brand = version_info::GetProductName();
 +#endif
-+  if (ui::IsPrtsRemoteMode()) {
++  if (ui::IsRbRemoteMode()) {
 +    expected_product_brand = "Google Chrome";
 +    EXPECT_EQ(metadata.brand_version_list.size(), 3u);
 +    EXPECT_EQ(metadata.brand_full_version_list.size(), 3u);
@@ -135,8 +135,8 @@ index 23fa11bc9e..7860449175 100644
  
 -  // In headless mode product name should have the Headless prefix.
 -  EXPECT_THAT(GetUserAgent(), testing::HasSubstr("HeadlessChrome/"));
-+  // PRTS: Run with and without --prts-remote in separate processes.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Run with and without --rb-remote in separate processes.
++  if (ui::IsRbRemoteMode()) {
 +    EXPECT_THAT(GetUserAgent(), testing::HasSubstr(" Chrome/"));
 +    EXPECT_THAT(GetUserAgent(),
 +                testing::Not(testing::HasSubstr("HeadlessChrome/")));

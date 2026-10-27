@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
 Date: Mon, 26 Oct 2026 13:44:27 +0800
-Subject: [PATCH] prts: remote windows maximized and frameless; runtime screen
+Subject: [PATCH] rb: remote windows maximized and frameless; runtime screen
  geometry setter
 
 Remote mode: browser windows show maximized with no caption buttons, resize
@@ -11,14 +11,14 @@ lets the viewer's SetViewport update the headless screen at runtime.
 Patch-Name: 15-remote-window
 
 diff --git a/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc b/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
-index bf13db120f..496f866006 100644
+index bf13db120f..4485ea1cfb 100644
 --- a/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
 +++ b/chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc
 @@ -43,6 +43,8 @@
  #include "ui/base/mojom/menu_source_type.mojom-shared.h"
  #include "ui/base/mojom/window_show_state.mojom.h"
  #include "ui/base/theme_provider.h"
-+// PRTS: Remote browser windows follow the virtual screen.
++// RB: Remote browser windows follow the virtual screen.
 +#include "ui/base/ui_base_switches.h"
  #include "ui/base/win/hwnd_metrics.h"
  #include "ui/display/screen.h"
@@ -27,8 +27,8 @@ index bf13db120f..496f866006 100644
        OnHostWorkspaceChanged();
      }
    }
-+  // PRTS: Applies to startup, Ctrl+N and browser popup windows alike.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Applies to startup, Ctrl+N and browser popup windows alike.
++  if (ui::IsRbRemoteMode()) {
 +    show_state = ui::mojom::WindowShowState::kMaximized;
 +  }
    DesktopWindowTreeHostWin::Show(show_state, restore_bounds);
@@ -38,9 +38,9 @@ index bf13db120f..496f866006 100644
  bool BrowserDesktopWindowTreeHostWin::GetClientAreaInsets(
      gfx::Insets* insets,
      int frame_thickness) const {
-+  // PRTS: Headless maximized bounds already equal the virtual work area;
++  // RB: Headless maximized bounds already equal the virtual work area;
 +  // native resize insets would shrink the captured root on every edge.
-+  if (ui::IsPrtsRemoteMode()) {
++  if (ui::IsRbRemoteMode()) {
 +    *insets = gfx::Insets();
 +    return true;
 +  }
@@ -48,14 +48,14 @@ index bf13db120f..496f866006 100644
    if (!browser_view_ || !ShouldUseNativeFrame()) {
      return false;
 diff --git a/chrome/browser/ui/views/frame/browser_frame_view_win.cc b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
-index 5b7aa72031..da4ff34484 100644
+index 5b7aa72031..0eb700c9b1 100644
 --- a/chrome/browser/ui/views/frame/browser_frame_view_win.cc
 +++ b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
 @@ -43,6 +43,8 @@
  #include "ui/base/resource/resource_bundle_win.h"
  #include "ui/base/theme_provider.h"
  #include "ui/base/ui_base_features.h"
-+// PRTS: Remote browser windows follow the virtual screen.
++// RB: Remote browser windows follow the virtual screen.
 +#include "ui/base/ui_base_switches.h"
  #include "ui/base/win/hwnd_metrics.h"
  #include "ui/color/color_provider_key.h"
@@ -64,8 +64,8 @@ index 5b7aa72031..da4ff34484 100644
  }
  
  int BrowserFrameViewWin::NonClientHitTest(const gfx::Point& point) {
-+  // PRTS: Input belongs to the browser UI; no window dragging or resize border.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Input belongs to the browser UI; no window dragging or resize border.
++  if (ui::IsRbRemoteMode()) {
 +    return bounds().Contains(point) ? HTCLIENT : HTNOWHERE;
 +  }
    int super_component = BrowserFrameView::NonClientHitTest(point);
@@ -75,8 +75,8 @@ index 5b7aa72031..da4ff34484 100644
  }
  
  int BrowserFrameViewWin::CaptionButtonsRegionWidth() const {
-+  // PRTS: Give the tab strip the space normally occupied by window controls.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Give the tab strip the space normally occupied by window controls.
++  if (ui::IsRbRemoteMode()) {
 +    return 0;
 +  }
    return caption_button_container_->size().width();
@@ -86,8 +86,8 @@ index 5b7aa72031..da4ff34484 100644
  void BrowserFrameViewWin::LayoutCaptionButtons() {
    TRACE_EVENT0("views.frame", "BrowserFrameViewWin::LayoutCaptionButtons");
  
-+  // PRTS: Keep tabs and toolbar while removing desktop window controls.
-+  if (ui::IsPrtsRemoteMode()) {
++  // RB: Keep tabs and toolbar while removing desktop window controls.
++  if (ui::IsRbRemoteMode()) {
 +    caption_button_container_->SetVisible(false);
 +    caption_button_container_->SetBounds(0, 0, 0, 0);
 +    return;
@@ -96,7 +96,7 @@ index 5b7aa72031..da4ff34484 100644
        !browser_widget()->IsFullscreen() ||
        GetBrowserView()->IsWindowControlsOverlayEnabled());
 diff --git a/ui/display/win/screen_win_headless.cc b/ui/display/win/screen_win_headless.cc
-index e1b885898d..504f31632e 100644
+index e1b885898d..5f6edd0755 100644
 --- a/ui/display/win/screen_win_headless.cc
 +++ b/ui/display/win/screen_win_headless.cc
 @@ -6,6 +6,7 @@
@@ -111,7 +111,7 @@ index e1b885898d..504f31632e 100644
                            display.device_scale_factor());
  }
  
-+// PRTS: Runtime counterpart to the initial --screen-info configuration.
++// RB: Runtime counterpart to the initial --screen-info configuration.
 +// The remote-mode caller owns policy; this general screen API also works for
 +// other headless embedders without depending on ui/base (which depends on us).
 +void ScreenWinHeadless::SetPrimaryDisplayGeometry(const gfx::Size& dip,
@@ -141,14 +141,14 @@ index e1b885898d..504f31632e 100644
      const gfx::Point& point) {
    cursor_screen_point_ = point;
 diff --git a/ui/display/win/screen_win_headless.h b/ui/display/win/screen_win_headless.h
-index 5abe7be3cb..8066aead36 100644
+index 5abe7be3cb..e655836852 100644
 --- a/ui/display/win/screen_win_headless.h
 +++ b/ui/display/win/screen_win_headless.h
 @@ -52,6 +52,9 @@ class DISPLAY_EXPORT ScreenWinHeadless
    // the headless monitor with the specified display id.
    int GetSystemMetricsForDisplayId(int64_t id, int metric);
  
-+  // PRTS: Update virtual screen geometry and notify display observers.
++  // RB: Update virtual screen geometry and notify display observers.
 +  void SetPrimaryDisplayGeometry(const gfx::Size& dip, float dsf);
 +
    // Screen:

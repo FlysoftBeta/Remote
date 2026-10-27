@@ -6,28 +6,28 @@ Subject: [PATCH] ime: RemoteInputMethod in remote mode
 Patch-Name: 08-remote-ime
 
 diff --git a/ui/base/ime/BUILD.gn b/ui/base/ime/BUILD.gn
-index 929dbe322d..61df48efbb 100644
+index 929dbe322d..0340250db3 100644
 --- a/ui/base/ime/BUILD.gn
 +++ b/ui/base/ime/BUILD.gn
 @@ -72,6 +72,9 @@ component("ime") {
      "input_method_observer.h",
      "mock_input_method.cc",
      "mock_input_method.h",
-+    # PRTS: selected by the runtime-guarded input-method factory.
++    # RB: selected by the runtime-guarded input-method factory.
 +    "remote_input_method.cc",
 +    "remote_input_method.h",
      "surrounding_text_tracker.cc",
      "surrounding_text_tracker.h",
      "text_input_client.cc",
 diff --git a/ui/base/ime/init/input_method_factory.cc b/ui/base/ime/init/input_method_factory.cc
-index ad27a262b3..d7841182c1 100644
+index ad27a262b3..d3879a1b19 100644
 --- a/ui/base/ime/init/input_method_factory.cc
 +++ b/ui/base/ime/init/input_method_factory.cc
 @@ -9,6 +9,9 @@
  #include "base/memory/ptr_util.h"
  #include "build/build_config.h"
  #include "ui/base/ime/mock_input_method.h"
-+// PRTS: use the remote IME before the ordinary headless mock branch.
++// RB: use the remote IME before the ordinary headless mock branch.
 +#include "ui/base/ime/remote_input_method.h"
 +#include "ui/base/ui_base_switches.h"
  #include "ui/base/ui_base_features.h"
@@ -37,8 +37,8 @@ index ad27a262b3..d7841182c1 100644
    if (g_input_method_set_for_testing)
      return std::make_unique<MockInputMethod>(ime_key_event_dispatcher);
  
-+  // PRTS: retain testing overrides above, and opt in only for remote mode.
-+  if (ui::IsPrtsRemoteMode())
++  // RB: retain testing overrides above, and opt in only for remote mode.
++  if (ui::IsRbRemoteMode())
 +    return std::make_unique<RemoteInputMethod>(ime_key_event_dispatcher);
 +
    if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kHeadless))
@@ -46,7 +46,7 @@ index ad27a262b3..d7841182c1 100644
  
 diff --git a/ui/base/ime/remote_input_method.cc b/ui/base/ime/remote_input_method.cc
 new file mode 100644
-index 0000000000..1d3e15964d
+index 0000000000..b46c6f71bd
 --- /dev/null
 +++ b/ui/base/ime/remote_input_method.cc
 @@ -0,0 +1,165 @@
@@ -129,7 +129,7 @@ index 0000000000..1d3e15964d
 +}
 +
 +void RemoteInputMethod::CancelComposition(const TextInputClient* client) {
-+  // PRTS: this class is selected only by the guarded remote-mode factory.
++  // RB: this class is selected only by the guarded remote-mode factory.
 +  // The renderer may already have changed its active node. Notify the remote
 +  // editor without clearing composition on a possibly different client.
 +  if (client == GetTextInputClient() && composition_cancelled_) {

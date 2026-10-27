@@ -1,41 +1,41 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
 Date: Mon, 26 Oct 2026 16:39:43 +0800
-Subject: [PATCH] prts: precise fake vsync timer in remote mode (headless has
- no DXGI output)
+Subject: [PATCH] rb: precise fake vsync timer in remote mode (headless has no
+ DXGI output)
 
 The cloaked headless window has no matching DXGI output, so the vsync thread
 fell back to Sleep(17 ms) + re-enumeration (~53 fps). In remote mode with
 --fake-vsync-rate, use a drift-free high-resolution timer. The GPU process
-receives --prts-remote so the hook shares the remote-mode guard.
+receives --rb-remote so the hook shares the remote-mode guard.
 
 Patch-Name: 17-remote-vsync
 
 diff --git a/content/browser/gpu/gpu_process_host.cc b/content/browser/gpu/gpu_process_host.cc
-index 1b29f20028..6e2811abcf 100644
+index 1b29f20028..d883f803fa 100644
 --- a/content/browser/gpu/gpu_process_host.cc
 +++ b/content/browser/gpu/gpu_process_host.cc
 @@ -1389,6 +1389,10 @@ bool GpuProcessHost::LaunchGpuProcess() {
    // https://crbug.com/590825
    // If you want a browser command-line switch passed to the GPU process
    // you need to add it to |kSwitchNames| at the beginning of this file.
-+  // PRTS: The GPU vsync hook shares the process-wide remote-mode guard.
-+  if (ui::IsPrtsRemoteMode()) {
-+    cmd_line->AppendSwitch(switches::kPrtsRemote);
++  // RB: The GPU vsync hook shares the process-wide remote-mode guard.
++  if (ui::IsRbRemoteMode()) {
++    cmd_line->AppendSwitch(switches::kRbRemote);
 +  }
    cmd_line->CopySwitchesFrom(browser_command_line, kSwitchNames);
    cmd_line->CopySwitchesFrom(browser_command_line,
                               switches::kGLSwitchesCopiedFromGpuProcessHost);
 diff --git a/ui/gl/BUILD.gn b/ui/gl/BUILD.gn
-index 7ab5fe9b7e..c40717663b 100644
+index 7ab5fe9b7e..0d0e2e14a2 100644
 --- a/ui/gl/BUILD.gn
 +++ b/ui/gl/BUILD.gn
 @@ -284,6 +284,8 @@ component("gl") {
  
    if (is_win) {
      sources += [
-+      # PRTS: Header-only remote clock; guarded in WaitForVSync.
-+      "prts_fake_vsync_clock.h",
++      # RB: Header-only remote clock; guarded in WaitForVSync.
++      "rb_fake_vsync_clock.h",
        "child_window_win.cc",
        "child_window_win.h",
        "dc_commit_error.h",
@@ -48,49 +48,49 @@ index 7ab5fe9b7e..c40717663b 100644
        "//ui/base",
        "//ui/display",
 diff --git a/ui/gl/DEPS b/ui/gl/DEPS
-index c5818c96d6..3dfb3c0f2e 100644
+index c5818c96d6..b0e7061915 100644
 --- a/ui/gl/DEPS
 +++ b/ui/gl/DEPS
 @@ -15,6 +15,10 @@ include_rules = [
  ]
  
  specific_include_rules = {
-+  # PRTS: Remote-only fake-vsync clock and its process guard.
++  # RB: Remote-only fake-vsync clock and its process guard.
 +  "vsync_thread_win.cc": [
 +    "+ui/base/ui_base_switches.h",
 +  ],
  # Allow us to include ANGLE's base platform implementation.
    "angle_platform_impl.cc": [
      "+third_party/angle/include/platform/PlatformMethods.h",
-diff --git a/ui/gl/prts_fake_vsync_clock.h b/ui/gl/prts_fake_vsync_clock.h
+diff --git a/ui/gl/rb_fake_vsync_clock.h b/ui/gl/rb_fake_vsync_clock.h
 new file mode 100644
-index 0000000000..3ec840765e
+index 0000000000..dcb68fb7c6
 --- /dev/null
-+++ b/ui/gl/prts_fake_vsync_clock.h
++++ b/ui/gl/rb_fake_vsync_clock.h
 @@ -0,0 +1,62 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
 +
-+#ifndef UI_GL_PRTS_FAKE_VSYNC_CLOCK_H_
-+#define UI_GL_PRTS_FAKE_VSYNC_CLOCK_H_
++#ifndef UI_GL_RB_FAKE_VSYNC_CLOCK_H_
++#define UI_GL_RB_FAKE_VSYNC_CLOCK_H_
 +
 +#include <windows.h>
 +
 +#include "base/time/time.h"
 +#include "base/win/scoped_handle.h"
 +
-+namespace prts {
++namespace rb {
 +
-+// PRTS: Drift-free pacing for --fake-vsync-rate. The stock path does
++// RB: Drift-free pacing for --fake-vsync-rate. The stock path does
 +// Sleep(ceil(interval_ms)): 60 Hz becomes 17 ms plus loop/timer overhead,
 +// which measured ~19 ms (52.7 Hz) in the cloaked-window case where no DXGI
 +// output matches. This waits for absolute deadlines on a high-resolution
 +// waitable timer instead. Only used on the vsync thread.
-+class PrtsFakeVSyncClock {
++class RbFakeVSyncClock {
 + public:
-+  PrtsFakeVSyncClock();
-+  ~PrtsFakeVSyncClock();
++  RbFakeVSyncClock();
++  ~RbFakeVSyncClock();
 +
 +  void WaitForNextTick(base::TimeDelta interval) {
 +    const base::TimeTicks now = base::TimeTicks::Now();
@@ -124,14 +124,14 @@ index 0000000000..3ec840765e
 +  base::TimeTicks last_tick_;
 +};
 +
-+inline PrtsFakeVSyncClock::PrtsFakeVSyncClock() = default;
-+inline PrtsFakeVSyncClock::~PrtsFakeVSyncClock() = default;
++inline RbFakeVSyncClock::RbFakeVSyncClock() = default;
++inline RbFakeVSyncClock::~RbFakeVSyncClock() = default;
 +
-+}  // namespace prts
++}  // namespace rb
 +
-+#endif  // UI_GL_PRTS_FAKE_VSYNC_CLOCK_H_
++#endif  // UI_GL_RB_FAKE_VSYNC_CLOCK_H_
 diff --git a/ui/gl/vsync_thread_win.cc b/ui/gl/vsync_thread_win.cc
-index f100349ec0..ad72dedb2c 100644
+index f100349ec0..276cf4bd56 100644
 --- a/ui/gl/vsync_thread_win.cc
 +++ b/ui/gl/vsync_thread_win.cc
 @@ -6,11 +6,15 @@
@@ -144,8 +144,8 @@ index f100349ec0..ad72dedb2c 100644
  #include "base/synchronization/lock_subtle.h"
  #include "base/time/time.h"
  #include "base/win/windows_version.h"
-+// PRTS: Isolate remote fake-vsync pacing from normal GPU pacing.
-+#include "ui/gl/prts_fake_vsync_clock.h"
++// RB: Isolate remote fake-vsync pacing from normal GPU pacing.
++#include "ui/gl/rb_fake_vsync_clock.h"
 +#include "ui/base/ui_base_switches.h"
  #include "ui/gl/gl_features.h"
  #include "ui/gl/gl_switches.h"
@@ -163,9 +163,9 @@ index f100349ec0..ad72dedb2c 100644
      // use below.
      vsync_interval = *fake_interval;
 -    should_sleep = true;
-+    // PRTS: Use precise fake-vsync deadlines only for the remote browser.
-+    if (ui::IsPrtsRemoteMode()) {
-+      static base::NoDestructor<prts::PrtsFakeVSyncClock> fake_clock;
++    // RB: Use precise fake-vsync deadlines only for the remote browser.
++    if (ui::IsRbRemoteMode()) {
++      static base::NoDestructor<rb::RbFakeVSyncClock> fake_clock;
 +      fake_clock->WaitForNextTick(vsync_interval);
 +    } else {
 +      should_sleep = true;

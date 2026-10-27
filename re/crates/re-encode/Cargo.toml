@@ -1,0 +1,16 @@
+[package]
+name = "re-encode"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openh264 = "=0.9.9"
+openh264-sys2 = { version = "=0.9.9", features = ["libloading"] }
+thiserror = "2"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D10", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Security", "Win32_System_Threading"] }
+
+[build-dependencies]
+cc = "1"
+
