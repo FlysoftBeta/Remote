@@ -3,6 +3,12 @@ param(
     [ValidateRange(1, 65535)][int]$Port = 8080,
     [string]$BindAddress = '127.0.0.1',
     [string[]]$EndpointArgs = @(),
+    [string]$TlsCert = '',
+    [string]$TlsKey = '',
+    [string]$TlsCa = '',
+    [string]$TlsPfx = '',
+    [string]$TlsPfxPassphrase = '',
+    [ValidateRange(0, 65535)][int]$HttpRedirectPort = 0,
     [switch]$ControlPlaneOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -32,7 +38,16 @@ if (!$ControlPlaneOnly -and (Test-Path -LiteralPath $endpoint)) {
 } elseif (!$ControlPlaneOnly) {
     Write-Warning 're.exe missing; starting control plane only. Streaming is unavailable.'
 }
-Write-Host "PRTS viewer: http://localhost:$Port/"
+$cpArgs = @('--port', $Port)
+if ($TlsPfx) { $cpArgs += @('--tls-pfx', (Resolve-Path -LiteralPath $TlsPfx).Path); if ($TlsPfxPassphrase) { $env:TLS_PFX_PASSPHRASE = $TlsPfxPassphrase } }
+elseif ($TlsCert -or $TlsKey) {
+    if (!($TlsCert -and $TlsKey)) { throw 'TLS needs both -TlsCert and -TlsKey (or -TlsPfx).' }
+    $cpArgs += @('--tls-cert', (Resolve-Path -LiteralPath $TlsCert).Path, '--tls-key', (Resolve-Path -LiteralPath $TlsKey).Path)
+    if ($TlsCa) { $cpArgs += @('--tls-ca', (Resolve-Path -LiteralPath $TlsCa).Path) }
+}
+if ($HttpRedirectPort -gt 0) { $cpArgs += @('--http-redirect-port', $HttpRedirectPort) }
+$scheme = if ($TlsPfx -or $TlsCert) { 'https' } else { 'http' }
+Write-Host "PRTS viewer: ${scheme}://localhost:$Port/"
 Write-Host "Listening on $BindAddress; press Ctrl+C to stop."
-& $node (Join-Path $PSScriptRoot 'control-plane\index.js') --port $Port
+& $node (Join-Path $PSScriptRoot 'control-plane\index.js') @cpArgs
 exit $LASTEXITCODE

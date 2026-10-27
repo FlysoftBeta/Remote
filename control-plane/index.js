@@ -46,7 +46,7 @@ function makeServer(handler) {
     http.createServer((req, res) => {
       const host = (req.headers.host || 'localhost').replace(/:\d+$/, '');
       res.writeHead(301, { Location: `https://${host}${PORT === 443 ? '' : ':' + PORT}${req.url}` }).end();
-    }).listen(Number(tls.redirectPort), process.env.HOST || undefined, () => log(`HTTP→HTTPS redirect on port ${tls.redirectPort}`));
+    }).listen(Number(tls.redirectPort), process.env.HOST || undefined, () => log(`HTTP->HTTPS redirect on port ${tls.redirectPort}`));
   }
   return s;
 }

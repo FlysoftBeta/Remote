@@ -60,3 +60,11 @@ and touch input. This portable folder contains rb, re, a Node.js control plane
 
 See `BUILD-INFO.json`, `FILES.sha256` and `LICENSES/`. If the archive is split,
 concatenate the numbered parts in binary order (see REASSEMBLE.txt).
+
+## HTTPS
+
+```
+.\start.ps1 -BindAddress 0.0.0.0 -Port 443 -TlsCert cert.pem -TlsKey key.pem -HttpRedirectPort 80
+.\start.ps1 -BindAddress 0.0.0.0 -Port 443 -TlsPfx cert.pfx -TlsPfxPassphrase <pass>
+```
+Optional `-TlsCa chain.pem`. Certificates are reloaded automatically when the files change.
