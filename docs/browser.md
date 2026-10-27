@@ -19,7 +19,7 @@ Patch numbers are stable names; consecutive units were folded or dropped over ti
 |---|---|---|---|
 | 01 | `rb-switch` | `ui/base/ui_base_switches.*` | `--rb-remote`, `IsRbRemoteMode()` shared guard |
 | 04 | `viz-capturer-complete-capture` | `frame_sink_video_capturer_impl.cc` + unittest | `CompleteCapture` on the failed/version-changed delivery path (upstreamable) |
-| 11 | `remote-popups-in-root` | `chrome_views_delegate_win.cc`, `desktop_native_widget_aura.cc` | popups stay inside the window root (D4b) |
+| 11 | `remote-popups-in-root` | `chrome_views_delegate_win.cc`, `desktop_native_widget_aura.cc` | popups and parented modal dialogs (e.g. beforeunload) stay inside the window root (D4b) |
 | 12 | `rb-product-branding` | `chrome/app/theme/chromium/BRANDING` | product name PRTS (UI resources are generated, see below) |
 | 13 | `chrome-web-identity` | `user_agent_utils.cc` + tests | brand "Google Chrome", no `Headless` prefix in remote mode |
 | 06 | `aura-views-remote-input` | `input_state_lookup_win.cc`, `hwnd_message_handler_headless.*`, `desktop_window_tree_host_win.cc`, `desktop_drag_drop_client_win.cc`, `screen_win_headless.*` + `remote_cursor_sink.h` | no `::GetKeyState`, logical capture, cursor/keyboard-hook/drag Win32 calls reported or no-op |

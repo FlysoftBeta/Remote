@@ -6,7 +6,7 @@ Subject: [PATCH] rb: keep popups inside the browser root in remote mode
 Patch-Name: 11-remote-popups-in-root
 
 diff --git a/chrome/browser/ui/views/chrome_views_delegate_win.cc b/chrome/browser/ui/views/chrome_views_delegate_win.cc
-index a376c75811..4de4cf1ef0 100644
+index a376c75811..27802bf79c 100644
 --- a/chrome/browser/ui/views/chrome_views_delegate_win.cc
 +++ b/chrome/browser/ui/views/chrome_views_delegate_win.cc
 @@ -15,6 +15,8 @@
@@ -18,14 +18,17 @@ index a376c75811..4de4cf1ef0 100644
  #include "ui/views/widget/widget_delegate.h"
  
  namespace {
-@@ -157,6 +159,13 @@ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
+@@ -157,6 +159,16 @@ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
      native_widget_type = NativeWidgetType::kDesktopNativeWidgetAura;
    }
  
 +  // RB: Keep parented popups in the captured root, including context-only ones.
++  // Parented modal windows (e.g. the beforeunload dialog) stay there too.
 +  if (ui::IsRbRemoteMode() && (params->parent || params->context) &&
-+      params->type != views::Widget::InitParams::TYPE_WINDOW &&
-+      params->type != views::Widget::InitParams::TYPE_CONTROL) {
++      params->type != views::Widget::InitParams::TYPE_CONTROL &&
++      (params->type != views::Widget::InitParams::TYPE_WINDOW ||
++       (params->parent && params->delegate &&
++        params->delegate->GetModalType() != ui::mojom::ModalType::kNone))) {
 +    native_widget_type = NativeWidgetType::kNativeWidgetAura;
 +  }
 +
