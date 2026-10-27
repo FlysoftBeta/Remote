@@ -7,11 +7,14 @@
 #include <userenv.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/hash/sha1.h"
 #include "base/logging.h"
 #include "base/process/environment_internal.h"
@@ -29,6 +32,58 @@
 namespace re {
 namespace {
 
+bool EnsureGrant(base::win::SecurityDescriptor& sd,
+                 const base::win::Sid& sid,
+                 DWORD mask,
+                 DWORD inheritance) {
+  if (sd.dacl() && sd.dacl()->get()) {
+    const auto* acl = sd.dacl()->get();
+    for (DWORD i = 0; i < acl->AceCount; ++i) {
+      void* raw = nullptr;
+      if (!::GetAce(const_cast<ACL*>(acl), i, &raw))
+        return false;
+      const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw);
+      if (ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+          ace->Header.AceFlags == inheritance && ace->Mask == mask &&
+          ::EqualSid(const_cast<DWORD*>(&ace->SidStart), sid.GetPSID())) {
+        return true;
+      }
+    }
+  }
+  // Re-setting an existing ACE can reorder it and recursively rewrite an
+  // unchanged install tree on every other tenant's launch.
+  return sd.SetDaclEntry(sid, base::win::SecurityAccessMode::kSet, mask,
+                         inheritance);
+}
+
+bool GrantPathTraversal(base::FilePath path, const base::win::Sid& sid) {
+  // GetLongPathName checks read access on the ancestors, even when the package
+  // has full access to its profile. Never inherit these directory-only grants.
+  for (path = path.DirName(); path != path.DirName(); path = path.DirName()) {
+    // MAXIMUM_ALLOWED prevents SetSecurityInfo from recursively propagating
+    // the existing inherited ACEs through unrelated ancestor subtrees.
+    base::win::ScopedHandle directory(::CreateFileW(
+        path.value().c_str(), MAXIMUM_ALLOWED,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    auto sd = base::win::SecurityDescriptor::FromHandle(
+        directory.get(), base::win::SecurityObjectType::kFile,
+        DACL_SECURITY_INFORMATION);
+    const auto original =
+        sd ? sd->ToSddl(DACL_SECURITY_INFORMATION) : std::nullopt;
+    if (!sd ||
+        !EnsureGrant(*sd, sid, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, 0) ||
+        (sd->ToSddl(DACL_SECURITY_INFORMATION) != original &&
+         !sd->WriteToHandle(directory.get(),
+                            base::win::SecurityObjectType::kFile,
+                            DACL_SECURITY_INFORMATION))) {
+      PLOG(ERROR) << "Grant AppContainer path traversal " << path;
+      return false;
+    }
+  }
+  return true;
+}
+
 bool GrantDirectory(const base::FilePath& path,
                     const base::win::Sid& sid,
                     bool writable) {
@@ -39,14 +94,12 @@ bool GrantDirectory(const base::FilePath& path,
   const DWORD inherit = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
   auto owner = base::win::AccessToken::FromCurrentProcess();
   if (!sd ||
-      !sd->SetDaclEntry(
-          sid, base::win::SecurityAccessMode::kSet,
+      !EnsureGrant(
+          *sd, sid,
           writable ? FILE_ALL_ACCESS : FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
           inherit) ||
-      (writable &&
-       (!owner ||
-        !sd->SetDaclEntry(owner->User(), base::win::SecurityAccessMode::kGrant,
-                          FILE_ALL_ACCESS, inherit))) ||
+      (writable && (!owner || !EnsureGrant(*sd, owner->User(), FILE_ALL_ACCESS,
+                                           inherit))) ||
       (sd->ToSddl(DACL_SECURITY_INFORMATION) != original &&
        !sd->WriteToFile(path, DACL_SECURITY_INFORMATION))) {
     PLOG(ERROR) << "Grant AppContainer directory " << path;
@@ -95,7 +148,22 @@ std::optional<base::win::Sid> PrepareContainer(
   }
   auto sid = base::win::Sid::FromPSID(raw_sid);
   ::FreeSid(raw_sid);
+  // Concurrent endpoint starts must not lose another package's install or
+  // ancestor ACE during a read/modify/write of the shared directory DACLs.
+  base::win::ScopedHandle provisioning(
+      ::CreateMutexW(nullptr, FALSE, L"Local\\rb.isolation.provision"));
+  const DWORD wait = provisioning.is_valid()
+                         ? ::WaitForSingleObject(provisioning.get(), 120000)
+                         : WAIT_FAILED;
+  if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+    LOG(ERROR) << "AppContainer provisioning lock failed: " << wait;
+    return std::nullopt;
+  }
+  base::ScopedClosureRunner unlock(base::BindOnce(
+      [](HANDLE mutex) { ::ReleaseMutex(mutex); }, provisioning.get()));
   if (!sid || !base::CreateDirectory(profile) ||
+      !GrantPathTraversal(profile, *sid) ||
+      !GrantPathTraversal(install, *sid) ||
       !GrantDirectory(profile, *sid, true) ||
       !GrantDirectory(install, *sid, false)) {
     return std::nullopt;
@@ -104,8 +172,12 @@ std::optional<base::win::Sid> PrepareContainer(
   const auto local = user.Append(L"Local");
   const auto roaming = user.Append(L"Roaming");
   const auto temp = user.Append(L"Temp");
+  // Windows redirects GetTempPath/GetKnownFolderPath for a contained process
+  // under LOCALAPPDATA/Packages/<profile>/AC, independently of TEMP/TMP.
+  const auto package = local.Append(L"Packages").Append(name).Append(L"AC");
   if (!base::CreateDirectory(local) || !base::CreateDirectory(roaming) ||
-      !base::CreateDirectory(temp)) {
+      !base::CreateDirectory(temp) ||
+      !base::CreateDirectory(package.Append(L"Temp"))) {
     PLOG(ERROR) << "Create AppContainer environment directories";
     return std::nullopt;
   }
@@ -170,9 +242,10 @@ std::optional<base::win::Sid> PrepareContainer(
 
 }  // namespace
 
-base::Process LaunchIsolatedBrowser(const base::CommandLine& command,
+base::Process LaunchIsolatedBrowser(const base::CommandLine& requested_command,
                                     base::LaunchOptions& options,
                                     ScopedBrowserDesktop& sandbox_desktop) {
+  base::CommandLine command(requested_command);
   const auto& endpoint = *base::CommandLine::ForCurrentProcess();
   std::string mode = endpoint.GetSwitchValueASCII("isolation");
   if (!endpoint.HasSwitch("isolation"))
@@ -292,16 +365,25 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& command,
   std::vector<base::win::Sid> capability_sids;
   capability_sids.push_back(base::win::Sid::FromKnownCapability(
       base::win::WellKnownCapability::kInternetClient));
-  const std::string extra_caps =
+  std::string extra_caps =
       endpoint.GetSwitchValueASCII("isolation-capabilities");
   if (!extra_caps.empty() && mode != "lpac" && mode != "appcontainer") {
     LOG(ERROR) << "--isolation-capabilities requires lpac or appcontainer";
     return base::Process();
   }
+  if (mode == "lpac") {
+    extra_caps +=
+        ",registryRead,lpacCom,lpacCryptoServices,lpacIdentityServices";
+  }
   for (const auto& name : base::SplitStringPiece(
            extra_caps, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
-    capability_sids.push_back(
-        base::win::Sid::FromNamedCapability(base::ASCIIToWide(name)));
+    auto sid = base::win::Sid::FromNamedCapability(base::ASCIIToWide(name));
+    if (std::ranges::any_of(capability_sids, [&](const auto& existing) {
+          return existing.Equal(sid.GetPSID());
+        })) {
+      continue;
+    }
+    capability_sids.push_back(std::move(sid));
     LOG(INFO) << "PRTS additional isolation capability=" << name;
   }
   std::vector<SID_AND_ATTRIBUTES> capabilities;
@@ -314,6 +396,16 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& command,
       LOG(ERROR) << "Whole-browser isolation requires Chromium's child sandbox";
       return base::Process();
     }
+    // Nested AppContainer profile registration fails from an outer container.
+    // The network child inherits the outer token; other child sandboxes keep
+    // their restricted tokens and mitigations. Never use --no-sandbox here.
+    std::string disabled = command.GetSwitchValueASCII("disable-features");
+    if (!disabled.empty())
+      disabled += ',';
+    disabled +=
+        "NetworkServiceSandbox,RendererAppContainer,PrintCompositorLPAC,"
+        "WinSboxNetworkServiceSandboxIsLPAC";
+    command.AppendSwitchASCII("disable-features", disabled);
     container = PrepareContainer(command, mode, environment, sandbox_desktop);
     if (!container)
       return base::Process();
