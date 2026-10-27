@@ -14,6 +14,7 @@
 #include "chrome/browser/rb/mojom/rb.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "re/browser_isolation.h"
 
 namespace re {
 
@@ -46,6 +47,7 @@ class EndpointLink {
   // Kill-on-close job: the browser dies with the endpoint, even when the
   // endpoint is killed, so a restarted endpoint finds its profile free.
   base::win::ScopedHandle job_;
+  ScopedBrowserDesktop sandbox_desktop_;
   mojo::Remote<rb::mojom::RbBrowser> browser_;
   mojo::Receiver<rb::mojom::RbBrowserClient> client_receiver_;
   SEQUENCE_CHECKER(sequence_checker_);

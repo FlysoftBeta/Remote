@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Tue, 27 Oct 2026 19:30:00 +0800
+Subject: [PATCH] rb: guarded whole-browser AppContainer startup support
+
+Use LOCAL pipes for Crashpad and its self-monitor; open the sandbox desktop
+pre-created by re rather than creating a window station inside AppContainer.
+Log the nested child-AppContainer policy failure without changing its policy.
+
+Guard: RB_ISOLATION=lpac|appcontainer set by re --isolation (default off),
+plus rb-isolation for the failure diagnostic. Normal startup is unchanged.
+Upstream files: three; no child sandbox/token/IPC policy is weakened.
+Design: docs/isolation.md. Whole-browser isolation is still blocked by nested
+network AppContainer profile creation (result 44); not ready for deployment.
+Upstreamability: LOCAL pipe support is generalizable; desktop hand-off is rb
+specific and would need a generic broker interface before upstreaming.
+
+Patch-Name: 20-rb-outer-isolation
+
+diff --git a/sandbox/policy/win/sandbox_win.cc b/sandbox/policy/win/sandbox_win.cc
+index b6eccdade4..570f15cce5 100644
+--- a/sandbox/policy/win/sandbox_win.cc
++++ b/sandbox/policy/win/sandbox_win.cc
+@@ -589,6 +589,11 @@ ResultCode GenerateConfigForSandboxedProcess(const base::CommandLine& cmd_line,
+     if (const auto result = SandboxWin::AddAppContainerProfileToConfig(
+             cmd_line, sandbox_type, appcontainer_id, config);
+         result != SBOX_ALL_OK) {
++      if (base::CommandLine::ForCurrentProcess()->HasSwitch("rb-isolation")) {
++        LOG(ERROR) << "RB nested AppContainer policy sandbox="
++                   << static_cast<int>(sandbox_type) << " result=" << result
++                   << " win_error=" << ::GetLastError();
++      }
+       DCHECK(false);
+       return result;
+     }
+diff --git a/sandbox/win/src/alternate_desktop.cc b/sandbox/win/src/alternate_desktop.cc
+index f6017becb0..4b3b419aec 100644
+--- a/sandbox/win/src/alternate_desktop.cc
++++ b/sandbox/win/src/alternate_desktop.cc
+@@ -5,8 +5,10 @@
+ #include "sandbox/win/src/alternate_desktop.h"
+ 
+ #include <windows.h>
++#include <string_view>
+ 
+ #include "base/win/win_util.h"
++#include "base/logging.h"
+ #include "sandbox/win/src/acl.h"
+ #include "sandbox/win/src/window.h"
+ 
+@@ -48,11 +50,36 @@ ResultCode AlternateDesktop::UpdateDesktopIntegrity(
+ // true.
+ ResultCode AlternateDesktop::Initialize(bool alternate_winstation) {
+   DCHECK(!desktop_ && !winstation_);
++  // RB: the outer AppContainer cannot create a window station. re owns a
++  // private desktop with the package SID and the usual restricted-token deny.
++  wchar_t isolation[16] = {};
++  const DWORD isolation_length =
++      ::GetEnvironmentVariableW(L"RB_ISOLATION", isolation, 16);
++  if (isolation_length > 0 && isolation_length < 16 &&
++      (std::wstring_view(isolation) == L"lpac" ||
++       std::wstring_view(isolation) == L"appcontainer")) {
++    wchar_t name[128] = {};
++    const DWORD length =
++        ::GetEnvironmentVariableW(L"RB_SANDBOX_DESKTOP", name, 128);
++    if (length == 0 || length >= 128 ||
++        !std::wstring_view(name).starts_with(L"rb-sandbox.")) {
++      return SBOX_ERROR_CANNOT_CREATE_DESKTOP;
++    }
++    desktop_ = ::OpenDesktopW(name, 0, FALSE,
++                              DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS |
++                                  READ_CONTROL | WRITE_DAC | WRITE_OWNER);
++    if (!desktop_) {
++      PLOG(ERROR) << "RB OpenDesktop";
++      return SBOX_ERROR_CANNOT_CREATE_DESKTOP;
++    }
++    return SBOX_ALL_OK;
++  }
+   if (alternate_winstation) {
+     // Create the window station.
+     ResultCode result = CreateAltWindowStation(&winstation_);
+-    if (SBOX_ALL_OK != result)
++    if (SBOX_ALL_OK != result) {
+       return result;
++    }
+ 
+     // Verify that everything is fine.
+     if (!winstation_ || base::win::GetWindowObjectName(winstation_).empty()) {
+diff --git a/third_party/crashpad/crashpad/client/crashpad_client_win.cc b/third_party/crashpad/crashpad/client/crashpad_client_win.cc
+index 3b4b34b5a6..d6cd5f318d 100644
+--- a/third_party/crashpad/crashpad/client/crashpad_client_win.cc
++++ b/third_party/crashpad/crashpad/client/crashpad_client_win.cc
+@@ -310,6 +310,17 @@ void CreatePipe(std::wstring* pipe_name, ScopedFileHANDLE* pipe_instance) {
+       "\\\\.\\pipe\\crashpad_%lu_",
+ #endif
+       GetCurrentProcessId());
++  // RB: re sets this only for opt-in whole-browser isolation. Crashpad's
++  // self-monitor inherits the environment but has no browser command switches.
++  wchar_t isolation[16] = {};
++  const DWORD isolation_length =
++      ::GetEnvironmentVariableW(L"RB_ISOLATION", isolation, 16);
++  if (isolation_length > 0 && isolation_length < 16 &&
++      (std::wstring_view(isolation) == L"lpac" ||
++       std::wstring_view(isolation) == L"appcontainer")) {
++    pipe_name_base = base::StringPrintf("\\\\.\\pipe\\LOCAL\\crashpad_%lu_",
++                                        GetCurrentProcessId());
++  }
+   do {
+     *pipe_name = base::UTF8ToWide(pipe_name_base + RandomString());
+ 

@@ -43,6 +43,10 @@ bool BrowserSession::Launch(base::CommandLine command) {
   if (!link_.Launch(std::move(command))) {
     return false;
   }
+  const auto isolation =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("isolation");
+  const auto hello_timeout = base::Seconds(
+      isolation == "lpac" || isolation == "appcontainer" ? 60 : 15);
   main_runner_->PostDelayedTask(FROM_HERE,
                                 base::BindOnce(
                                     [](base::WeakPtr<BrowserSession> self) {
@@ -51,7 +55,7 @@ bool BrowserSession::Launch(base::CommandLine command) {
                                       }
                                     },
                                     weak_),
-                                base::Seconds(15));
+                                hello_timeout);
   return true;
 }
 void BrowserSession::Shutdown() {

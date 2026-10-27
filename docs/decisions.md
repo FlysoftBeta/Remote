@@ -149,6 +149,13 @@ evidence notes only.
 The CDM is fetched from the component updater source and placed under `third_party/widevine/cdm/win/x64/`; GN `enable_widevine` etc.
 ([browser](browser.md#widevine)). Limitation: no Google VMP signature, so high-security licences may be refused (L3).
 
-### D23 Isolation target (planned, not implemented)
+### D23 Isolation target (target; experiment outcome in D24)
 User target (2026-10-26): Job Object + `JOB_OBJECT_UILIMIT_*` + LPAC managed by the endpoint, fallback Job + AppContainer if more than ~1k
 Chromium LOC are needed ([isolation](isolation.md)).
+
+### D24 Outer isolation experiment blocked; keep default off (2026-10-27)
+All eight individual outer Job UI bits fail the real browser pipeline (seven: child CreateProcessAsUserW/SBOX18/Win32 50; DESKTOP: browser
+alternate-desktop CHECK). LPAC and plain AppContainer prototypes fix startup pipes, desktop provisioning and profile ACLs, but both stop in
+Chromium's nested child-AppContainer policy path. Invoke the high-conflict give-up rule; keep Chromium's child sandbox enabled. The usable
+fallback is atomic kill-on-close Job with no UI limits, which supplies lifecycle containment only. All new behavior is opt-in via
+`--isolation=off|job|lpac|appcontainer`, default off until v0.2.0. No tenant-isolation claim; [evidence, switches and gaps](isolation.md).

@@ -19,6 +19,7 @@
 #include <windows.h>
 
 #include "base/process/launch.h"
+#include "re/browser_isolation.h"
 #include "chrome/browser/rb/rb_switches.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
@@ -83,7 +84,12 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
     return false;
   }
   options.job_handle = job_.get();
-  browser_process_ = base::LaunchProcess(command_line, options);
+  const auto isolation =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("isolation");
+  if (isolation == "lpac" || isolation == "appcontainer")
+    command_line.AppendSwitchASCII("rb-isolation", isolation);
+  browser_process_ =
+      LaunchIsolatedBrowser(command_line, options, sandbox_desktop_);
   channel.RemoteProcessLaunchAttempted();  // Required on success AND failure.
   if (!browser_process_.IsValid()) {
     return false;
@@ -117,6 +123,13 @@ void EndpointLink::Close() {
   browser_.reset();
 }
 void EndpointLink::OnDisconnect() {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch("isolation")) {
+    DWORD exit_code = STILL_ACTIVE;
+    if (::GetExitCodeProcess(browser_process_.Handle(), &exit_code)) {
+      LOG(ERROR) << "PRTS browser disconnected pid=" << browser_process_.Pid()
+                 << " exit_code=" << exit_code;
+    }
+  }
   Close();
   delegate_->OnDisconnect();  // Last operation: delegate may delete this.
 }

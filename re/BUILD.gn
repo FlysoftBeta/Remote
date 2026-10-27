@@ -1,6 +1,8 @@
 executable("re") {
   assert(is_win, "M1 endpoint is Windows-only")
   sources = [
+    "browser_isolation.cc",
+    "browser_isolation.h",
     "browser_session.cc",
     "browser_session.h",
     "d3d_frame_source.cc",
@@ -52,5 +54,5 @@ executable("re") {
     "-Wno-unsafe-buffer-usage",
     "-Wno-unsafe-buffer-usage-in-libc-call",
   ]
-  libs = [ "d3d11.lib", "dxgi.lib", "ws2_32.lib" ]
+  libs = [ "d3d11.lib", "dxgi.lib", "ws2_32.lib", "userenv.lib" ]
 }
