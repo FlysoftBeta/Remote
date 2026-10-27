@@ -1,35 +1,11 @@
-// remotekit viewer (D13, docs/protocol.md). Must run on Chrome 89+: newer APIs only behind feature detection.
+// remotekit viewer (D13, docs/protocol.md). Must run on Chrome 79+: newer APIs only behind feature detection.
 // URL params: instance, token, measure=1 (pixel-marker latency), report=<s> (POST summary to /api/report after s seconds),
 //             my=<source px> (fixed marker row; default auto-detect),
-//             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=0 (hide overlay), cp=<host:port>.
+//             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=1 (show overlay), cp=<host:port>.
 //             measure=<seconds> enables the optional field kit's tap-to-start mode.
 (function () {
   'use strict';
   var q = new URLSearchParams(location.search);
-  var picker = document.getElementById('instance-picker');
-  function refreshInstances() {
-    var api = (location.protocol === 'https:' ? 'https://' : 'http://') + (q.get('cp') || location.host) + '/api/instances';
-    fetch(api, { headers: q.get('token') ? { Authorization: 'Bearer ' + q.get('token') } : {} }).then(function (r) {
-      if (!r.ok) throw new Error('instance list unavailable');
-      return r.json();
-    }).then(function (rows) {
-      var selected = q.get('instance') || 'default';
-      picker.textContent = '';
-      // Preserve links to externally registered endpoints, which need no managed instance.
-      if (!rows.some(function (row) { return row.id === selected; })) rows.unshift({ id: selected, name: selected, state: 'external' });
-      rows.forEach(function (row) {
-        var option = document.createElement('option'); option.value = row.id;
-        option.textContent = row.name + ' (' + row.state + ')'; option.selected = row.id === selected;
-        picker.appendChild(option);
-      });
-      picker.hidden = false;
-    }).catch(function () {});
-  }
-  picker.addEventListener('change', function () {
-    var url = new URL(location.href); url.searchParams.set('instance', picker.value); location.href = url.href;
-  });
-  ['keydown', 'keyup'].forEach(function (type) { picker.addEventListener(type, function (e) { e.stopPropagation(); }); });
-  refreshInstances(); setInterval(refreshInstances, 10000);
   var field = window.RKField || null;
   var video = document.getElementById('video'), stage = document.getElementById('stage');
   var overlay = document.getElementById('overlay'), statusEl = document.getElementById('status');
@@ -42,7 +18,7 @@
   var ime = new RKIme(document.getElementById('ime'), document.getElementById('kbd'), input, sendCtl, isTouch);
   window.rk = { input: input, ime: ime, get pc() { return pc; }, get measure() { return measure; }, get clock() { return clock; } };
 
-  function status(s) { statusEl.textContent = s; statusEl.style.display = s ? 'block' : 'none'; console.log('[viewer] ' + s); }
+  function status(s) { console.log('[viewer] ' + s); }
   function sendInput(buf, seq) {
     if (!input.enabled || !ch || ch.input.readyState !== 'open') return;
     ch.input.send(buf);
@@ -59,8 +35,8 @@
     statusEl.style.cursor = '';
     statusEl.style.pointerEvents = 'none';
     var host = q.get('cp') || location.host;
-    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/signal?role=viewer&instance=' +
-      encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : ''));
+    try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/signal?role=viewer&instance=' +
+      encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : '')); } catch (e) { window.viewerFinish('Invalid control plane: ' + e.message); return; }
     var socket = ws;
     ws.onopen = function () {
       if (ws !== socket) return;
@@ -73,18 +49,13 @@
     ws.onclose = function (e) {
       if (ws !== socket) return;
       ws = null; closePc();
-      terminal = e.code === 4000 || e.code === 4400 || e.code === 4401;
-      if (terminal) {
-        status((e.code === 4000 ? 'viewer replaced' : e.code === 4400 ? 'protocol version mismatch' : 'authentication failed') + '; click to reconnect');
-        statusEl.style.cursor = 'pointer';
-        statusEl.style.pointerEvents = 'auto';
-      } else {
-        status('signalling closed (' + e.code + '); reconnecting in ' + retryDelay / 1000 + ' s');
-        retryTimer = setTimeout(connect, retryDelay); retryDelay = Math.min(10000, retryDelay * 2);
-      }
+      window.viewerFinish(e.code === 4000 ? 'Viewer replaced by another connection.' : e.code === 4401 ? 'Authentication failed.' : 'Signalling disconnected (' + e.code + ').');
     };
   }
-  statusEl.addEventListener('click', function () { if (terminal) { retryDelay = 1000; connect(); } });
+  window.rk.disconnect = function () {
+    clearTimeout(retryTimer); sendSig({ t: 'bye', sid: sid, reason: 'viewer-disconnect' });
+    var socket = ws; ws = null; if (socket) socket.close(); closePc();
+  };
   function closePc() {
     if (field) field.disconnect();
     generation++;
@@ -134,11 +105,11 @@
           negotiation: Promise.resolve(), ice: Promise.resolve(), restarted: false, failedTimer: null };
       }
       status('session ' + sid.slice(0, 8) + ': negotiating');
-    } else if (m.t === 'error') status(m.code === 'no-endpoint' ? 'waiting for endpoint' : 'error: ' + m.code);
+    } else if (m.t === 'error') { if (m.code === 'no-endpoint') status('waiting for endpoint'); else window.viewerFinish('Error: ' + m.code); }
     else if (!session || m.sid !== sid) return;
     else if (m.t === 'offer') onOffer(m);
     else if (m.t === 'ice') { session.candidates.push(m.candidate); drainIce(session, pc); }
-    else if (m.t === 'bye') { status('session ended: ' + m.reason); closePc(); }
+    else if (m.t === 'bye') { window.viewerFinish('Session ended: ' + m.reason); }
   }
   function drainIce(s, p) {
     if (!p || !current(s, p) || !s.remoteReady) return s.ice;
@@ -188,7 +159,7 @@
         if (!s.restarted) { s.restarted = true; sendSig({ t: 'restart', sid: s.sid }); }
         if (!s.failedTimer) s.failedTimer = setTimeout(function () {
           if (!current(s, p)) return;
-          sendSig({ t: 'bye', sid: s.sid, reason: 'ice-failed' }); closePc(); status('session ended: ice-failed');
+          sendSig({ t: 'bye', sid: s.sid, reason: 'ice-failed' }); window.viewerFinish('Connection failed.');
         }, 10000);
       } else if (p.connectionState === 'connected' || p.iceConnectionState === 'connected' || p.iceConnectionState === 'completed') {
         clearTimeout(s.failedTimer); s.failedTimer = null; retryDelay = 1000; status('');
@@ -222,13 +193,12 @@
       var hint = /video|codec/i.test(e.message) ?
         ' The browser and endpoint may not share a usable video codec (H.264 or VP8). Try updating the browser or contact the server operator.' : '';
       sendSig({ t: 'bye', sid: s.sid, reason: 'negotiation-failed' });
-      closePc();
-      status('Video negotiation failed while ' + step + '.' + hint + ' Details: ' + e.message);
+      window.viewerFinish('Video negotiation failed while ' + step + '.' + hint + ' Details: ' + e.message);
     });
   }
   function onCtl(m) {
     if (m.t === 'hello') {
-      if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); closePc(); status('session ended: protocol version mismatch'); return; }
+      if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); window.viewerFinish('Protocol version mismatch.'); return; }
       epHello = m; input.enabled = ch.input.readyState === 'open'; ime.refresh();
     }
     else if (!epHello) return;
@@ -275,9 +245,9 @@
   stage.addEventListener('pointerdown', function () { if (video.paused) { var play = video.play(); if (play && play.catch) play.catch(function () {}); } });
 
   // ---- stats overlay (1 Hz) ----
-  var prev = null, statsSamples = [], showStats = q.get('stats') !== '0';
+  var prev = null, statsSamples = [], showStats = q.get('stats') === '1';
   if (!showStats) overlay.style.display = 'none';
-  window.addEventListener('keydown', function (e) { if (e.key === 'F2' && e.ctrlKey) { showStats = !showStats; overlay.style.display = showStats ? 'block' : 'none'; } });
+  window.addEventListener('keydown', function (e) { if (e.ctrlKey && e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); e.stopImmediatePropagation(); showStats = !showStats; overlay.style.display = showStats ? 'block' : 'none'; } }, true);
   function fmt(v, d) { return v == null || isNaN(v) ? '-' : (+v).toFixed(d == null ? 1 : d); }
   setInterval(function () {
     if (!pc) { overlay.textContent = 'no session'; return; }

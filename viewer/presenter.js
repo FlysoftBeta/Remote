@@ -6,10 +6,6 @@
   var video = document.getElementById('video');
   var info = { mode: mode, draws: 0, desynchronized: null };
   window.RKPresenter = { info: info, draw: function () {}, source: null };
-  var style = document.createElement('style');
-  // Hide even inline display updates from the stats/IME code in these lab modes.
-  style.textContent = '#overlay,#status,#kbd,#ime,#ime-password{display:none!important}';
-  document.head.appendChild(style);
   function size() {
     var dpr = window.devicePixelRatio || 1;
     // The endpoint rounds physical dimensions to even pixels for H.264.

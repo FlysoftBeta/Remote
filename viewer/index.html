@@ -17,21 +17,14 @@
   #kbd { position: fixed; right: 12px; bottom: 12px; z-index: 4; display: none; font: 22px sans-serif; padding: 10px 14px;
          border-radius: 8px; border: 0; background: rgba(255,255,255,.85); }
   #instance-picker { position: fixed; right: 8px; top: 8px; z-index: 4; max-width: 220px; font: 13px sans-serif; }
+[hidden]{display:none!important} #settings{position:fixed;top:0;bottom:0;left:0;right:0;overflow:auto;z-index:20;background:#101822;color:#ecf2f8;font:16px/1.45 sans-serif}.card{box-sizing:border-box;max-width:720px;margin:6vh auto;padding:32px;background:#1b2938;border-radius:16px}h1{margin:0;font-size:28px}.intro{color:#b3c4d4;margin:6px 0 24px}.grid{display:flex;flex-wrap:wrap;margin:0 -8px}.field{box-sizing:border-box;padding:0 8px;margin-bottom:16px;width:50%}label{display:block;font-weight:bold;font-size:14px}input,select{box-sizing:border-box;width:100%;min-height:44px;padding:10px;margin-top:5px;color:#ecf2f8;background:#101b27;border:1px solid #526679;border-radius:7px;font:16px sans-serif}details{border-top:1px solid #425262;padding-top:14px}summary{cursor:pointer;padding:8px 0 16px;font-weight:bold}.check{display:flex;align-items:center;margin:12px 0 20px}.check input{width:20px;min-height:20px;margin:0 10px 0 0}#connect{width:100%;min-height:52px;background:#56b5ed;color:#0a1c2a;border:0;border-radius:8px;font:bold 17px sans-serif;cursor:pointer}#error{color:#ffb8ad;margin-bottom:16px}#disconnect{position:fixed;right:10px;top:10px;z-index:9;width:38px;height:38px;padding:0;border:1px solid rgba(255,255,255,.45);border-radius:50%;background:rgba(0,0,0,.48);color:white;font:24px sans-serif;cursor:pointer;touch-action:manipulation}@media(max-width:520px){.card{margin:0;min-height:100%;border-radius:0;padding:24px 18px}.field{width:100%}}
 </style>
+<section id="settings"><div class="card"><h1>Remote viewer</h1><p class="intro">Set up your connection to get started.</p><div id="error" role="alert" hidden></div><form id="settings-form"><div class="grid"><div class="field"><label>Instance<input name="instance" placeholder="default"></label></div><div class="field"><label>Control plane<input name="cp" placeholder="Current host"></label></div><div class="field"><label>Access token<input name="token" placeholder="" type="password" autocomplete="off"></label></div><div class="field"><label>Relay URL<input name="relay" placeholder="turn:host:port"></label></div></div><details><summary>Advanced</summary><div class="grid"><div class="field"><label>Measurement (1 or seconds)<input name="measure" placeholder=""></label></div><div class="field"><label>Scenario<input name="scenario" placeholder=""></label></div><div class="field"><label>Presenter (clean or canvas)<input name="presenter" placeholder=""></label></div><div class="field"><label>Delay (ms or off)<input name="delay" placeholder=""></label></div><div class="field"><label>Stats (1 to show)<input name="stats" placeholder=""></label></div><div class="field"><label>Report duration (seconds)<input name="report" placeholder=""></label></div><div class="field"><label>Marker row (pixels)<input name="my" placeholder=""></label></div><div class="field"><label>Warm-up (seconds)<input name="warmup" placeholder=""></label></div><div class="field"><label>Automatic input (1 or 0)<input name="autoinput" placeholder=""></label></div><div class="field"><label>Relay trace (1 or 0)<input name="trace" placeholder=""></label></div><div class="field"><label>Decoder info (1 or 0)<input name="hwinfo" placeholder=""></label></div><div class="field"><label>Field test (1 or 0)<input name="field" placeholder=""></label></div></div></details><label class="check"><input type="checkbox" name="fullscreen" checked> Fullscreen on connect</label><button id="connect" type="submit">Connect</button></form></div></section><button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" hidden>&#215;</button>
 <div id="stage" tabindex="0"><video id="video" autoplay playsinline muted></video></div>
 <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
 <input id="ime-password" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" disabled>
 <button id="kbd" type="button" aria-label="Show keyboard">&#9000;</button>
 <div id="overlay"></div>
-<div id="status">connecting</div>
-<select id="instance-picker" aria-label="Instance" hidden></select>
-<script src="presenter.js"></script>
-<script src="protocol.js"></script>
-<script src="/tools/latency/marker.js"></script>
-<script src="/tools/latency/clock.js"></script>
-<script src="/tools/latency/measure.js"></script>
-<script src="input.js"></script>
-<script src="ime.js"></script>
-<script src="/tools/field-test/viewer-field.js"></script>
-<script src="viewer.js"></script>
+<div id="status" style="display:none"></div>
+<script src="settings.js"></script>
 </html>
