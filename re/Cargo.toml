@@ -1,9 +1,0 @@
-[workspace]
-members = ["crates/re-mojo", "crates/re-rtc", "crates/re-encode"]
-resolver = "2"
-
-[workspace.package]
-edition = "2024"
-license = "BSD-3-Clause"
-rust-version = "1.88"
-

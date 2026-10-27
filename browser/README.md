@@ -14,15 +14,15 @@ must be installed):
 .\browser\cr.cmd check                   # check the series against upstream
 .\browser\cr.cmd gen dev                 # preserves existing args unless -Force
 .\browser\cr.cmd build dev chrome
-.\browser\cr.cmd build dev rb_legacy_endpoint
+.\browser\cr.cmd build dev re
 .\browser\cr.cmd run dev                 # --headless=new --rb-remote
 .\browser\cr.cmd export                  # export upstream..rb into browser/patches
 ```
 
 The checkout defaults to `C:\src\chromium\src`; set `CR_ROOT` to its parent to
 override it. The legacy endpoint also needs a directory symlink named
-`rb_legacy_endpoint` in the checkout pointing to this repository's `endpoint/`.
-Its executable is `out\dev\rb_legacy_endpoint.exe`. Stop the owned test chain
+`re` in the checkout pointing to this repository's `re/`.
+Its executable is `out\dev\re.exe`. Stop the owned test chain
 before linking a running executable. Builds are incremental; do not clean outputs.
 
 Commit source changes on `rb`, one maintenance unit per commit, with a unique

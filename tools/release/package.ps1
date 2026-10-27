@@ -6,14 +6,12 @@ param(
     [string]$ChromeOut = 'C:\src\chromium\src\out\rel',
     [string]$ChromiumSrc = 'C:\src\chromium\src',
     [string]$ReExe = '',
-    [string]$ReNative = '',
     [string[]]$ReRuntimeDll = @()
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-if (!$ReExe) { $ReExe = Join-Path $repo 're\target\release\re.exe' }
-if (!$ReNative) { $ReNative = Join-Path $ChromeOut 're_native.dll' }
+if (!$ReExe) { $ReExe = Join-Path $ChromeOut 're.exe' }
 $Out = [IO.Path]::GetFullPath($Out)
 $ChromeOut = (Resolve-Path -LiteralPath $ChromeOut).Path
 $name = "remotekit-$Version-win-x64"
@@ -59,15 +57,15 @@ foreach ($pattern in $patterns | Select-Object -Unique) {
     }
 }
 
-$endpointPresent = (Test-Path -LiteralPath $ReExe -PathType Leaf) -and (Test-Path -LiteralPath $ReNative -PathType Leaf)
+$endpointPresent = Test-Path -LiteralPath $ReExe -PathType Leaf
 if ($endpointPresent) {
     Copy-RuntimeFile $ReExe (Join-Path $stage 're\re.exe')
-    Copy-RuntimeFile $ReNative (Join-Path $stage 're\re_native.dll')
 } else {
-    Write-Warning "Endpoint incomplete; skipping re.exe and re_native.dll. Inputs: $ReExe ; $ReNative"
+    Write-Warning "Endpoint incomplete; skipping re.exe. Input: $ReExe"
 }
-# Native MSVC runtime support (GN component builds may need more DLLs; use
-# -ReRuntimeDll explicitly for those). Do not bundle graphics-driver DLLs.
+# re.exe from the non-component release build links libwebrtc, oneVPL and OpenH264
+# statically; it needs only the MSVC runtime. A component build (out\dev) also needs
+# its component DLLs: pass them with -ReRuntimeDll. Do not bundle graphics-driver DLLs.
 foreach ($pattern in @('msvcp140*.dll', 'vcruntime140*.dll', 'vccorlib140.dll')) {
     foreach ($dll in Get-ChildItem -Path (Join-Path $ChromeOut $pattern) -File) {
         Copy-RuntimeFile $dll.FullName (Join-Path $stage "re\$($dll.Name)")
@@ -144,7 +142,7 @@ $licenses = @{
     'WebRTC.txt' = (Join-Path $ChromiumSrc 'third_party\webrtc\LICENSE')
     'Chromium-Credits.html' = (Join-Path $ChromeOut 'gen\components\resources\about_credits.html')
     'nv-codec-headers.txt' = (Join-Path $repo 're\third_party\nv-codec-headers\LICENSE')
-    'oneVPL.txt' = (Join-Path $repo 'endpoint\third_party\libvpl\LICENSE')
+    'oneVPL.txt' = (Join-Path $repo 're\third_party\libvpl\LICENSE')
     'OpenH264.txt' = (Join-Path $ChromiumSrc 'third_party\openh264\src\LICENSE')
 }
 foreach ($entry in $licenses.GetEnumerator()) {
@@ -156,7 +154,7 @@ if (Test-Path -LiteralPath $widevineLicense) {
 }
 @{
     version = $Version; platform = 'win-x64'; endpointPresent = $endpointPresent
-    chromeOut = $ChromeOut; browserManifest = $manifest; reExe = $ReExe; reNative = $ReNative
+    chromeOut = $ChromeOut; browserManifest = $manifest; reExe = $ReExe
     nodeVersion = $nodeVersion; nodeUrl = $nodeUrl; nodeSha256 = $nodeSha256
 } | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $stage 'BUILD-INFO.json')
 $fileHashes = foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName) {

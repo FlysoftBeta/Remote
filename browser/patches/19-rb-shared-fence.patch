@@ -29,7 +29,7 @@ index 3f014aae53..22d708b5d3 100644
      "//ui/gfx/geometry/mojom",
    ]
 diff --git a/chrome/browser/rb/mojom/rb.mojom b/chrome/browser/rb/mojom/rb.mojom
-index bc84a99dc7..1f69716ab3 100644
+index 95c52eb4e8..3fec5240bd 100644
 --- a/chrome/browser/rb/mojom/rb.mojom
 +++ b/chrome/browser/rb/mojom/rb.mojom
 @@ -4,6 +4,7 @@

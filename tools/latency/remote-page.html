@@ -2,7 +2,7 @@
 <!-- Latency test page rendered INSIDE the remote PRTS browser (real chain). Draws the 06 4.2 marker at the
      top-left of the page every animation frame with the sender wall clock (same machine as the endpoint).
      ?scenario=S (scrolling article), V (1080p30 moving-pattern fallback), G (game canvas).
-     Use with rb_legacy_endpoint --app so the page origin is the video frame origin. -->
+     Use with re --app so the page origin is the video frame origin. -->
 <meta charset="utf-8"><title>PRTS latency page</title>
 <style>html,body{margin:0;height:100%;overflow:hidden;background:#246}#c{display:block;width:100vw;height:100vh;position:fixed;inset:0;pointer-events:none}#load{position:fixed;inset:0;overflow:hidden}#load canvas,#load video{width:100%;height:100%;object-fit:cover}article{padding:24px 40px;background:#f6f3eb;color:#243142;font:22px/1.55 Georgia;display:flow-root}article img{width:48%;float:left;margin:0 28px 20px 0}article:nth-child(even) img{float:right}h1{font:40px sans-serif}</style>
 <div id="load"></div>

@@ -6,7 +6,7 @@
 
 - 一个 instance = 一个 PRTS 浏览器进程树（browser + GPU + network + utility + renderers）+ 一个 user-data-dir。
   同一 instance 内的多个标签页**不是**不同租户。
-- endpoint（Rust）和 control-plane（Node）在租户容器之外，是可信 broker；浏览器被攻破不能拿到 endpoint 的进程句柄、
+- endpoint（C++）和 control-plane（Node）在租户容器之外，是可信 broker；浏览器被攻破不能拿到 endpoint 的进程句柄、
   其他租户的纹理句柄、文件或网络权限。
 - Chromium 自带的 renderer/GPU 子进程沙箱继续生效，保护的是“网页 → 浏览器”；外层边界防的是“被攻破的浏览器 → 主机/其他租户”。
 

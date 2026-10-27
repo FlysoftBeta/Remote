@@ -21,13 +21,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'control-plane\node_module
 if (-not $BinDir) {
     foreach ($candidate in @('C:\src\chromium\src\out\rel', 'C:\src\chromium\src\out\dev')) {
         if ((Test-Path -LiteralPath (Join-Path $candidate 'chrome.exe')) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'rb_legacy_endpoint.exe'))) { $BinDir = $candidate; break }
+            (Test-Path -LiteralPath (Join-Path $candidate 're.exe'))) { $BinDir = $candidate; break }
     }
     if (-not $BinDir) { throw 'No binary pair found in out\rel or out\dev. Specify -BinDir.' }
 }
 $BinDir = (Resolve-Path -LiteralPath $BinDir).Path
 $chromeExe = Join-Path $BinDir 'chrome.exe'
-$endpointExe = Join-Path $BinDir 'rb_legacy_endpoint.exe'
+$endpointExe = Join-Path $BinDir 're.exe'
 foreach ($exe in @($chromeExe, $endpointExe)) {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Missing binary: $exe" }
 }

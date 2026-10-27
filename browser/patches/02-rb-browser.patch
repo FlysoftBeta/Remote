@@ -234,12 +234,12 @@ index 0000000000..3f014aae53
 +}
 diff --git a/chrome/browser/rb/mojom/rb.mojom b/chrome/browser/rb/mojom/rb.mojom
 new file mode 100644
-index 0000000000..bc84a99dc7
+index 0000000000..95c52eb4e8
 --- /dev/null
 +++ b/chrome/browser/rb/mojom/rb.mojom
 @@ -0,0 +1,128 @@
 +// DRAFT contract (Stage 3 / M1). Final home: chrome/browser/rb/mojom/rb.mojom (patch 02),
-+// shared by chrome/browser/rb (browser side) and //rb_legacy_endpoint (endpoint side).
++// shared by chrome/browser/rb (browser side) and //re (endpoint side).
 +// Codex tasks may propose changes in their NOTES but must keep names unless a compile reason forces it.
 +module rb.mojom;
 +

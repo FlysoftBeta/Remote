@@ -1,12 +1,12 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Flysoft <flysoftbeta@outlook.com>
 Date: Mon, 26 Oct 2026 13:44:41 +0800
-Subject: [PATCH] rb: build //rb_legacy_endpoint from gn_all
+Subject: [PATCH] rb: build //re from gn_all
 
 Patch-Name: 14-rb-endpoint-target
 
 diff --git a/BUILD.gn b/BUILD.gn
-index 516aa80505..df6edd0b82 100644
+index 516aa80505..1611bc6977 100644
 --- a/BUILD.gn
 +++ b/BUILD.gn
 @@ -857,6 +857,12 @@ group("gn_all") {
@@ -14,10 +14,10 @@ index 516aa80505..df6edd0b82 100644
      deps += [ "//clusterfuzz-data:all" ]
    }
 +
-+  # RB: in-tree browser-endpoint (src/rb_legacy_endpoint is a junction to
++  # RB: in-tree browser-endpoint (src/re is a junction to
 +  # remotekit/endpoint, not part of the patch).
 +  if (is_win && !is_cronet_build) {
-+    deps += [ "//rb_legacy_endpoint" ]
++    deps += [ "//re" ]
 +  }
  }
  

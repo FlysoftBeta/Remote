@@ -8,7 +8,7 @@
 
 ```text
 viewer ──WS /signal (JSON)──► control-plane ◄──WS /signal?role=endpoint (JSON)── mock endpoint / 远程 endpoint
-                                         ◄──stdio，4 字节 LE 长度前缀 + JSON（同一消息集）── rb_legacy_endpoint.exe（被 CP 拉起）
+                                         ◄──stdio，4 字节 LE 长度前缀 + JSON（同一消息集）── re.exe（被 CP 拉起）
 viewer ◄═══════════ WebRTC：H.264 视频（endpoint→viewer，recvonly）+ 3 条 negotiated DataChannel ═══════════► endpoint
 ```
 
@@ -23,8 +23,7 @@ viewer ◄═══════════ WebRTC：H.264 视频（endpoint→v
 浏览器与 endpoint 仍使用 **Mojo**。唯一协议定义是 Chromium 的
 `chrome/browser/rb/mojom/rb.mojom`（`browser/patches/02-rb-browser.patch`，后续维护补丁扩展它）；
 `viz.mojom.RbD3D11FrameFence` 来自 `services/viz/privileged/mojom/compositing/frame_sink_video_capture.mojom`。
-旧 C++ `rb_legacy_endpoint` 直接使用生成的 C++ bindings；Rust `re-mojo` 通过同一 DLL
-`re_native` 的 C ABI 使用这些 bindings，没有另一套 pipe 协议。
+`re` 直接使用生成的 C++ bindings，没有另一套 pipe 协议。
 
 | 接口 / 方向 | 方法与内容 |
 |---|---|
@@ -48,49 +47,6 @@ texture 经 Viz → browser 的 GPU buffer handle 到达 browser，由 browser `
 fence 从 Viz 每帧 lease 的 `GetRbReadyFence()` 返回，包含 token、value、adapter LUID、可选 shared fence
 NT handle；browser 对每个 writer token 只发送一次 OS handle，之后只传 token / value / LUID。
 没有 fence 时使用 keyed mutex，key 0；有 fence 时须在相同 adapter 上 `OpenSharedFence` 并提交 `Wait(value)`。
-
-`re/native/include/re_native_mojo.h` 是版本化、纯 C 的集成入口：opaque `re_mojo*`、带 user pointer 的
-typed callbacks，以及与上述方法对应的 calls。`launch` 自动完成 SetClient；`start_capture` 绑定独立 sink。
-`get_stats` / `now_us` 只提供本地 bridge 计数 / 同机单调时钟探针：当前 mojom 没有 stats / ping 消息。
-Chrome 参数按 UTF-8 argv 传入；用户须提供独立 `--user-data-dir`。默认先探测 D3D11 fence 支持，
-也可显式传 `--rb-capture-sync=fence|mutex`。shutdown 清理输入、capture、invitation，并终止自己启动的 Chrome。
-
-所有 session API、回调、销毁都在 create 线程；`poll(0..1000 ms)` 驱动该线程的 Mojo dispatch，
-独立 IO 线程仅处理 Mojo transport。回调可发输入 / release；不得重入 poll、shutdown / destroy、start / stop capture。
-应用应及时 poll，避免把自己的调度间隔计入 IPC 延迟。Rust `Client` 为 `!Send + !Sync`，
-回调借用由 HRTB 生命周期约束；panic 在 FFI 内捕获，当前 frame 放弃，再于 poll 返回后继续 unwind。
-
-C API struct / string 指针仅在回调内有效。texture / fence NT handles 由 shim 持有，借用至该 pool 的
-Reset 回调返回、stop、disconnect 回调返回或 shutdown；调用方不得 CloseHandle。
-Rust 将 handle 暴露为 callback 生命周期内的 `BorrowedHandle`；可在回调中导入并保留 COM resource。
-`FrameAction::Defer` 保留 frame lease，待 GPU 读取**实际完成**后 `release_frame(id,true)`；
-仅提交 Wait / CopyResource 不代表完成。无 GPU 读取的丢帧可直接 consumed；读取失败 / 超时使用 false，
-让 browser 放弃该 allocation。Reset 放弃尚未归还的 lease、关闭缓存句柄，旧 id 后续 release 返回错误。
-`recovered` 是 Reset 后首个有效 frame 的本地通知，不能当作独立的 GPU-restart wire event。
-每 capture 固定 64 buffers / 8 fences / 64 leases，frame callback 不新增堆分配；输入直接生成现有 mojom struct，
-不额外排队分配。native 的 `received_us`、`callback_us` 与 Rust `rust_callback_us` 可分离传输与桥接开销。
-
-共同 ABI `re_native_abi_version()` 与 Mojo API `re_mojo_api_version()` 在加载时均须匹配 1；
-callbacks 按 version + struct_size 精确校验。不兼容 C 布局 / 语义变更须提升版本；**任何 mojom 变更须重建 re_native**，
-由 GN 同时更新生成的 bindings。Cargo 只构建 Rust，不运行 GN，不暴露 Chromium libc++ ABI。
-DLL 和公共 runtime 保留至进程退出；out/dev 为 component 诊断构建，分发使用 non-component 构建。
-
-[V] pin 157.0.8103.15 确有 `mojo/public/rust/{c_mojo_api,system,bindings}`，并非不存在 Rust Mojo 实现。
-[V] `bindings/BUILD.gn` 通过 Chromium GN / cxx router interop 依赖 `//base`；rb 的 mojom 未启用 `generate_rust`（默认 false）。
-因此按本阶段决策使用一次 GN 构建的 C++ shim，保持 Cargo 独立和既有 C++ mojom contract，不将 GN Rust 依赖移植为第二套构建。
-
-2026-10-27 IPC 验证（out/dev，证据 `C:/src/tmp/m6/ipc/`）：`re_native chrome rb_legacy_endpoint`
-增量构建成功。默认 probe 600/600 frame handles 有效、全为 shared fence，输入回显通过，resize 后恢复；
-另一次仅终止自己启动的 GPU process，1200/1200 frames 有效，writer token 更新，约 610 ms 后恢复，
-10 个 deferred leases 正常归还，重复 release 被拒绝。mutex fallback 为 300/300、fence 数 0，输入与 resize 通过。
-同 marker 页面、1904×1024：bridge capture-end→receive P50/P95 **1.027/2.140 ms**（600 frames），
-旧 endpoint **1.088/1.408 ms**（1453 frames）；bridge receive→Rust **2/4 µs**。
-此比较的旧 endpoint 同时编码 / 发送，probe 只确认 frame，不是隔离的端到端 A/B。
-旧链 marker capture→decoded 为 **33.434/36.615 ms**，baseline.done 为 **33.838/37.438 ms**；
-input→decoded 为 **44.0/61.2 ms**（baseline **37.5/54.5 ms**），低于约 10 ms 的单轮差异按噪声处理。
-marker failure / >200 ms freeze / input timeout 均 0，硬件 oneVPL、无 fallback。
-各测量前重设构建进程 Idle；当时没有 siso / clang-cl / lld-link，out/rel 未运行。
-分发 non-component 构建、本 IPC probe 的 GPU 像素读取 / 编码集成不在本验证范围。
 
 ## 1. 信令（WebSocket，JSON）
 
@@ -126,7 +82,7 @@ marker failure / >200 ms freeze / input timeout 均 0，硬件 oneVPL、无 fall
 6. 结束：任一侧 `bye`、WS 断开（CP 15 s ping/30 s 超时）、PC `failed` 超过 10 s（viewer 先尝试一次 `restart`）。
 
 ### 1.4 endpoint 的 stdio 传输
-CP 拉起 `rb_legacy_endpoint.exe`（`ENDPOINT_PATH`）时，用 stdin/stdout 承载同一消息集，帧格式 = 4 字节小端长度 + UTF-8 JSON（≤ 4 MiB，`control-plane/framing.js`）。
+CP 拉起 `re.exe`（`ENDPOINT_PATH`）时，用 stdin/stdout 承载同一消息集，帧格式 = 4 字节小端长度 + UTF-8 JSON（≤ 4 MiB，`control-plane/framing.js`）。
 `instance` 由命令行给出（`--instance=<id>`）。endpoint 的 stderr 是日志。实例控制（启动浏览器、关闭）放在同一通道的 `instance.*` 消息中，后续定义。
 
 ## 2. DataChannel

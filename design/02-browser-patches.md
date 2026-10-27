@@ -28,7 +28,7 @@
 | 11 | `remote-popups-in-root` | `chrome/browser/ui/views/chrome_views_delegate_win.cc`（remote 模式：有 parent 的非顶层 widget 用 `kNativeWidgetAura`，~6 行）；`ui/views/widget/desktop_aura/desktop_native_widget_aura.cc`（`GetDefaultParent`：remote 模式同 Fuchsia 返回 `root_window_`，~3 行） | — | +10 | D4b；S11（失败则删除本补丁，改走多根捕获） |
 | 12 | `rb-product-branding` | `chrome/app/theme/chromium/BRANDING`（PRODUCT 值）；UI 资源由 `browser/branding/apply_branding.py` 生成，不进入补丁 | — | 4 行 | d-branding |
 | 13 | `chrome-web-identity` | `components/embedder_support/user_agent_utils.cc`（`GetUserAgentBrandList`：remote 模式 brand="Google Chrome"；`GetUserAgentInternal`：remote 模式不加 `Headless` 前缀）+ 调整相应单测期望 | — | +10 + tests | d-branding；pin 上 `:162-163`、`:449-450` 已核对 |
-| 14 | `rb-endpoint-target` | `//BUILD.gn`（`gn_all` 增加 `//rb_legacy_endpoint`，1 行） | `src/rb_legacy_endpoint` 为指向 remotekit `endpoint/` 的目录联接，不进补丁 | +1 | D12 |
+| 14 | `rb-endpoint-target` | `//BUILD.gn`（`gn_all` 增加 `//re`，1 行） | `src/re` 为指向 remotekit `re/` 的目录联接，不进补丁 | +1 | D12 |
 
 与 Stage 1 的差异：`headless-geometry`（旧 11）取消——虚拟屏幕尺寸/DSF/工作区由 `--screen-info` 提供（Windows new-headless 支持，
 `headless_mode_browsertest_win.cc:237`）；运行期改尺寸/DSF 是否需要钩子由 S6 决定。`virtual-touch-capability`（旧 09，ui/base）被 09 `rb-web-prefs`（chrome 层）取代。
@@ -95,4 +95,4 @@
   `rebase <tag>`（只在 Stable 里程碑升级时用）、`gen/build`（构建锁、日志与 `.exit` 文件）。
 - 规则：每个维护单元一个提交（`--fixup` + autosquash 折回）；remotekit 只提交 series/patches/PIN/args；补丁头写明目的、上游文件、守卫开关、设计章节、上游化可能性；
   里程碑升级只跑 `cr check` + 构建 + 冒烟。
-- `endpoint/` 通过 junction 进入 src，不进补丁；`cr apply` 需确保 junction 存在。
+- `re/` 通过 junction 进入 src，不进补丁；`cr apply` 需确保 junction 存在。

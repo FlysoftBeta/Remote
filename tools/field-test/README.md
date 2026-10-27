@@ -14,7 +14,7 @@ the first controller.
    npm --prefix control-plane ci
    ```
 
-2. Use the patched Chromium 157.0.8103.15 and matching `rb_legacy_endpoint.exe`.
+2. Use the patched Chromium 157.0.8103.15 and matching `re.exe`.
    If an incremental dev build is needed, coordinate with whoever owns the
    running chain first, then use the existing Git Bash helpers:
 
@@ -150,7 +150,7 @@ about 120 input probes, so input P99 is especially sensitive to a few samples.
   rules are printed and require review. The launcher does not change Public
   network policy. Check corporate firewall policy as well.
 - **Page loads but video does not:** TCP signalling can work while UDP media is
-  blocked. Allow inbound UDP for the selected `rb_legacy_endpoint.exe` (not just
+  blocked. Allow inbound UDP for the selected `re.exe` (not just
   `chrome.exe`). Check `stderr.log`, Wi-Fi AP/guest-network client isolation,
   VLAN routing, and endpoint registration in `/api/health`. There is no TURN
   requirement on a directly reachable subnet; this kit supplies no TURN server.

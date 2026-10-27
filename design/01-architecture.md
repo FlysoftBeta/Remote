@@ -22,7 +22,7 @@
  │   GPU process: viz display compositor + FrameSinkVideoCapturerImpl (D3D11, Intel UHD 630)          │
  └──────▲ Mojo (control, input, IME, capture descriptors / or capturer remote) ────────────────────────┘
         │                                    pixels stay on GPU: D3D11 NT handle + keyed mutex
- ┌──────┴──────────── rb_legacy_endpoint (C++, built in the Chromium tree, one worker per instance) ─────────┐
+ ┌──────┴──────────── re (C++, built in the Chromium tree, one worker per instance) ─────────┐
  │ frame import (open-once cache) · optional scene pass · VideoProcessor BGRA→NV12 · oneVPL H.264       │
  │ libwebrtc PeerConnection (H.264 track + data channels) · pacing controller · metrics                 │
  └──────▲ control API (JSON over stdio/WebSocket)            │ WebRTC (UDP, direct)
@@ -150,7 +150,7 @@
   上游 `remoting/` 正是“树内原生主机 + libwebrtc + 硬件 H.264 + `VideoPlayoutDelay::Minimal()`”（r-chromium-map §7）。
 - 编码：自写 `webrtc::VideoEncoder`（oneVPL，D3D11 视频内存输入，native `VideoFrameBuffer` 携带 NV12 纹理）；回退：`media::VideoEncodeAccelerator`（MF）、
   OpenH264（`rtc_use_h264`，CPU）。
-- 源码放 remotekit `endpoint/`，以目录联接（junction）映射到 `src/rb_legacy_endpoint/`；上游改动仅 `//BUILD.gn` 一行依赖（02 补丁 15）。
+- 源码放 remotekit `re/`，以目录联接（junction）映射到 `src/re/`；上游改动仅 `//BUILD.gn` 一行依赖（02 补丁 15）。
 - 否决：Rust + webrtc-rs（GCC/pacer 成熟度未经验证、仍需 C++ 桥）；独立 libwebrtc 检出（第二套 gclient/工具链、版本漂移）；把 endpoint 放进浏览器进程（扩大补丁面、编码/网络进入将要被沙箱化的进程）。
   str0m 列为候选，见 REVIEW。
 
@@ -191,8 +191,7 @@ remotekit/
   design/  research/                  设计、调查结果
   archive/                            阶段计划、状态、提示词、旧工作流脚本
   browser/                            PIN.json, args/, series, patches/, branding/, cr.cmd
-  endpoint/                           旧 C++ endpoint（symlink 到 src/rb_legacy_endpoint）
-  re/                                 Rust endpoint
+  re/                                 endpoint（C++，symlink 到 src/re）
   control-plane/  viewer/              Node 控制平面与浏览器端 viewer
   tools/                              测量、网络整形、isolation/ ACL 工具
 ```

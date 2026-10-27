@@ -5,16 +5,15 @@ Windows / Node 22+ harness for a real endpoint selected by `ENDPOINT_PATH` and
 The worker **imports `tools/latency/run.mjs`** for the control-plane, Edge launch,
 fixture and viewer automation. The viewer's existing `RKMeasure` and `RKClock`
 provide decoded pixel-marker latency. This also keeps the soak driver independent
-of the endpoint implementation: a Rust `re.exe` must implement the same stdio and
-Chrome launch options as the legacy endpoint.
+of the endpoint implementation: a different endpoint build must implement the same stdio and
+Chrome launch options as `re.exe`.
 
 ```powershell
-$env:ENDPOINT_PATH='C:/src/chromium/src/out/dev/rb_legacy_endpoint.exe'
+$env:ENDPOINT_PATH='C:/src/chromium/src/out/dev/re.exe'
 $env:ENDPOINT_ARGS='--chrome=C:/src/chromium/src/out/dev/chrome.exe --encoder=vpl --fps=60 --cr-fake-vsync-rate=60 --cr-enable-logging'
 node tools/soak/run.mjs --all --out C:/src/tmp/m6/soak/nightly-1
 # Short check of every fault (typically several minutes):
 node tools/soak/run.mjs --all --smoke --port 8460 --out C:/src/tmp/m6/soak/smoke-new
-# Later: change ENDPOINT_PATH to the built Rust re.exe and adjust ENDPOINT_ARGS.
 ```
 
 For paths with spaces, use an argument array:
@@ -25,8 +24,7 @@ $env:ENDPOINT_ARGS_JSON=ConvertTo-Json -Compress -InputObject @('--chrome=C:/src
 
 Each launch replaces `--user-data-dir=`, `--cr-remote-debugging-port=` and `--url=`
 with dedicated values. Use `--key=value` for these switches. Other endpoint
-arguments pass through unchanged; tuning flags are not imposed on a future Rust
-endpoint. The default workload is S (scrolling); `--scenario V` selects the local
+arguments pass through unchanged; tuning flags are not imposed. The default workload is S (scrolling); `--scenario V` selects the local
 moving-pattern video fallback. Both draw a timestamp marker.
 
 Select any combination of these flags; `--all` runs them in the following order:

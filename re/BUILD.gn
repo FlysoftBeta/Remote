@@ -1,0 +1,56 @@
+executable("re") {
+  assert(is_win, "M1 endpoint is Windows-only")
+  sources = [
+    "browser_session.cc",
+    "browser_session.h",
+    "d3d_frame_source.cc",
+    "d3d_frame_source.h",
+    "d3d_native_frame.cc",
+    "d3d_native_frame.h",
+    "endpoint_link.cc",
+    "endpoint_link.h",
+    "encoder_factory.cc",
+    "encoder_factory.h",
+    "encoder_params.cc",
+    "encoder_params.h",
+    "experiment_options.cc",
+    "experiment_options.h",
+    "frame_source.h",
+    "input_parser.cc",
+    "input_parser.h",
+    "latency_stats.h",
+    "main.cc",
+    "nvenc_encoder.cc",
+    "peer.cc",
+    "peer.h",
+    "signaling.cc",
+    "signaling.h",
+    "synthetic_source.cc",
+    "synthetic_source.h",
+    "video_encoder_backend.h",
+    "vpl_encoder.cc",
+    "vpl_encoder.h",
+  ]
+  deps = [
+    "third_party/libvpl:dispatcher",
+    "//base",
+    "//chrome/browser/rb:switches",
+    "//chrome/browser/rb/mojom",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/platform",
+    "//mojo/public/cpp/system",
+    "//third_party/libyuv",
+    "//third_party/webrtc_overrides:webrtc_component",
+    "//ui/gfx/geometry",
+  ]
+  configs += [ "//third_party/webrtc:common_config" ]
+  # PRTS endpoint is out-of-tree style code: skip Chromium style plugin and
+  # unsafe-buffer warnings (M1 speed; revisit for M5).
+  configs -= [ "//build/config/clang:find_bad_constructs" ]
+  cflags = [
+    "-Wno-unsafe-buffer-usage",
+    "-Wno-unsafe-buffer-usage-in-libc-call",
+  ]
+  libs = [ "d3d11.lib", "dxgi.lib", "ws2_32.lib" ]
+}

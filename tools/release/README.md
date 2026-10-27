@@ -4,14 +4,13 @@ From the repository root, using Windows PowerShell 5.1 or later:
 
 ```powershell
 ./tools/release/package.ps1 -Version 0.1.0 -Out C:\releases `
-  -ReExe C:\build\re.exe -ReNative C:\build\re_native.dll
+  -ReExe C:\build\re.exe
 ```
 
 No builds are performed. The default browser input is
 `C:\src\chromium\src\out\rel`; override `-ChromeOut` and `-ChromiumSrc` together
-for another checkout. Endpoint defaults are `re/target/release/re.exe` and
-`<ChromeOut>/re_native.dll`. Supply the non-component native release library;
-component builds need their transitive component DLLs. Explicit extra endpoint
+for another checkout. The endpoint default is `<ChromeOut>/re.exe`. Use the non-component release
+build; component builds need their transitive component DLLs. Explicit extra endpoint
 DLLs can be passed through `-ReRuntimeDll @('C:\build\runtime.dll')`.
 Missing endpoint inputs produce a control-plane-only package with a warning.
 
