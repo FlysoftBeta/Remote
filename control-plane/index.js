@@ -1,6 +1,8 @@
 // remotekit control-plane sample (D13, docs/protocol.md section 1): static files + WebSocket signalling + sessions.
-// Not on the media/input path. Run: node control-plane [--port 8080]; env CP_TOKEN (auth placeholder), ENDPOINT_PATH (stdio endpoint).
+// Not on the media/input path. Run: node control-plane [--port 8080] [--tls-cert c.pem --tls-key k.pem | --tls-pfx c.pfx]
+// [--http-redirect-port 80]; env CP_TOKEN (auth placeholder), ENDPOINT_PATH (stdio endpoint), TLS_* (see below).
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -16,6 +18,38 @@ const TOKEN = process.env.CP_TOKEN || '';
 const argPort = process.argv.indexOf('--port');
 const PORT = Number(argPort > 0 ? process.argv[argPort + 1] : process.env.PORT ?? 8080);
 const log = (...a) => console.log(new Date().toISOString().slice(11, 23), ...a);
+const arg = (name, env) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : process.env[env]; };
+
+// TLS (optional): PEM cert+key (--tls-cert/--tls-key, TLS_CERT/TLS_KEY, optional chain --tls-ca/TLS_CA) or a PKCS#12
+// bundle (--tls-pfx/TLS_PFX, passphrase TLS_PFX_PASSPHRASE). The cert files are re-read when they change (renewal).
+// --http-redirect-port/HTTP_REDIRECT_PORT additionally serves plain HTTP that redirects to HTTPS.
+const tls = {
+  cert: arg('--tls-cert', 'TLS_CERT'), key: arg('--tls-key', 'TLS_KEY'), ca: arg('--tls-ca', 'TLS_CA'),
+  pfx: arg('--tls-pfx', 'TLS_PFX'), passphrase: process.env.TLS_PFX_PASSPHRASE,
+  redirectPort: arg('--http-redirect-port', 'HTTP_REDIRECT_PORT')
+};
+const TLS_ON = Boolean(tls.pfx || (tls.cert && tls.key));
+if (!TLS_ON && (tls.cert || tls.key)) { console.error('TLS needs both --tls-cert and --tls-key (or --tls-pfx)'); process.exit(2); }
+function tlsOptions() {
+  if (tls.pfx) return { pfx: fs.readFileSync(tls.pfx), passphrase: tls.passphrase };
+  return { cert: fs.readFileSync(tls.cert), key: fs.readFileSync(tls.key), ...(tls.ca ? { ca: fs.readFileSync(tls.ca) } : {}) };
+}
+function makeServer(handler) {
+  if (!TLS_ON) return http.createServer(handler);
+  const s = https.createServer(tlsOptions(), handler);
+  let timer = null;
+  const reload = () => { clearTimeout(timer); timer = setTimeout(() => {
+    try { s.setSecureContext(tlsOptions()); log('TLS certificate reloaded'); } catch (e) { log(`TLS reload failed, keeping the old certificate: ${e.message}`); }
+  }, 1000); };
+  for (const f of [tls.pfx, tls.cert, tls.key, tls.ca].filter(Boolean)) fs.watchFile(f, { interval: 5000 }, reload);
+  if (tls.redirectPort) {
+    http.createServer((req, res) => {
+      const host = (req.headers.host || 'localhost').replace(/:\d+$/, '');
+      res.writeHead(301, { Location: `https://${host}${PORT === 443 ? '' : ':' + PORT}${req.url}` }).end();
+    }).listen(Number(tls.redirectPort), process.env.HOST || undefined, () => log(`HTTP→HTTPS redirect on port ${tls.redirectPort}`));
+  }
+  return s;
+}
 
 // instance id -> { endpoint: conn|null, viewer: conn|null (current controller), sid }
 const instances = new Map();
@@ -111,7 +145,7 @@ function readBody(req, limit = 1 << 20) {
 }
 const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
-const server = http.createServer(async (req, res) => {
+const server = makeServer(async (req, res) => {
   try {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/field-config') return json(res, fieldConfig ? 200 : 404, fieldConfig || { error: 'field mode disabled' });
@@ -217,5 +251,5 @@ function superviseEndpoint(exe) {
 }
 if (process.env.ENDPOINT_PATH) superviseEndpoint(process.env.ENDPOINT_PATH);
 
-server.listen(PORT, process.env.HOST || undefined, () => log(`control-plane v${V} on http://localhost:${server.address().port}/ (mock endpoint: /mock)`));
+server.listen(PORT, process.env.HOST || undefined, () => log(`control-plane v${V} on ${TLS_ON ? 'https' : 'http'}://localhost:${server.address().port}/ (mock endpoint: /mock)`));
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; process.exit(0); });

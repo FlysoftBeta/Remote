@@ -13,3 +13,22 @@ stdio transport to `re`. It is **not** on the media or input path and exists for
   old; `error:no-endpoint` while none is online; a dropped side makes the CP synthesise `bye`; ping 15 s / timeout 30 s; WS messages <= 64 KiB.
   There is no endpoint respawn policy and no supervisor: the CP owns one auto-launched endpoint, and `re` launches its own rb browser.
 - Message set and lifecycle: [protocol](protocol.md#1-signalling-websocket-json).
+
+## TLS
+
+HTTPS and WSS are enabled when a certificate is configured; the viewer switches to `wss://` automatically when the page is served over HTTPS.
+
+| Option | Env | Meaning |
+|---|---|---|
+| `--tls-cert <pem>` + `--tls-key <pem>` | `TLS_CERT`, `TLS_KEY` | PEM certificate (chain allowed) and private key |
+| `--tls-ca <pem>` | `TLS_CA` | optional extra CA/intermediate chain |
+| `--tls-pfx <pfx>` | `TLS_PFX`, `TLS_PFX_PASSPHRASE` | PKCS#12 bundle instead of PEM |
+| `--http-redirect-port <n>` | `HTTP_REDIRECT_PORT` | also listen on plain HTTP and 301-redirect to HTTPS |
+
+The certificate files are watched and reloaded without a restart when they change (e.g. after renewal); a failed reload keeps the old certificate. Example:
+
+```
+node control-plane --port 443 --tls-cert cert.pem --tls-key key.pem --http-redirect-port 80
+```
+
+The endpoint's stdio link (`ENDPOINT_PATH`) is unaffected.
