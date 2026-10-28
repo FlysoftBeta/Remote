@@ -3,7 +3,7 @@
 node_modules/
 dist/
 viewer/public/
-release/
-releases/
+/release/
+/releases/
 *.tsbuildinfo
 .playwright-mcp/
