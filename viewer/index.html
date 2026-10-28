@@ -2,29 +2,154 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>remotekit viewer</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
-  #stage { position: fixed; inset: 0; top: 0; left: 0; right: 0; bottom: 0; touch-action: none; user-select: none;
-           -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; outline: none; }
-  #video { touch-action: none; width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; background: #000; }
-  #overlay { position: fixed; top: 6px; left: 6px; padding: 6px 8px; background: rgba(0,0,0,.65); color: #8f8;
-             font: 12px/1.35 monospace; white-space: pre; pointer-events: none; z-index: 3; border-radius: 4px; }
-  #status { position: fixed; bottom: 8px; left: 50%; transform: translateX(-50%); color: #ccc; font: 13px sans-serif;
-            background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 4px; pointer-events: none; z-index: 3; }
-  #ime, #ime-password { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; margin: 0;
-         resize: none; overflow: hidden; color: transparent; background: transparent; caret-color: transparent; z-index: 1; font-size: 16px; }
-  #kbd { position: fixed; right: 12px; bottom: 12px; z-index: 4; display: none; font: 22px sans-serif; padding: 10px 14px;
-         border-radius: 8px; border: 0; background: rgba(255,255,255,.85); }
-  #instance-picker { position: fixed; right: 8px; top: 8px; z-index: 4; max-width: 220px; font: 13px sans-serif; }
-[hidden]{display:none!important} #settings{position:fixed;top:0;bottom:0;left:0;right:0;overflow:auto;z-index:20;background:#101822;color:#ecf2f8;font:16px/1.45 sans-serif}.card{box-sizing:border-box;max-width:720px;margin:6vh auto;padding:32px;background:#1b2938;border-radius:16px}h1{margin:0;font-size:28px}.intro{color:#b3c4d4;margin:6px 0 24px}.grid{display:flex;flex-wrap:wrap;margin:0 -8px}.field{box-sizing:border-box;padding:0 8px;margin-bottom:16px;width:50%}label{display:block;font-weight:bold;font-size:14px}input,select{box-sizing:border-box;width:100%;min-height:44px;padding:10px;margin-top:5px;color:#ecf2f8;background:#101b27;border:1px solid #526679;border-radius:7px;font:16px sans-serif}details{border-top:1px solid #425262;padding-top:14px}summary{cursor:pointer;padding:8px 0 16px;font-weight:bold}.check{display:flex;align-items:center;margin:12px 0 20px}.check input{width:20px;min-height:20px;margin:0 10px 0 0}#connect{width:100%;min-height:52px;background:#56b5ed;color:#0a1c2a;border:0;border-radius:8px;font:bold 17px sans-serif;cursor:pointer}#error{color:#ffb8ad;margin-bottom:16px}#disconnect{position:fixed;right:10px;top:10px;z-index:9;width:38px;height:38px;padding:0;border:1px solid rgba(255,255,255,.45);border-radius:50%;background:rgba(0,0,0,.48);color:white;font:24px sans-serif;cursor:pointer;touch-action:manipulation}@media(max-width:520px){.card{margin:0;min-height:100%;border-radius:0;padding:24px 18px}.field{width:100%}}
-</style>
-<section id="settings"><div class="card"><h1>Remote viewer</h1><p class="intro">Set up your connection to get started.</p><div id="error" role="alert" hidden></div><form id="settings-form"><div class="grid"><div class="field"><label>Instance<input name="instance" placeholder="default"></label><label id="instance-picker-label" hidden>Available instances<select id="instance-picker"></select></label></div><div class="field"><label>Control plane<input name="cp" placeholder="Current host"></label></div><div class="field"><label>Access token<input name="token" placeholder="" type="password" autocomplete="off"></label></div><div class="field"><label>Relay URL<input name="relay" placeholder="turn:host:port"></label></div></div><details><summary>Advanced</summary><div class="grid"><div class="field"><label>Measurement (1 or seconds)<input name="measure" placeholder=""></label></div><div class="field"><label>Scenario<input name="scenario" placeholder=""></label></div><div class="field"><label>Presenter (clean or canvas)<input name="presenter" placeholder=""></label></div><div class="field"><label>Delay (ms or off)<input name="delay" placeholder=""></label></div><div class="field"><label>Stats (1 to show)<input name="stats" placeholder=""></label></div><div class="field"><label>Report duration (seconds)<input name="report" placeholder=""></label></div><div class="field"><label>Marker row (pixels)<input name="my" placeholder=""></label></div><div class="field"><label>Warm-up (seconds)<input name="warmup" placeholder=""></label></div><div class="field"><label>Automatic input (1 or 0)<input name="autoinput" placeholder=""></label></div><div class="field"><label>Relay trace (1 or 0)<input name="trace" placeholder=""></label></div><div class="field"><label>Decoder info (1 or 0)<input name="hwinfo" placeholder=""></label></div><div class="field"><label>Field test (1 or 0)<input name="field" placeholder=""></label></div></div></details><label class="check"><input type="checkbox" name="fullscreen" checked> Fullscreen on connect</label><button id="connect" type="submit">Connect</button></form></div></section><button id="disconnect" type="button" aria-label="Disconnect" title="Disconnect" hidden>&#215;</button>
+<link rel="stylesheet" href="viewer.css">
+
+<section id="settings" aria-labelledby="settings-title">
+  <div class="shell">
+    <header class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/></svg></span>
+      <div>
+        <h1 id="settings-title">Remote viewer</h1>
+        <p class="lede">Choose a remote browser and connect.</p>
+      </div>
+    </header>
+
+    <div id="error" class="banner" role="alert" hidden>
+      <svg class="banner-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg>
+      <div class="banner-body"><strong>Could not stay connected</strong><span id="error-text"></span><span id="error-retry-note" class="muted"></span></div>
+      <div class="banner-actions">
+        <button type="button" id="error-retry" class="btn btn-small">Retry</button>
+        <button type="button" id="error-dismiss" class="btn btn-small btn-ghost" aria-label="Dismiss">Dismiss</button>
+      </div>
+    </div>
+
+    <form id="settings-form" novalidate>
+      <section class="panel" aria-labelledby="h-connection">
+        <h2 id="h-connection">Connection</h2>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="f-instance">Instance</label>
+            <div class="field-tools">
+              <button type="button" id="instances-refresh" class="icon-btn" aria-label="Refresh instances" title="Refresh instances"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+            </div>
+          </div>
+          <div id="instance-list" class="instance-list" role="radiogroup" aria-label="Available instances" hidden></div>
+          <p id="instance-note" class="help" aria-live="polite"></p>
+          <input id="f-instance" name="instance" placeholder="default" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="instance-help">
+          <p id="instance-help" class="help">Instance ID. Pick one above or type an ID. Leave empty for <code>default</code>.</p>
+        </div>
+
+        <div class="field">
+          <label for="f-token">Access token</label>
+          <div class="input-group">
+            <input id="f-token" name="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="token-help">
+            <button type="button" id="token-reveal" class="icon-btn in-input" aria-label="Show token" aria-pressed="false" title="Show token"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+          </div>
+          <p id="token-help" class="help">Required when the server sets <code>CP_TOKEN</code>. Saved in this browser.</p>
+        </div>
+
+        <label class="switch"><input type="checkbox" name="fullscreen" checked><span class="track" aria-hidden="true"></span><span>Fullscreen on connect <span class="muted">(landscape on phones)</span></span></label>
+      </section>
+
+      <details class="panel" id="display-panel">
+        <summary><span><h2>Display &amp; network</h2><span class="summary-sub">Stats, presenter, receive delay, server address</span></span></summary>
+        <div class="panel-body">
+          <label class="switch"><input type="checkbox" name="stats" value="1"><span class="track" aria-hidden="true"></span><span>Show stats overlay <span class="muted">— toggle any time with the toolbar or Ctrl+Alt+S</span></span></label>
+
+          <fieldset class="field">
+            <legend>Receive delay</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="delay-mode" value="low"><span>Lowest (0 ms)</span></label>
+              <label><input type="radio" name="delay-mode" value="custom"><span>Custom</span></label>
+              <label><input type="radio" name="delay-mode" value="off"><span>Browser default</span></label>
+            </div>
+            <div class="unit-input" id="delay-custom" hidden><input type="number" id="f-delay-ms" min="0" max="4000" step="10" inputmode="numeric" aria-label="Receive delay in milliseconds"><span class="unit">ms</span></div>
+            <p class="help">Jitter-buffer target. Higher values smooth playback on poor networks at the cost of latency.</p>
+          </fieldset>
+
+          <fieldset class="field">
+            <legend>Presenter</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="presenter" value=""><span>Standard</span></label>
+              <label><input type="radio" name="presenter" value="clean"><span>Clean</span></label>
+              <label><input type="radio" name="presenter" value="canvas"><span>Canvas</span></label>
+            </div>
+            <p class="help">Experimental presentation paths. Keep <em>Standard</em> unless you are testing.</p>
+          </fieldset>
+
+          <div class="field">
+            <label for="f-cp">Control plane</label>
+            <input id="f-cp" name="cp" placeholder="This server" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <p class="help"><code>host:port</code> of another control plane. Leave empty to use this server.</p>
+          </div>
+        </div>
+      </details>
+
+      <details class="panel panel-dev" id="dev-panel">
+        <summary><span><h2>Diagnostics &amp; measurement <span class="tag">Developer</span></h2><span class="summary-sub">Latency tests, reports, tracing. Not needed for normal use.</span></span></summary>
+        <div class="panel-body">
+          <fieldset class="field">
+            <legend>Latency measurement</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="measure-mode" value="off"><span>Off</span></label>
+              <label><input type="radio" name="measure-mode" value="marker"><span>Pixel marker</span></label>
+              <label><input type="radio" name="measure-mode" value="field"><span>Field run</span></label>
+            </div>
+            <div class="unit-input" id="measure-custom" hidden><input type="number" id="f-measure-s" min="5" max="3600" step="5" inputmode="numeric" aria-label="Field run duration in seconds"><span class="unit">s</span></div>
+            <p class="help">Pixel marker needs a marker-drawing page. Field run opens a tap-to-start test panel for the given duration.</p>
+          </fieldset>
+
+          <div class="grid">
+            <div class="field"><label for="f-scenario">Scenario</label><input id="f-scenario" name="scenario" autocomplete="off" autocapitalize="off" spellcheck="false"><p class="help">Label stored with reports.</p></div>
+            <div class="field"><label for="f-report">Report after</label><div class="unit-input"><input id="f-report" name="report" type="number" min="1" max="3600" inputmode="numeric" placeholder="off"><span class="unit">s</span></div><p class="help">Posts a latency report to <code>/api/report</code>.</p></div>
+            <div class="field"><label for="f-warmup">Warm-up</label><div class="unit-input"><input id="f-warmup" name="warmup" type="number" min="0" max="600" inputmode="numeric" placeholder="3"><span class="unit">s</span></div><p class="help">Ignored samples before a report.</p></div>
+            <div class="field"><label for="f-my">Marker row</label><div class="unit-input"><input id="f-my" name="my" type="number" min="0" max="8192" inputmode="numeric" placeholder="auto"><span class="unit">px</span></div><p class="help">Source pixel row of the marker.</p></div>
+          </div>
+
+          <div class="switch-list">
+            <label class="switch"><input type="checkbox" name="autoinput" value="1"><span class="track" aria-hidden="true"></span><span>Synthetic input <span class="muted">— mouse moves every 97 ms for input-to-photon (with reports)</span></span></label>
+            <label class="switch"><input type="checkbox" name="field" value="1"><span class="track" aria-hidden="true"></span><span>Field test panel <span class="muted">— uses the report duration</span></span></label>
+            <label class="switch"><input type="checkbox" name="hwinfo" value="1"><span class="track" aria-hidden="true"></span><span>Decoder info <span class="muted">— asks for camera permission to expose decoder details</span></span></label>
+            <label class="switch"><input type="checkbox" name="trace" value="1"><span class="track" aria-hidden="true"></span><span>Relay clock trace <span class="muted">— needs a relay URL</span></span></label>
+          </div>
+
+          <div class="field">
+            <label for="f-relay">Relay URL</label>
+            <input id="f-relay" name="relay" placeholder="turn:host:port" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <p class="help">Forces relay-only ICE through a lab TURN server.</p>
+          </div>
+        </div>
+      </details>
+
+      <div class="connect-bar">
+        <button id="connect" type="submit" class="btn btn-primary btn-large"><span>Connect</span><span id="connect-target" class="connect-target"></span></button>
+      </div>
+    </form>
+    <p class="footnote">Settings are remembered in this browser. URL parameters override them.</p>
+  </div>
+</section>
+
 <div id="stage" tabindex="0"><video id="video" autoplay playsinline muted></video></div>
 <textarea id="ime" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1"></textarea>
 <input id="ime-password" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" tabindex="-1" disabled>
-<button id="kbd" type="button" aria-label="Show keyboard">&#9000;</button>
-<div id="overlay"></div>
-<div id="status" style="display:none"></div>
+
+<div id="chrome" data-local-ui hidden>
+  <button type="button" id="toolbar-handle" class="toolbar-handle" aria-label="Show toolbar" aria-controls="toolbar" aria-expanded="false"><span></span></button>
+  <div id="toolbar" class="toolbar" role="toolbar" aria-label="Session">
+    <span class="tb-status" id="tb-status"><span class="dot" aria-hidden="true"></span><span id="tb-instance"></span></span>
+    <button type="button" class="tb-btn" id="tb-stats" aria-pressed="false" aria-label="Stats" title="Stats (Ctrl+Alt+S)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></button>
+    <button type="button" class="tb-btn" id="tb-keyboard" aria-label="Keyboard" title="Keyboard" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
+    <button type="button" class="tb-btn" id="tb-fullscreen" aria-pressed="false" aria-label="Fullscreen" title="Fullscreen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    <button type="button" class="tb-btn tb-danger" id="disconnect" aria-label="Disconnect" title="Disconnect"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg><span class="tb-label">Disconnect</span></button>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</div>
+<button id="kbd" type="button" data-local-ui aria-label="Show keyboard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
+<div id="overlay" aria-hidden="true"></div>
+<div id="status" role="status" aria-live="polite" style="display:none"></div>
+<script src="session-ui.js"></script>
 <script src="settings.js"></script>
 </html>

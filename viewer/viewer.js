@@ -1,7 +1,7 @@
 // remotekit viewer (D13, docs/protocol.md). Must run on Chrome 79+: newer APIs only behind feature detection.
 // URL params: instance, token, measure=1 (pixel-marker latency), report=<s> (POST summary to /api/report after s seconds),
 //             my=<source px> (fixed marker row; default auto-detect),
-//             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=1 (show overlay), cp=<host:port>.
+//             delay=<ms>|off (receiver jitter-buffer hint, default 0), stats=1 (show overlay; toggle with the toolbar or Ctrl+Alt+S), cp=<host:port>.
 //             measure=<seconds> enables the optional field kit's tap-to-start mode.
 (function () {
   'use strict';
@@ -18,7 +18,7 @@
   var ime = new RKIme(document.getElementById('ime'), document.getElementById('kbd'), input, sendCtl, isTouch);
   window.rk = { input: input, ime: ime, get pc() { return pc; }, get measure() { return measure; }, get clock() { return clock; } };
 
-  function status(s) { console.log('[viewer] ' + s); }
+  function status(s, kind, text) { console.log('[viewer] ' + s); if (kind && window.viewerUi) window.viewerUi.state(kind, text); }
   function sendInput(buf, seq) {
     if (!input.enabled || !ch || ch.input.readyState !== 'open') return;
     ch.input.send(buf);
@@ -32,8 +32,7 @@
   function sendSig(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
   function connect() {
     clearTimeout(retryTimer); retryTimer = null; terminal = false;
-    statusEl.style.cursor = '';
-    statusEl.style.pointerEvents = 'none';
+    status('connecting', 'connecting');
     var host = q.get('cp') || location.host;
     try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/signal?role=viewer&instance=' +
       encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : '')); } catch (e) { window.viewerFinish('Invalid control plane: ' + e.message); return; }
@@ -42,7 +41,7 @@
       if (ws !== socket) return;
       sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent, relay: relayUrl() || undefined,
         caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
-      status('waiting for endpoint');
+      status('waiting for endpoint', 'waiting');
     };
     ws.onmessage = function (e) { if (ws === socket) { try { onSignal(JSON.parse(e.data)); } catch (err) { console.warn('signalling', err); } } };
     ws.onerror = function () { if (ws === socket) socket.close(); };
@@ -104,8 +103,8 @@
         session = { sid: sid, generation: generation, iceServers: m.iceServers || [], candidates: [], remoteReady: false,
           negotiation: Promise.resolve(), ice: Promise.resolve(), restarted: false, failedTimer: null };
       }
-      status('session ' + sid.slice(0, 8) + ': negotiating');
-    } else if (m.t === 'error') { if (m.code === 'no-endpoint') status('waiting for endpoint'); else window.viewerFinish('Error: ' + m.code); }
+      status('session ' + sid.slice(0, 8) + ': negotiating', 'negotiating');
+    } else if (m.t === 'error') { if (m.code === 'no-endpoint') status('waiting for endpoint', 'waiting', 'The remote browser is not running yet. Waiting\u2026'); else window.viewerFinish('Error: ' + m.code); }
     else if (!session || m.sid !== sid) return;
     else if (m.t === 'offer') onOffer(m);
     else if (m.t === 'ice') { session.candidates.push(m.candidate); drainIce(session, pc); }
@@ -149,21 +148,21 @@
       if (!current(s, p)) return;
       applyHints(e.receiver);
       video.srcObject = e.streams && e.streams[0] ? e.streams[0] : new MediaStream([e.track]);
-      var play = video.play(); if (play && play.catch) play.catch(function () { if (current(s, p)) status('tap to start video'); });
+      var play = video.play(); if (play && play.catch) play.catch(function () { if (current(s, p)) status('tap to start video', 'action'); });
     };
     pc.onicecandidate = function (e) { if (current(s, p)) sendSig({ t: 'ice', sid: s.sid, candidate: e.candidate ? e.candidate.toJSON() : null }); };
     pc.onconnectionstatechange = pc.oniceconnectionstatechange = function () {
       if (!current(s, p)) return;
       if (p.connectionState === 'failed' || p.iceConnectionState === 'failed') {
-        status(s.restarted ? 'connection failed; waiting for recovery' : 'connection failed; restarting ICE');
+        status(s.restarted ? 'connection failed; waiting for recovery' : 'connection failed; restarting ICE', 'reconnecting');
         if (!s.restarted) { s.restarted = true; sendSig({ t: 'restart', sid: s.sid }); }
         if (!s.failedTimer) s.failedTimer = setTimeout(function () {
           if (!current(s, p)) return;
           sendSig({ t: 'bye', sid: s.sid, reason: 'ice-failed' }); window.viewerFinish('Connection failed.');
         }, 10000);
       } else if (p.connectionState === 'connected' || p.iceConnectionState === 'connected' || p.iceConnectionState === 'completed') {
-        clearTimeout(s.failedTimer); s.failedTimer = null; retryDelay = 1000; status('');
-      } else status('connection ' + (p.connectionState || p.iceConnectionState));
+        clearTimeout(s.failedTimer); s.failedTimer = null; retryDelay = 1000; status('connected', 'connected');
+      } else status('connection ' + (p.connectionState || p.iceConnectionState), 'negotiating');
     };
   }
   function onOffer(m) {
@@ -245,12 +244,34 @@
   stage.addEventListener('pointerdown', function () { if (video.paused) { var play = video.play(); if (play && play.catch) play.catch(function () {}); } });
 
   // ---- stats overlay (1 Hz) ----
-  var prev = null, statsSamples = [], showStats = q.get('stats') === '1';
-  if (!showStats) overlay.style.display = 'none';
-  window.addEventListener('keydown', function (e) { if (e.ctrlKey && e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); e.stopImmediatePropagation(); showStats = !showStats; overlay.style.display = showStats ? 'block' : 'none'; } }, true);
+  var prev = null, statsSamples = [], showStats = false;
+  window.rk.setStats = function (on) {
+    showStats = !!on; window.rk.statsVisible = showStats;
+    overlay.style.display = showStats ? 'block' : 'none';
+    if (window.viewerUi) window.viewerUi.statsChanged(showStats);
+    return showStats;
+  };
+  window.rk.setStats(q.get('stats') === '1');
+  window.addEventListener('keydown', function (e) { if (e.ctrlKey && e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); e.stopImmediatePropagation(); window.rk.setStats(!showStats); } }, true);
   function fmt(v, d) { return v == null || isNaN(v) ? '-' : (+v).toFixed(d == null ? 1 : d); }
+  // Compact overlay: headline fps + resolution, then label/value rows. Values come from the endpoint, so textContent only.
+  function renderStats(head, rows) {
+    overlay.textContent = '';
+    var h = document.createElement('div'); h.className = 'st-head';
+    if (head) {
+      var f = document.createElement('span'); f.className = 'st-fps'; f.textContent = head.fps;
+      var u = document.createElement('small'); u.textContent = 'fps'; f.appendChild(u);
+      var r = document.createElement('span'); r.className = 'st-res'; r.textContent = head.res;
+      h.appendChild(f); h.appendChild(r); overlay.appendChild(h);
+    }
+    rows.forEach(function (row) {
+      var d = document.createElement('div'), k = document.createElement('span'), v = document.createElement('span');
+      d.className = row[0] ? 'st-row' : 'st-row st-empty'; k.className = 'st-k'; v.className = 'st-v';
+      k.textContent = row[0]; v.textContent = row[1]; d.appendChild(k); d.appendChild(v); overlay.appendChild(d);
+    });
+  }
   setInterval(function () {
-    if (!pc) { overlay.textContent = 'no session'; return; }
+    if (!pc) { if (showStats) renderStats(null, [['', 'Waiting for a session…']]); return; }
     var s = session, p = pc;
     p.getStats().then(function (r) {
       if (!current(s, p)) return;
@@ -284,18 +305,23 @@
       }
       prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0, tp: inb.totalProcessingDelay || 0, dropped: inb.framesDropped || 0 };
       var c = codec[inb.codecId] || {}, lat = measure ? measure.summary() : null;
-      var lines = [
-        'video  ' + (inb.frameWidth || video.videoWidth) + 'x' + (inb.frameHeight || video.videoHeight) + '  ' + (c.mimeType || '?') + ' ' + (inb.decoderImplementation || ''),
-        'fps    ' + fmt(v.fps) + '   ' + fmt(v.kbps / 1000, 2) + ' Mbps',
-        'jitbuf ' + fmt(v.jbMs) + ' ms   decode ' + fmt(v.decMs, 2) + ' ms   rtt ' + fmt(v.rtt) + ' ms',
-        'lost   ' + (inb.packetsLost || 0) + '  nack ' + (inb.nackCount || 0) + '  pli ' + (inb.pliCount || 0) + '  freeze ' + (inb.freezeCount != null ? inb.freezeCount : '-') + '  drop ' + (inb.framesDropped || 0),
-        'hint   ' + hintInfo
+      var rows = [
+        ['rate', fmt(v.kbps / 1000, 2) + ' Mbps'],
+        ['codec', (String(c.mimeType || '?').replace(/^video\//, '')) + (inb.decoderImplementation ? ' · ' + inb.decoderImplementation : '')],
+        ['rtt', fmt(v.rtt) + ' ms'],
+        ['jitbuf', fmt(v.jbMs) + ' ms'],
+        ['decode', fmt(v.decMs, 2) + ' ms'],
+        ['loss', 'lost ' + (inb.packetsLost || 0) + ' · nack ' + (inb.nackCount || 0) + ' · pli ' + (inb.pliCount || 0)],
+        ['frames', 'freeze ' + (inb.freezeCount != null ? inb.freezeCount : '-') + ' · drop ' + (inb.framesDropped || 0)],
+        ['hint', hintInfo]
       ];
-      if (clock) lines.push('clock  offset ' + fmt(clock.offset, 2) + ' ms  minRtt ' + fmt(clock.minRtt, 2) + ' ms');
-      if (lat) lines.push('g2g    p50 ' + fmt(lat.lat.p50) + '  p80 ' + fmt(lat.lat.p80) + '  p99 ' + fmt(lat.lat.p99) + ' ms  n=' + lat.lat.n + (lat.precise ? '' : ' (rAF, imprecise)'),
-        'i2p    p50 ' + fmt(lat.i2p.p50) + '  p80 ' + fmt(lat.i2p.p80) + '  p99 ' + fmt(lat.i2p.p99) + ' ms  n=' + lat.i2p.n + '  marker ok ' + lat.decoded + '/' + lat.frames + '  fid ' + measure.lastFrameId);
-      if (epStats) lines.push('sender ' + fmt(epStats.fps) + ' fps ' + fmt(epStats.kbps / 1000, 2) + ' Mbps enc ' + fmt(epStats.encMs && epStats.encMs.p50, 2) + ' ms qp ' + fmt(epStats.qp) + ' ' + (epStats.backend || '') + (epStats.limit && epStats.limit !== 'none' ? ' limit:' + epStats.limit : ''));
-      overlay.textContent = lines.join('\n');
+      if (clock) rows.push(['clock', 'offset ' + fmt(clock.offset, 2) + ' · minRtt ' + fmt(clock.minRtt, 2) + ' ms']);
+      if (lat) rows.push(['g2g', fmt(lat.lat.p50) + ' / ' + fmt(lat.lat.p80) + ' / ' + fmt(lat.lat.p99) + ' ms n=' + lat.lat.n + (lat.precise ? '' : ' (rAF)')],
+        ['i2p', fmt(lat.i2p.p50) + ' / ' + fmt(lat.i2p.p80) + ' / ' + fmt(lat.i2p.p99) + ' ms n=' + lat.i2p.n],
+        ['marker', 'ok ' + lat.decoded + '/' + lat.frames + ' · fid ' + measure.lastFrameId]);
+      if (epStats) rows.push(['sender', fmt(epStats.fps) + ' fps · ' + fmt(epStats.kbps / 1000, 2) + ' Mbps'],
+        ['encode', fmt(epStats.encMs && epStats.encMs.p50, 2) + ' ms · qp ' + fmt(epStats.qp) + ' ' + (epStats.backend || '') + (epStats.limit && epStats.limit !== 'none' ? ' · limit ' + epStats.limit : '')]);
+      if (showStats) renderStats({ fps: fmt(v.fps, 0), res: (inb.frameWidth || video.videoWidth) + '×' + (inb.frameHeight || video.videoHeight) }, rows);
       sendCtl({ t: 'vstats', fps: v.fps, kbps: v.kbps, jbMs: v.jbMs, decMs: v.decMs, rtt: v.rtt, lost: inb.packetsLost, nack: inb.nackCount, pli: inb.pliCount,
         freeze: inb.freezeCount, lat: lat ? { p50: lat.lat.p50, p80: lat.lat.p80, p99: lat.lat.p99 } : null });
       window.rk.last = { inbound: inb, derived: v, codec: c.mimeType, codecDetails: c,
