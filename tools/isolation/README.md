@@ -5,6 +5,10 @@ Mode, provisioning and verified results: [docs/isolation.md](../../docs/isolatio
 `grant-traversal.ps1` grants directory-only RX without recursive propagation.
 Neither helper should grant shared inherited package access to tenant data.
 
+Run `powershell -NoProfile -File tools/isolation/test-traversal.ps1` to reproduce
+the busy-directory MAXIMUM_ALLOWED sharing conflict and verify directory-only
+ACL updates, unchanged child DACLs and stable repeated provisioning in a temporary tree.
+
 Build the standalone native canary and its no-op hook DLL:
 
 ```powershell

@@ -34,7 +34,8 @@ Unknown modes/options or container launch failures fail without retrying a weake
 profile must be separate trees. Install grants are RX; profile grants are FullControl (Chromium needs WRITE_DAC/WRITE_OWNER) with
 low integrity. Profile DACL inheritance is disabled, so a shared parent's package RX cannot expose another tenant's data.
 Ancestor grants are package-specific, directory-only and non-inheritable. Updates use
-[MAXIMUM_ALLOWED handles](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo) to suppress recursive propagation. A provisioning mutex prevents concurrent DACL lost updates;
+[SetFileSecurityW](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setfilesecurityw) to suppress recursive propagation. Ancestor DACL reads request only READ_CONTROL;
+MAXIMUM_ALLOWED can request data/delete access and fail with a sharing violation on an in-use directory. A provisioning mutex prevents concurrent DACL lost updates;
 identical explicit ACEs are retained to avoid reordering and propagating the whole install tree on each tenant switch.
 
 LPAC uses **five capabilities**: internetClient, registryRead (DLL activation), lpacCom (COM STA), lpacCryptoServices (OSCrypt), and

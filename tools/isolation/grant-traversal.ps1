@@ -9,31 +9,12 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 public static class RbTraversalAcl {
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    static extern IntPtr CreateFile(string name, uint access, uint share,
-        IntPtr security, uint creation, uint flags, IntPtr template);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
-    [DllImport("advapi32.dll", SetLastError=true)]
-    static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present,
-        out IntPtr dacl, out bool defaulted);
-    [DllImport("advapi32.dll")]
-    static extern uint SetSecurityInfo(IntPtr h, int type, uint info,
-        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool SetFileSecurityW(string path, uint info, byte[] sd);
     public static void Set(string path, byte[] descriptor) {
-        // MAXIMUM_ALLOWED explicitly suppresses recursive ACE propagation.
-        IntPtr h = CreateFile(path, 0x02000000, 7, IntPtr.Zero, 3,
-            0x02000000, IntPtr.Zero);
-        if (h == new IntPtr(-1)) throw new Win32Exception();
-        var pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
-        try {
-            bool present, defaulted; IntPtr dacl;
-            if (!GetSecurityDescriptorDacl(pinned.AddrOfPinnedObject(),
-                out present, out dacl, out defaulted) || !present)
-                throw new Win32Exception();
-            uint error = SetSecurityInfo(h, 1, 4, IntPtr.Zero, IntPtr.Zero,
-                dacl, IntPtr.Zero);
-            if (error != 0) throw new Win32Exception((int)error);
-        } finally { pinned.Free(); CloseHandle(h); }
+        // The low-level API updates only this directory. MAXIMUM_ALLOWED
+        // handles can fail with sharing violations on in-use ancestors.
+        if (!SetFileSecurityW(path, 4, descriptor)) throw new Win32Exception();
     }
 }
 '@
