@@ -2,6 +2,7 @@
 param(
     [ValidateRange(1, 65535)][int]$Port = 8080,
     [string]$BindAddress = '127.0.0.1',
+    [string]$DataDir = '',
     [string[]]$EndpointArgs = @(),
     [string]$TlsCert = '',
     [string]$TlsKey = '',
@@ -26,15 +27,17 @@ if (!$ControlPlaneOnly -and (Test-Path -LiteralPath $browser) -and !(Test-Path -
     if ($LASTEXITCODE -eq 0) { Set-Content -LiteralPath $aclMarker -Value (Get-Date -Format o) }
     else { Write-Warning 'icacls failed; the browser sandbox may report "cannot access executable". Run once from an elevated prompt.' }
 }
-$profileDir = Join-Path $PSScriptRoot 'data\profile'
-New-Item -ItemType Directory -Force -Path $profileDir | Out-Null
+if (!$DataDir) { $DataDir = if ($env:CP_DATA_DIR) { $env:CP_DATA_DIR } else { Join-Path $PSScriptRoot 'data' } }
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$env:CP_DATA_DIR = [IO.Path]::GetFullPath($DataDir)
 $env:HOST = $BindAddress
 $env:ENDPOINT_PATH = $null
 $env:ENDPOINT_ARGS = $null
 $env:ENDPOINT_ARGS_JSON = $null
+$env:CHROME_PATH = $browser
 if (!$ControlPlaneOnly -and (Test-Path -LiteralPath $endpoint)) {
     $env:ENDPOINT_PATH = $endpoint
-    $env:ENDPOINT_ARGS_JSON = ConvertTo-Json -Compress -InputObject (@("--chrome=$browser", "--user-data-dir=$profileDir") + $EndpointArgs)
+    $env:ENDPOINT_ARGS_JSON = ConvertTo-Json -Compress -InputObject (@("--chrome=$browser", '--isolation=job') + $EndpointArgs)
 } elseif (!$ControlPlaneOnly) {
     Write-Warning 're.exe missing; starting control plane only. Streaming is unavailable.'
 }
@@ -49,5 +52,5 @@ if ($HttpRedirectPort -gt 0) { $cpArgs += @('--http-redirect-port', $HttpRedirec
 $scheme = if ($TlsPfx -or $TlsCert) { 'https' } else { 'http' }
 Write-Host "PRTS viewer: ${scheme}://localhost:$Port/"
 Write-Host "Listening on $BindAddress; press Ctrl+C to stop."
-& $node (Join-Path $PSScriptRoot 'control-plane\index.js') @cpArgs
+& $node (Join-Path $PSScriptRoot 'control-plane\dist\server.mjs') @cpArgs
 exit $LASTEXITCODE

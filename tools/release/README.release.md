@@ -1,8 +1,8 @@
-# PRTS (remotekit) v0.1.0 for Windows
+# PRTS (remotekit) v0.2.1 for Windows
 
 PRTS is a cloud browser: a patched Chromium 157 (rb) runs headless on the
 server, a C++ endpoint (re) captures its frames on the GPU, encodes H.264 and
-streams it over WebRTC to a web viewer that sends back mouse, keyboard, IME
+streams it over WebRTC to a React viewer that sends back mouse, keyboard, IME
 and touch input. This portable folder contains rb, re, a Node.js control plane
 (Node 24.22.1 bundled, no install needed), the viewer, and licenses.
 
@@ -20,15 +20,24 @@ and touch input. This portable folder contains rb, re, a Node.js control plane
 2. Run `start.cmd` (or `powershell -ExecutionPolicy Bypass -File .\start.ps1`).
    On first run it grants read/execute on `rb\` to ALL APPLICATION PACKAGES and
    ALL RESTRICTED APPLICATION PACKAGES (needed by the Chromium sandbox).
-3. Open the printed viewer URL, normally <http://localhost:8080/>.
+3. Open the printed viewer URL, normally <http://localhost:8080/>, and create an
+   account. The first account is admin; Administration manages users and all
+   instances/profiles. Other users see only their own resources. Your browser
+   remembers the session in IndexedDB. Start/connect from the instance list.
 4. Press Ctrl+C in the launcher console to stop.
 
 ## Main switches
 
 - `-Port 8090` viewer/control-plane port (default 8080).
-- `-BindAddress 0.0.0.0` listen on all interfaces (default 127.0.0.1). The
-  control plane has placeholder authentication: use trusted networks only;
-  Internet use needs TLS, access control and WebRTC network configuration.
+- `-BindAddress 0.0.0.0` listen on all interfaces (default 127.0.0.1). Configure
+  TLS below for remote use and arrange WebRTC network connectivity.
+- `-DataDir C:\path\to\data` stores config.json and profiles outside this folder;
+  otherwise CP_DATA_DIR or the bundled data directory is used. No database.
+- Optional `CP_TOKEN` environment variable (or config.json serverCredential)
+  gates account creation only. Default: none, registration open. Login uses a
+  password; the CP stores salted scrypt hashes and hashed 30-day session tokens.
+  Password reset revokes sessions. Deleting an instance retains its profile;
+  delete unused profiles separately. Delete a user's resources before the user.
 - `-EndpointArgs @('--fps=30')` extra re switches, e.g. `--fps=30`,
   `--encoder=auto|vpl|nvenc|openh264` (auto: Intel -> vpl, NVIDIA -> nvenc,
   else openh264), `--nvenc-preset=1..3`.
@@ -44,7 +53,7 @@ and touch input. This portable folder contains rb, re, a Node.js control plane
 - Choppy video with several sessions: lower `--fps` (see limitations).
 - Viewer cannot connect remotely: allow the port in Windows Firewall and use
   `-BindAddress`.
-- The endpoint is restarted automatically by the control plane (1/2/5 s backoff);
+- The endpoint is restarted automatically by the control plane (1/2/4/8/16/30 s backoff);
   the viewer renegotiates on its own.
 
 ## Known limitations
@@ -55,7 +64,7 @@ and touch input. This portable folder contains rb, re, a Node.js control plane
   There is no automatic fps back-off.
 - A few undecodable frames can follow a GPU-process restart.
 - Widevine L3 only, unsigned binary (no VMP); some license servers refuse it.
-- Process isolation (AppContainer/Job) of the endpoint is not implemented.
+- Managed instances default to Job isolation. LPAC/AppContainer are experimental.
 - English UI strings are auto-branded.
 
 See `BUILD-INFO.json`, `FILES.sha256` and `LICENSES/`. If the archive is split,

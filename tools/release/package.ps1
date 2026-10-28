@@ -1,4 +1,4 @@
-# Requires Windows PowerShell 5.1+, npm and a completed Windows x64 release build.
+# Requires Windows PowerShell 5.1+, pnpm build and a completed Windows x64 release build.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$')][string]$Version,
@@ -20,6 +20,12 @@ $archive = Join-Path $Out "$name.zip"
 if ((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $archive) -or
     (Test-Path -LiteralPath "$archive.001")) {
     throw "Output already exists for $Version; use a new -Out or version."
+}
+foreach ($built in @('control-plane\dist\server.mjs', 'viewer\dist\index.html')) {
+    if (!(Test-Path -LiteralPath (Join-Path $repo $built))) { throw "Missing $built; run corepack pnpm install and corepack pnpm build." }
+}
+foreach ($package in @('package.json', 'control-plane\package.json', 'viewer\package.json')) {
+    if ((Get-Content -Raw -LiteralPath (Join-Path $repo $package) | ConvertFrom-Json).version -ne $Version) { throw "Version mismatch: $package" }
 }
 foreach ($required in @('chrome.exe', 'chrome.dll', 'chrome_elf.dll', 'resources.pak',
     'chrome_100_percent.pak', 'chrome_200_percent.pak', 'icudtl.dat', 'locales\en-US.pak',
@@ -81,7 +87,7 @@ $nodeVersion = '24.22.1'
 $nodeSha256 = 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5'
 $nodeName = "node-v$nodeVersion-win-x64"
 $nodeUrl = "https://nodejs.org/dist/v$nodeVersion/$nodeName.zip"
-$cache = Join-Path $Out '.cache'
+$cache = 'C:\src\tmp\remotekit-release-cache'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
 $nodeZip = Join-Path $cache "$nodeName.zip"
 if (!(Test-Path -LiteralPath $nodeZip)) {
@@ -109,29 +115,19 @@ $nodeRoot = Join-Path $nodeExtract $nodeName
 Copy-Item -LiteralPath (Join-Path $nodeRoot 'node.exe') -Destination (Join-Path $stage 'node\node.exe')
 Copy-Item -LiteralPath (Join-Path $nodeRoot 'LICENSE') -Destination (Join-Path $stage 'LICENSES\Node-LICENSE.txt')
 
-# Install into staging, never mutate source node_modules. Use the pinned Node
-# and its npm CLI; only node.exe and licenses ship in the finished package.
-foreach ($file in Get-ChildItem -LiteralPath (Join-Path $repo 'control-plane') -File |
-    Where-Object { $_.Extension -eq '.js' -or $_.Name -in @('package.json', 'package-lock.json') }) {
-    Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $stage 'control-plane')
-}
-$previousPath = $env:PATH
-try {
-    $env:PATH = "$nodeRoot;$previousPath"
-    Push-Location (Join-Path $stage 'control-plane')
-    try {
-        & (Join-Path $nodeRoot 'node.exe') (Join-Path $nodeRoot 'node_modules\npm\bin\npm-cli.js') ci --omit=dev --ignore-scripts --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw "npm ci failed: $LASTEXITCODE" }
-    } finally { Pop-Location }
-} finally { $env:PATH = $previousPath }
-Get-ChildItem -LiteralPath (Join-Path $repo 'viewer') -File | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stage 'viewer')
-}
-# viewer/index.html loads these helpers at absolute /tools URLs.
-foreach ($relative in @('tools\latency\marker.js', 'tools\latency\clock.js',
-    'tools\latency\measure.js', 'tools\field-test\viewer-field.js')) {
-    Copy-RuntimeFile (Join-Path $repo $relative) (Join-Path $stage $relative)
-}
+# esbuild bundles the locked ws runtime into this ESM server; no dev dependencies or npm at runtime.
+Copy-RuntimeFile (Join-Path $repo 'control-plane\dist\server.mjs') (Join-Path $stage 'control-plane\dist\server.mjs')
+@{ name = 'remotekit-control-plane'; version = $Version; type = 'module'; main = 'dist/server.mjs' } |
+    ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $stage 'control-plane\package.json')
+"import './dist/server.mjs';" | Set-Content -Encoding ASCII -LiteralPath (Join-Path $stage 'control-plane\index.js')
+Copy-Item -Path (Join-Path $repo 'viewer\dist') -Destination (Join-Path $stage 'viewer\dist') -Recurse
+# Keep all harness pages and measurement helpers reachable at their existing /tools URLs.
+Copy-Item -LiteralPath (Join-Path $repo 'tools') -Destination (Join-Path $stage 'tools') -Recurse
+foreach ($entry in @(
+    @('control-plane\node_modules\ws\LICENSE', 'ws.txt'),
+    @('viewer\node_modules\react\LICENSE', 'React.txt'),
+    @('viewer\node_modules\react-dom\LICENSE', 'React-DOM.txt')
+)) { Copy-RuntimeFile (Join-Path $repo $entry[0]) (Join-Path $stage ('LICENSES\' + $entry[1])) }
 foreach ($file in @('start.ps1', 'start.cmd')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $stage
 }
@@ -154,6 +150,7 @@ if (Test-Path -LiteralPath $widevineLicense) {
 }
 @{
     version = $Version; platform = 'win-x64'; endpointPresent = $endpointPresent
+    commit = (& git -C $repo rev-parse HEAD); controlPlane = 'TypeScript ESM bundle (ws included)'; viewer = 'React + TypeScript / Vite'
     chromeOut = $ChromeOut; browserManifest = $manifest; reExe = $ReExe
     nodeVersion = $nodeVersion; nodeUrl = $nodeUrl; nodeSha256 = $nodeSha256
 } | ConvertTo-Json | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $stage 'BUILD-INFO.json')

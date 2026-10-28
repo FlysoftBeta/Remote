@@ -16,7 +16,7 @@ additional rights. Retain these notices when redistributing the package.
 - oneVPL: MIT license in oneVPL.txt. Intel graphics drivers supply the hardware
   runtime; the dispatcher is linked into re.
 - Node.js: Node-LICENSE.txt includes Node and bundled dependency notices.
-- npm production packages: their license files are retained in node_modules.
+- Bundled JavaScript: ws.txt, React.txt and React-DOM.txt retain the MIT notices.
 - Widevine: proprietary Google CDM. Its LICENSE is retained in rb/WidevineCdm
   and copied here when present. Bundling does not establish redistribution
   permission or grant access to protected services. Confirm applicable Google
