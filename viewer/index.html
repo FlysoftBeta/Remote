@@ -33,13 +33,36 @@
           <div class="field-head">
             <label for="f-instance">Instance</label>
             <div class="field-tools">
+              <button type="button" id="instances-manage" class="icon-btn" aria-label="Manage instances" title="Manage instances" aria-expanded="false" aria-controls="manage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
               <button type="button" id="instances-refresh" class="icon-btn" aria-label="Refresh instances" title="Refresh instances"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
             </div>
           </div>
           <div id="instance-list" class="instance-list" role="radiogroup" aria-label="Available instances" hidden></div>
           <p id="instance-note" class="help" aria-live="polite"></p>
           <input id="f-instance" name="instance" placeholder="default" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="instance-help">
-          <p id="instance-help" class="help">Instance ID. Pick one above or type an ID. Leave empty for <code>default</code>.</p>
+          <p id="instance-help" class="help">Instance ID. Pick one above or type an ID. Leave empty for <code>default</code>. A stopped instance is started when you connect.</p>
+
+          <div id="manage" class="manage" hidden>
+            <div class="manage-row">
+              <span class="manage-target">Selected <code id="manage-selected">default</code></span>
+              <span class="manage-actions">
+                <button type="button" class="btn btn-small" data-act="start">Start</button>
+                <button type="button" class="btn btn-small" data-act="stop">Stop</button>
+                <button type="button" class="btn btn-small" data-act="restart">Restart</button>
+                <button type="button" class="btn btn-small btn-danger" data-act="delete">Delete</button>
+              </span>
+            </div>
+            <h3>New instance</h3>
+            <div class="grid">
+              <div class="field"><label for="n-id">ID</label><input id="n-id" placeholder="work" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64"><p class="help">Lowercase letters, digits, <code>-</code> and <code>_</code>.</p></div>
+              <div class="field"><label for="n-name">Name <span class="opt">optional</span></label><input id="n-name" placeholder="Work browser" autocomplete="off"></div>
+              <div class="field"><label for="n-profile">Profile</label><select id="n-profile"><option value="">New profile (same ID)</option></select><p class="help">Browser data (cookies, logins). One running instance per profile.</p></div>
+              <div class="field"><label for="n-isolation">Isolation</label><select id="n-isolation"><option value="job">Job (default)</option><option value="off">Off</option><option value="lpac">LPAC (experimental)</option><option value="appcontainer">AppContainer (experimental)</option></select></div>
+            </div>
+            <label class="switch"><input type="checkbox" id="n-autostart" checked><span class="track" aria-hidden="true"></span><span>Start with the server</span></label>
+            <div class="manage-create"><button type="button" id="n-create" class="btn btn-primary">Create and start</button></div>
+            <p id="manage-msg" class="help" aria-live="polite"></p>
+          </div>
         </div>
 
         <div class="field">

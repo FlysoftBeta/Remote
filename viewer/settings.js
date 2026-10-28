@@ -80,7 +80,7 @@
       b.setAttribute('aria-checked', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1;
     });
     if (list.children.length && !list.querySelector('[tabindex="0"]')) list.children[0].tabIndex = 0;
-    updateTarget();
+    updateTarget(); if (manage && !manage.hidden) syncManage();
   }
   function row(item, unlisted) {
     var b = document.createElement('button'), r = document.createElement('span'), meta = document.createElement('span');
@@ -102,9 +102,9 @@
     if (!found && instance.value.trim()) list.insertBefore(row({ id: id }, true), list.firstChild);
     list.hidden = !list.children.length; mark();
   }
+  function authHeaders() { var h = {}, token = els.token.value.trim(); if (token) h.Authorization = 'Bearer ' + token; return h; }
   function load() {
-    var seq = ++loading, headers = {}, token = els.token.value.trim();
-    if (token) headers.Authorization = 'Bearer ' + token;
+    var seq = ++loading, headers = authHeaders(), token = els.token.value.trim();
     refresh.classList.add('spinning'); note.textContent = rows.length ? '' : 'Loading instances…';
     fetch(apiBase() + '/api/instances', { headers: headers, cache: 'no-store' }).then(function (response) {
       if (response.status === 401) throw new Error(token ? 'The access token was not accepted. Check it to see instances.' : 'Enter the access token to see available instances.');
@@ -131,6 +131,79 @@
     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') d = 1; else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') d = -1; else return;
     e.preventDefault(); var next = items[(i + d + items.length) % items.length]; next.focus(); next.click();
   });
+  // ---- instance management (existing /api/instances and /api/profiles routes) ----
+  var manage = $('manage'), manageBtn = $('instances-manage'), msg = $('manage-msg'), busy = false;
+  function api(method, route, body) {
+    var headers = authHeaders(); if (body) headers['Content-Type'] = 'application/json';
+    return fetch(apiBase() + '/api/' + route, { method: method, headers: headers, cache: 'no-store', body: body ? JSON.stringify(body) : undefined }).then(function (r) {
+      if (r.status === 204) return null;
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (r.ok) return data;
+        throw new Error(r.status === 401 ? 'The access token is missing or wrong.' : r.status === 403 ? 'The server refused a request from this page (origin mismatch).' : (data && data.error) || 'HTTP ' + r.status);
+      });
+    }, function () { throw new Error('Could not reach the control plane.'); });
+  }
+  function say(text, isError) { msg.textContent = text; msg.classList.toggle('manage-msg-error', !!isError); }
+  function setBusy(on) { busy = on; Array.prototype.forEach.call(manage.querySelectorAll('button'), function (b) { b.disabled = on; }); if (!on) syncManage(); }
+  function selectedRow() { var id = instance.value.trim() || 'default'; return rows.filter(function (r) { return r.id === id; })[0]; }
+  function syncManage() {
+    var id = instance.value.trim() || 'default', r = selectedRow(), active = r && r.state && r.state !== 'stopped' && r.state !== 'crashed';
+    $('manage-selected').textContent = id;
+    if (busy) return;
+    manage.querySelector('[data-act=start]').disabled = !r || active;
+    manage.querySelector('[data-act=stop]').disabled = !r || !active;
+    manage.querySelector('[data-act=restart]').disabled = !r;
+    manage.querySelector('[data-act=delete]').disabled = !r;
+  }
+  function loadProfiles() {
+    var select = $('n-profile'), keep = select.value;
+    api('GET', 'profiles').then(function (list) {
+      while (select.options.length > 1) select.remove(1);
+      (Array.isArray(list) ? list : []).forEach(function (p) {
+        var o = document.createElement('option'); o.value = p.id;
+        o.textContent = (p.name && p.name !== p.id ? p.name + ' (' + p.id + ')' : p.id) + (p.instances && p.instances.length ? ' — used by ' + p.instances.join(', ') : '');
+        select.appendChild(o);
+      });
+      select.value = keep; if (select.value !== keep) select.value = '';
+    }).catch(function (e) { say(e.message, true); });
+  }
+  manageBtn.addEventListener('click', function () {
+    manage.hidden = !manage.hidden; manageBtn.setAttribute('aria-expanded', manage.hidden ? 'false' : 'true');
+    manageBtn.setAttribute('aria-pressed', manage.hidden ? 'false' : 'true');
+    if (!manage.hidden) { say(''); syncManage(); loadProfiles(); }
+  });
+  manage.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act]'); if (!b || busy) return;
+    var act = b.getAttribute('data-act'), id = instance.value.trim() || 'default', enc = encodeURIComponent(id);
+    if (act === 'delete' && !confirm('Delete instance "' + id + '"? Its profile data is kept.')) return;
+    setBusy(true); say({ start: 'Starting…', stop: 'Stopping…', restart: 'Restarting…', delete: 'Deleting…' }[act]);
+    var p = act === 'delete' ? api('DELETE', 'instances/' + enc) : api('POST', 'instances/' + enc + '/' + act);
+    p.then(function () {
+      say({ start: 'Started ', stop: 'Stopped ', restart: 'Restarted ', delete: 'Deleted ' }[act] + id + '.');
+      if (act === 'delete') instance.value = '';
+    }).catch(function (e) { say(e.message, true); }).then(function () { setBusy(false); load(); if (act === 'delete') loadProfiles(); });
+  });
+  $('n-create').addEventListener('click', function () {
+    if (busy) return;
+    var id = $('n-id').value.trim(), name = $('n-name').value.trim(), profile = $('n-profile').value;
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) { say('Enter an ID: 1–64 lowercase letters, digits, - or _, starting with a letter or digit.', true); $('n-id').focus(); return; }
+    var body = { id: id, profile: profile || id, isolation: $('n-isolation').value, autostart: $('n-autostart').checked };
+    if (name) body.name = name;
+    setBusy(true); say('Creating…');
+    (profile ? Promise.resolve() : api('POST', 'profiles', { id: id, name: name || id })).then(function () {
+      return api('POST', 'instances', body);
+    }).then(function () {
+      say('Starting…'); return api('POST', 'instances/' + encodeURIComponent(id) + '/start');
+    }).then(function () {
+      say('Created and started ' + id + '.'); instance.value = id; $('n-id').value = ''; $('n-name').value = '';
+    }).catch(function (e) { say(e.message, true); }).then(function () { setBusy(false); load(); loadProfiles(); });
+  });
+  // Enter inside the management area must not submit the connect form.
+  manage.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' || e.target.tagName === 'BUTTON') return;
+    e.preventDefault(); if (e.target.closest('.grid')) $('n-create').click();
+  });
+
   instance.addEventListener('input', mark);
   instance.addEventListener('change', render);
   refresh.addEventListener('click', load);
@@ -168,6 +241,9 @@
     if (values.fullscreen && document.documentElement.requestFullscreen) {
       try { var request = document.documentElement.requestFullscreen(); if (request && request.then) request.then(function () { if (window.screen.orientation && window.screen.orientation.lock) window.screen.orientation.lock('landscape').catch(function () {}); }).catch(function () {}); } catch (err) {}
     }
+    // Connecting to a stopped/crashed managed instance starts it first; the viewer then waits for its endpoint.
+    var target = rows.filter(function (r) { return r.id === (values.instance || 'default'); })[0];
+    if (target && (target.state === 'stopped' || target.state === 'crashed')) api('POST', 'instances/' + encodeURIComponent(target.id) + '/start').catch(function () {});
     screen.hidden = true; loading++;
     if (window.viewerUi) window.viewerUi.start(values.instance);
     document.getElementById('stage').focus({ preventScroll: true });

@@ -247,3 +247,18 @@ details.panel > summary:focus-visible { box-shadow: var(--focus); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation-duration: 2s !important; } }
+
+/* Instance management */
+.manage { margin-top: 14px; padding: 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
+.manage h3 { font-size: 14px; margin: 18px 0 10px; }
+.manage-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.manage-target { font-size: 14px; color: var(--text-2); }
+.manage-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.manage .btn:disabled { opacity: .5; cursor: default; }
+.btn-danger { color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-soft); }
+.manage-create { margin-top: 8px; }
+.manage-msg-error { color: var(--danger) !important; }
+#settings select { appearance: none; -webkit-appearance: none; padding-right: 32px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
