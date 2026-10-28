@@ -40,6 +40,8 @@ void BrowserSession::SetPeerCallbacks(ControlSender send,
   keyframe_ = std::move(keyframe);
 }
 bool BrowserSession::Launch(base::CommandLine command) {
+  profile_ = command.GetSwitchValuePath("user-data-dir");
+  launched_at_ = base::TimeTicks::Now();
   if (!link_.Launch(std::move(command))) {
     return false;
   }
@@ -218,7 +220,37 @@ void BrowserSession::VirtualKeyboard(bool show, uint32_t seq) {
            .Set("seq", static_cast<double>(seq)));
 }
 void BrowserSession::OnDisconnect() {
-  LOG(ERROR) << "Browser Mojo disconnected, incompatible, or Hello timed out";
+  if (closed_)
+    return;
+  const auto& process = link_.browser_process();
+  // Mojo can close just before Windows signals the process handle. Give that
+  // exit time to finish without killing it first and losing its real code.
+  if (!hello_ && !disconnect_pending_ && process.IsValid() &&
+      process.IsRunning()) {
+    disconnect_pending_ = true;
+    main_runner_->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&BrowserSession::OnDisconnect, weak_),
+        base::Milliseconds(100));
+    return;
+  }
+  int exit_code = 0;
+  if (process.IsValid() &&
+      process.WaitForExitWithTimeout(base::TimeDelta(), &exit_code)) {
+    LOG(ERROR) << "PRTS browser exited " << (hello_ ? "after" : "before")
+               << " Hello pid=" << process.Pid() << " exit_code=" << exit_code
+               << " elapsed_ms="
+               << (base::TimeTicks::Now() - launched_at_).InMilliseconds()
+               << " user_data_dir=" << profile_;
+    if (!hello_ && exit_code == 0) {
+      LOG(ERROR) << "PRTS profile-in-use handoff suspected: browser exited with "
+                    "code 0 before Hello. Close any existing browser using "
+                 << profile_ << " and retry; also check browser arguments.";
+    }
+  } else {
+    LOG(ERROR) << "Browser Mojo disconnected, incompatible, or Hello timed out; "
+               << "Hello received=" << hello_ << " user_data_dir=" << profile_;
+  }
   Shutdown();
   if (failure_) {
     std::move(failure_).Run();

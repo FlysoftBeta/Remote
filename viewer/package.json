@@ -1,5 +1,5 @@
 {
-  "name": "remotekit-viewer", "version": "0.2.1", "private": true, "type": "module",
+  "name": "remotekit-viewer", "version": "0.2.2", "private": true, "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1", "build": "vite build",
     "typecheck": "tsc --noEmit", "test": "node --experimental-strip-types --test test/*.test.mjs"

@@ -1,4 +1,4 @@
-# PRTS (remotekit) v0.2.1 for Windows
+# PRTS (remotekit) v0.2.2 for Windows
 
 PRTS is a cloud browser: a patched Chromium 157 (rb) runs headless on the
 server, a C++ endpoint (re) captures its frames on the GPU, encodes H.264 and
@@ -45,6 +45,15 @@ and touch input. This portable folder contains rb, re, a Node.js control plane
 
 ## Troubleshooting
 
+- "Profile directory is already in use": stop the older remotekit launcher and
+  close the browser using the reported profile, then explicitly start the instance.
+  CP leaves the instance in `crashed` with an error instead of repeatedly launching.
+  Do not delete profile data or a live lockfile. An abandoned writable lockfile
+  does not prevent startup.
+- Upgrades retain `instances.json` and migrate it once to `config.json`, preserving
+  the default profile's legacy `externalPath`. Keep using the same `-DataDir`;
+  after migration, `config.json` takes precedence. EndpointArgs are imported only
+  when neither configuration file exists.
 - "Sandbox cannot access executable": the ACL grant failed. Re-run start.ps1
   after deleting `rb\.acl-granted`, or run once from an elevated prompt.
 - Black/no video: check the launcher console for the selected encoder

@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "re/d3d_frame_source.h"
 #include "re/endpoint_link.h"
 #include "re/input_parser.h"
@@ -65,6 +66,9 @@ class BrowserSession final : public re::EndpointLink::Delegate,
   uint32_t active_ = 0, wanted_ = 0;
   uint64_t luid_ = 0;
   bool hello_ = false, closed_ = false;
+  bool disconnect_pending_ = false;
+  base::FilePath profile_;
+  base::TimeTicks launched_at_;
   base::WeakPtr<BrowserSession> weak_;
   base::WeakPtrFactory<BrowserSession> weak_factory_{this};
 };

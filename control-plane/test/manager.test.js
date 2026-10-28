@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import { InstanceManager, restartDelay } from '../manager.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -127,4 +128,75 @@ test('startup timeout kills stalled endpoint and schedules restart', async t => 
     } });
   await m.start('default'); assert.equal(m.get('default').state, 'starting');
   await until(() => killed === 1); assert.equal(m.get('default').state, 'backoff');
+});
+
+// Match Chromium's Windows sharing flags in a separate process. No lockfile
+// contents or process-name heuristic can distinguish a live owner from a stale file.
+async function holdProfile(t, dir) {
+  const child = spawn(`${process.env.SystemRoot}/System32/WindowsPowerShell/v1.0/powershell.exe`, ['-NoProfile', '-NonInteractive', '-Command',
+    "$f = [IO.FileStream]::new($env:RK_LOCKFILE, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::DeleteOnClose); [Console]::WriteLine('ready'); $null = [Console]::ReadLine(); $f.Dispose()"],
+    { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RK_LOCKFILE: path.join(dir, 'lockfile') } });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  let releasing;
+  const release = () => releasing ||= (async () => { child.stdin.end('\n'); await exited; })();
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill(); reject(new Error('lock holder timed out')); }, 5000);
+    child.once('error', e => { clearTimeout(timer); reject(e); });
+    child.stdout.once('data', () => { clearTimeout(timer); resolve(); });
+    child.stderr.once('data', data => { clearTimeout(timer); reject(new Error(String(data))); });
+  });
+  return release;
+}
+
+test('migrated external profile held by another process reports an error without retries; explicit start recovers', { skip: process.platform !== 'win32' }, async t => {
+  const { manager: initial, dataDir, children, spawn } = setup(t);
+  const profile = path.join(dataDir, 'legacy profile'); fs.mkdirSync(profile);
+  const old = JSON.stringify({ version: 1, profiles: [{ id: 'default', name: 'Default', externalPath: profile }],
+    instances: [{ id: 'default', profile: 'default', isolation: 'job', autostart: true }] });
+  fs.rmSync(initial.file); fs.writeFileSync(path.join(dataDir, 'instances.json'), old);
+  const m = new InstanceManager({ dataDir, endpointPath: 're.exe', spawn, log() {}, baseDelay: 10 });
+  t.after(() => m.shutdown());
+  const release = await holdProfile(t, profile);
+  try {
+    await m.boot(); await sleep(100);
+    assert.equal(m.get('default').state, 'crashed');
+    assert.match(m.get('default').lastExit.error, /Profile directory is already in use by another browser/);
+    assert.ok(m.get('default').lastExit.error.includes(profile));
+    assert.equal(m.get('default').nextRestartAt, null);
+    assert.equal(m.get('default').restarts, 0); assert.equal(children.length, 0);
+    assert.equal(fs.readFileSync(path.join(dataDir, 'instances.json'), 'utf8'), old);
+    assert.equal(JSON.parse(fs.readFileSync(m.file)).profiles[0].externalPath, profile);
+  } finally { await release(); }
+  await m.start('default');
+  assert.equal(m.get('default').state, 'running'); assert.equal(children.length, 1);
+  assert.ok(children[0].args.includes(`--user-data-dir=${profile}`));
+});
+
+test('a foreign owner appearing during backoff stops further restarts', { skip: process.platform !== 'win32' }, async t => {
+  const { manager: m, children } = setup(t, { baseDelay: 50 });
+  await m.start('default');
+  const release = await holdProfile(t, m.get('default').userDataDir);
+  try {
+    children[0].exit(); await until(() => m.get('default').state === 'crashed');
+    await sleep(100);
+    assert.equal(children.length, 1); assert.equal(m.get('default').nextRestartAt, null);
+    assert.match(m.get('default').lastExit.error, /already in use/);
+  } finally { await release(); }
+});
+
+test('stale writable lockfiles do not block startup or get deleted', async t => {
+  const { manager: m } = setup(t);
+  const dir = m.prepareProfile('default'), lock = path.join(dir, 'lockfile');
+  fs.writeFileSync(lock, 'stale');
+  await m.start('default'); assert.equal(m.get('default').state, 'running');
+  assert.equal(fs.readFileSync(lock, 'utf8'), 'stale');
+});
+
+test('profile aliases through a legacy external junction share one reservation', { skip: process.platform !== 'win32' }, async t => {
+  const { manager: m, dataDir } = setup(t);
+  const work = await m.createProfile({ id: 'work' });
+  const alias = path.join(dataDir, 'alias'); fs.symlinkSync(work.userDataDir, alias, 'junction');
+  m.profiles.get('default').externalPath = alias;
+  await m.create({ id: 'work', profile: 'work' });
+  await m.start('default'); await assert.rejects(m.start('work'), { status: 409 });
 });

@@ -49,6 +49,19 @@ export function restartDelay(failures, base = 1000, max = 30000) {
   return Math.min(max, base * 2 ** Math.min(30, Math.max(0, failures - 1)));
 }
 
+// Windows Chromium holds lockfile with GENERIC_WRITE and FILE_SHARE_READ.
+// Opening an existing file for write detects that live owner without modifying
+// the file. Existence alone is insufficient: an abandoned file is harmless.
+export function checkProfileAvailable(dir) {
+  if (process.platform !== 'win32') return;
+  try { const fd = fs.openSync(path.join(dir, 'lockfile'), 'r+'); fs.closeSync(fd); }
+  catch (e) {
+    if (e.code === 'ENOENT') return;
+    if (e.code === 'EBUSY') throw new ApiError(409, `Profile directory is already in use by another browser: ${dir}. Close that browser, then start the instance again.`);
+    throw new ApiError(409, `Cannot access profile lock in ${dir} (${e.code}). Close any browser using this profile and check its permissions, then start the instance again.`);
+  }
+}
+
 export class InstanceManager {
   root: string; file: string; profileRoot: string; endpointPath: string; chromePath: string;
   onMessage: Function; onClose: Function; viewerConnected: Function; log: Function; spawn: Function;
@@ -198,9 +211,8 @@ export class InstanceManager {
     const c = this.require(id), r = this.live(id);
     if (r.desired) return this.get(id);
     if (!this.endpointPath) throw new ApiError(409, 'set ENDPOINT_PATH to start managed instances');
-    const profileKey = this.profilePath(c.profile).toLowerCase();
-    for (const other of this.instances.values()) if (other.id !== id && this.profilePath(other.profile).toLowerCase() === profileKey && (this.live(other.id).desired || this.live(other.id).conn)) throw new ApiError(409, 'profile is already running or reserved for restart');
-    this.prepareProfile(c.profile);
+    const profileKey = fs.realpathSync(this.prepareProfile(c.profile)).toLowerCase();
+    for (const other of this.instances.values()) if (other.id !== id && (this.live(other.id).desired || this.live(other.id).conn) && fs.realpathSync(this.profilePath(other.profile)).toLowerCase() === profileKey) throw new ApiError(409, 'profile is already running or reserved for restart');
     r.desired = true; r.failures = 0; this.launch(id); return this.get(id);
   }
   launch(id) {
@@ -208,9 +220,11 @@ export class InstanceManager {
     if (!r.desired || this.closing) return;
     r.timer = null; r.nextRestartAt = null; r.state = 'starting'; const started = Date.now();
     try {
+      const profile = this.prepareProfile(c.profile);
+      checkProfileAvailable(profile);
       const extra = [...c.reArgs];
       if (!extra.some(a => a.startsWith('--chrome='))) extra.push(`--chrome=${this.chromePath}`);
-      extra.push(`--user-data-dir=${this.prepareProfile(c.profile)}`, `--isolation=${c.isolation}`);
+      extra.push(`--user-data-dir=${profile}`, `--isolation=${c.isolation}`);
       if (c.isolation !== 'off') extra.push(`--job-ui-limits=${c.jobUiLimits}`);
       for (const [key, flag] of Object.entries({ memoryMB: 'memory-mb', cpuRate: 'cpu-rate', processCount: 'process-count' })) if (c.jobLimits[key]) extra.push(`--job-${flag}=${c.jobLimits[key]}`);
       extra.push(...c.chromeArgs.map(a => '--cr-' + a.slice(2)));
@@ -225,7 +239,12 @@ export class InstanceManager {
       }, this.log, extra);
       r.conn = conn;
       r.startup = setTimeout(() => { this.log(`instance ${id} startup timed out`); conn.close(); }, this.startupMs);
-    } catch (e) { this.exited(id, { code: null, signal: null, error: e.message, at: new Date().toISOString() }, started); }
+    } catch (e) {
+      // A profile/configuration failure needs operator action, not a restart loop.
+      r.desired = false; r.state = 'crashed';
+      r.lastExit = { code: null, signal: null, error: e.message, at: new Date().toISOString() };
+      this.log(`instance ${id} cannot start: ${e.message}`);
+    }
   }
   exited(id, exit, started) {
     const r = this.live(id); r.lastExit = exit;

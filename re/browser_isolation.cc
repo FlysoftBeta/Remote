@@ -290,7 +290,12 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& requested_command,
           << "Isolation options require --isolation=job|lpac|appcontainer";
       return base::Process();
     }
-    return base::LaunchProcess(command, options);
+    auto process = base::LaunchProcess(command, options);
+    if (!process.IsValid()) {
+      PLOG(ERROR) << "LaunchProcess(isolation=off) browser="
+                  << command.GetProgram();
+    }
+    return process;
   }
   // Preserve the caller's kill-on-close flag while adding whole-browser limits.
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};

@@ -90,6 +90,10 @@
     name.textContent = unlisted ? item.id : (item.name || item.id);
     sub.textContent = unlisted ? 'Not in the server list' : item.id + (item.profile && item.profile !== item.id ? ' · profile ' + item.profile : '');
     meta.appendChild(name); meta.appendChild(sub); b.appendChild(r); b.appendChild(meta);
+    if (item.state === 'crashed' && item.lastExit && item.lastExit.error) {
+      var error = document.createElement('span'); error.className = 'sub manage-msg-error';
+      error.textContent = item.lastExit.error; meta.appendChild(error);
+    }
     if (item.viewerConnected) { var u = document.createElement('span'); u.className = 'in-use'; u.textContent = 'In use'; u.title = 'Another viewer is connected; connecting takes over'; b.appendChild(u); }
     if (!unlisted) { var badge = document.createElement('span'); badge.className = 'badge ' + String(item.state || '').replace(/[^a-z]/g, ''); badge.textContent = item.state || 'unknown'; b.appendChild(badge); }
     b.addEventListener('click', function () { instance.value = item.id; mark(); });
@@ -181,7 +185,8 @@
     if (act === 'delete' && !confirm('Delete instance "' + id + '"? Its profile data is kept.')) return;
     setBusy(true); say({ start: 'Starting…', stop: 'Stopping…', restart: 'Restarting…', delete: 'Deleting…' }[act]);
     var p = act === 'delete' ? api('DELETE', 'instances/' + enc) : api('POST', 'instances/' + enc + '/' + act);
-    p.then(function () {
+    p.then(function (result) {
+      if (result && result.state === 'crashed') throw new Error(result.lastExit && result.lastExit.error || 'Instance failed to start.');
       say({ start: 'Started ', stop: 'Stopped ', restart: 'Restarted ', delete: 'Deleted ' }[act] + id + '.');
       if (act === 'delete') instance.value = '';
     }).catch(function (e) { say(e.message, true); }).then(function () { setBusy(false); load(); if (act === 'delete') loadProfiles(); });

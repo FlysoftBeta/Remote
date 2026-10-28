@@ -41,6 +41,7 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
       command_line.HasSwitch(mojo::PlatformChannel::kHandleSwitch) ||
       command_line.HasSwitch("disable-mojo-broker") ||
       command_line.HasSwitch("type")) {
+    LOG(ERROR) << "Browser launch rejected: already launched or invalid Mojo/process switches";
     return false;
   }
   mojo::PlatformChannel channel;
@@ -99,6 +100,8 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
   auto pipe = mojo::OutgoingInvitation::SendIsolated(
       channel.TakeLocalEndpoint(), {}, browser_process_.Handle());
   if (!pipe.is_valid()) {
+    LOG(ERROR) << "Browser SendIsolated returned an invalid Mojo pipe pid="
+               << browser_process_.Pid();
     return false;
   }
   browser_.Bind(
@@ -123,13 +126,6 @@ void EndpointLink::Close() {
   browser_.reset();
 }
 void EndpointLink::OnDisconnect() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch("isolation")) {
-    DWORD exit_code = STILL_ACTIVE;
-    if (::GetExitCodeProcess(browser_process_.Handle(), &exit_code)) {
-      LOG(ERROR) << "PRTS browser disconnected pid=" << browser_process_.Pid()
-                 << " exit_code=" << exit_code;
-    }
-  }
   Close();
   delegate_->OnDisconnect();  // Last operation: delegate may delete this.
 }

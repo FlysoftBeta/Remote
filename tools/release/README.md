@@ -11,7 +11,7 @@ corepack pnpm build
 # In C:\src\chromium\src (local builds can add -offline):
 siso ninja -C out\rel chrome re components/resources:about_credits
 # Back at the repository root:
-./tools/release/package.ps1 -Version 0.2.1 -Out C:\releases
+./tools/release/package.ps1 -Version 0.2.2 -Out C:\releases
 ```
 
 No builds are performed. The default browser input is
