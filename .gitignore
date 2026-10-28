@@ -1,2 +1,9 @@
 .codex-logs/
 .data/
+node_modules/
+dist/
+viewer/public/
+release/
+releases/
+*.tsbuildinfo
+.playwright-mcp/

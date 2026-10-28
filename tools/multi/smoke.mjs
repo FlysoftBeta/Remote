@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { CDP, sleep, processes, killOwned } from '../soak/support.mjs';
+import { testSession } from '../auth.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const argv = process.argv.slice(2);
@@ -20,7 +21,7 @@ for (const exe of [endpoint, chrome, edge]) assert.ok(fs.existsSync(exe), `missi
 const report = { started: new Date().toISOString(), endpoint, endpointBuild: fs.statSync(endpoint).mtime.toISOString(), checks: [], frames: {}, limits: { memoryMB: 4096, cpuRate: 10000, processCount: 64 } };
 const owned = new Map(), children = [], viewers = new Map();
 const ids = ['default', 'alpha', 'beta'];
-let cp, base;
+let cp, base, token;
 const probe = fs.readFileSync(path.join(repo, 'tools/soak/viewer-probe.js'), 'utf8');
 const log = (name, detail) => { report.checks.push({ name, detail, at: new Date().toISOString() }); console.log('[V] ' + name); };
 async function poll(fn, timeout = 45000) {
@@ -33,7 +34,7 @@ async function freePort() {
   return new Promise((resolve, reject) => { s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 }
 async function api(route, method = 'GET', body, expected = 200) {
-  const r = await fetch(base + '/api/' + route, { method, headers: { Authorization: 'Bearer multi-test', 'Content-Type': 'application/json' },
+  const r = await fetch(base + '/api/' + route, { method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   const text = await r.text(); assert.equal(r.status, expected, route + ': ' + text); return text ? JSON.parse(text) : null;
 }
@@ -60,11 +61,12 @@ async function startCP() {
     { ...process.env, HOST: '127.0.0.1', CP_TOKEN: 'multi-test', CP_DATA_DIR: path.join(output, 'data'), ENDPOINT_PATH: endpoint,
       ENDPOINT_ARGS_JSON: JSON.stringify(reArgs), TLS_CERT: '', TLS_KEY: '', TLS_CA: '', TLS_PFX: '', HTTP_REDIRECT_PORT: '' });
   await poll(async () => { if (cp.exitCode !== null || cp.signalCode !== null) throw new Error('CP exited'); return (await fetch(base + '/api/health')).ok; });
+  token = await testSession(base, { serverCredential: 'multi-test' });
 }
 async function viewer(id, suffix = '') {
   const dir = path.join(output, 'viewer-' + id + suffix);
   // Exercise the legacy URL for default; named instances use the existing query parameter.
-  const url = `${base}/tools/multi/receiver.html?token=multi-test${id === 'default' ? '' : '&instance=' + encodeURIComponent(id)}`;
+  const url = `${base}/tools/multi/receiver.html?token=${encodeURIComponent(token)}${id === 'default' ? '' : '&instance=' + encodeURIComponent(id)}`;
   launch(edge, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${dir}`, '--no-first-run', '--no-default-browser-check',
     '--autoplay-policy=no-user-gesture-required', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
     '--disable-backgrounding-occluded-windows', '--disable-features=WebRtcHideLocalIpsWithMdns,CalculateNativeWinOcclusion', '--window-size=800,600',
@@ -119,7 +121,10 @@ try {
   await api('instances/duplicate/start', 'POST', undefined, 409); await api('instances/duplicate', 'DELETE', undefined, 204);
   log('running-profile exclusion and referenced-profile deletion refusal');
 
-  const current = await api('instances/alpha'), all = track();
+  // Cold release startup may retry before the first decoded frame; compare fault isolation
+  // against the healthy PIDs immediately before injecting the crash.
+  const preCrash = await api('instances');
+  const current = preCrash.find(s => s.id === 'alpha'), all = track();
   const browser = all.find(p => p.ParentProcessId === current.pid && p.Name.toLowerCase() === 'chrome.exe' && !/--type=/.test(p.CommandLine));
   assert.ok(browser, 'owned alpha browser found'); const oldTree = browserTree(all, current.pid);
   const oldFrames = (await snapshot('alpha')).frames;
@@ -128,7 +133,7 @@ try {
   await poll(async () => (await snapshot('alpha')).frames > oldFrames + 3);
   await noOldTree(oldTree); log('browser crash restarts only its endpoint, viewer recovers and old tree disappears');
   const otherState = await api('instances');
-  for (const id of ['default', 'beta']) assert.equal(otherState.find(s => s.id === id).pid, state.find(s => s.id === id).pid);
+  for (const id of ['default', 'beta']) assert.equal(otherState.find(s => s.id === id).pid, preCrash.find(s => s.id === id).pid);
   log('unaffected endpoints retain their PIDs');
 
   const preRestart = await api('instances');

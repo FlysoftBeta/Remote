@@ -35,7 +35,7 @@
     status('connecting', 'connecting');
     var host = q.get('cp') || location.host;
     try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + host + '/signal?role=viewer&instance=' +
-      encodeURIComponent(q.get('instance') || 'default') + (q.get('token') ? '&token=' + encodeURIComponent(q.get('token')) : '')); } catch (e) { window.viewerFinish('Invalid control plane: ' + e.message); return; }
+      encodeURIComponent(q.get('instance') || 'default') + ((window.rkToken || q.get('token')) ? '&token=' + encodeURIComponent(window.rkToken || q.get('token')) : '')); } catch (e) { window.viewerFinish('Invalid control plane: ' + e.message); return; }
     var socket = ws;
     ws.onopen = function () {
       if (ws !== socket) return;

@@ -53,7 +53,7 @@ const report = { schema: 1, started: new Date().toISOString(), endpoint: path.re
     'GPU memory is not sampled: no cheap reliable per-process counter is assumed; private bytes and handles include endpoint and browser trees separately.',
     'Decoded latency is source pixel marker to rVFC presentationTime using the imported viewer clock; it is not physical scanout latency.',
     'Marker failures are pixel-marker decode failures; inbound framesDropped/packetsLost are separate diagnostics, not a count of undecodable H264 frames.',
-    'Concurrent mode uses independent control-planes, endpoint instances, browser profiles and ports; shared-control-plane multi-instance launching is not implemented by the current control-plane.'
+    'This harness uses independent control-planes/profiles/ports; tools/multi/smoke.mjs covers shared-control-plane multi-instance launching.'
   ] };
 const active = new Set();
 let serial = 0;
@@ -106,7 +106,8 @@ class Session {
     try {
       this.worker = spawn(process.execPath, [path.join(here, 'launch.mjs'), '--no-mock', '--secs', '10000000',
         '--port', String(this.port), '--viewer-flags', `--remote-debugging-port=${this.viewerPort}`,
-        '--viewer-exe', arg('viewer-exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')], {
+        '--viewer-exe', arg('viewer-exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'),
+        ...['test-token', 'test-user', 'test-password', 'server-credential'].flatMap(key => flag(key) ? ['--' + key, arg(key)] : [])], {
         env: { ...process.env, ENDPOINT_ARGS_JSON: JSON.stringify(extra), PTRACK_TMP: this.dir },
         windowsHide: true, stdio: ['ignore', fd, fd]
       });

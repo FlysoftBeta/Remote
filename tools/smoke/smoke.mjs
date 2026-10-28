@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { testSession } from '../auth.mjs';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
@@ -161,6 +162,7 @@ async function main() {
   for (let i = 2; i < process.argv.length; i++) {
     const flag = process.argv[i];
     if (flag === '--old-headless') options.oldHeadless = true;
+    else if (['--test-token', '--test-user', '--test-password', '--server-credential'].includes(flag)) { i++; }
     else if (flag === '--port' || flag === '--viewer-browser') {
       const value = process.argv[++i];
       if (!value || value.startsWith('--')) throw new Error(`missing value for ${flag}`);
@@ -177,20 +179,21 @@ async function main() {
   console.log(`INFO profiles=${runDir}`);
   await freePort(options.port); // Refuse to reuse or kill another server.
   const base = `http://127.0.0.1:${options.port}`;
-  const env = { ...process.env, CP_TOKEN: '', ENDPOINT_PATH: '', REPORT_FILE: '', CP_DATA_DIR: path.join(runDir, 'cp-data'), TEMP: runDir, TMP: runDir };
+  const env = { ...process.env, ENDPOINT_PATH: '', ENDPOINT_ARGS: '', ENDPOINT_ARGS_JSON: '', REPORT_FILE: '', CP_DATA_DIR: path.join(runDir, 'cp-data'), TEMP: runDir, TMP: runDir };
   const cp = child(process.execPath, [path.join(repo, 'control-plane/index.js'), '--port', String(options.port)], 'control-plane', env);
   await poll(async () => {
     if (cp.smokeError || cp.exitCode !== null) throw cp.smokeError || new Error('control-plane exited');
     return getJSON(base + '/api/health');
   }, health => health?.ok, 10000);
   check('control-plane started', true);
+  const tokenQuery = '&token=' + encodeURIComponent(await testSession(base));
   // Browser child() also inherits only task-local temporary directories.
   const oldTemp = process.env.TEMP, oldTmp = process.env.TMP;
   process.env.TEMP = runDir; process.env.TMP = runDir;
   let mock, viewer;
   try {
-    mock = await browser(edge, 'mock', base + '/mock?w=1920&h=1080&fps=15', false, runDir);
-    viewer = await browser(options.viewerBrowser, 'viewer', base + '/?connect=1&stats=1', options.oldHeadless, runDir);
+    mock = await browser(edge, 'mock', base + '/mock?w=1920&h=1080&fps=15' + tokenQuery, false, runDir);
+    viewer = await browser(options.viewerBrowser, 'viewer', base + '/?connect=1&stats=1' + tokenQuery, options.oldHeadless, runDir);
   } finally {
     if (oldTemp === undefined) delete process.env.TEMP; else process.env.TEMP = oldTemp;
     if (oldTmp === undefined) delete process.env.TMP; else process.env.TMP = oldTmp;

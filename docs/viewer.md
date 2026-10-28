@@ -1,19 +1,25 @@
 # viewer
 
-The plain-JavaScript viewer in `viewer/` is served by the [control-plane](control-plane.md) and supports Chrome 79 and later, with newer APIs feature-detected. It is static files only (`index.html`, `viewer.css`, scripts); no build step or CDN. `probe.html` remains a separate codec probe.
+The React + TypeScript viewer is built by Vite into `viewer/dist`, served by the [control-plane](control-plane.md), and targets Chrome 89+. Run root `corepack pnpm install` / `corepack pnpm build`; `corepack pnpm dev` provides live development on port 5173. `probe.html` remains a separate codec probe.
+
+## Accounts
+
+Sign in or create an account. A server credential field appears during registration only when the CP requires it; it is never needed for login. The first user is admin. Passwords go to the CP for salted scrypt hashing; the browser remembers only the returned session token in IndexedDB, scoped to the server. Sign out removes it and revokes the session. Existing sessions survive CP restarts and expire after 30 days; password reset revokes all sessions.
+
+Normal users see and manage their own instances/profiles. The Profiles page creates/deletes unused profiles; deleting an instance preserves its profile. Administration lists/creates/deletes users, resets passwords and manages all instances/profiles. Remove a user's resources before deleting the account; the last admin is retained.
 
 ## Connect screen
 
 Open the viewer, pick an instance and choose **Connect**. The screen follows the system light/dark preference and works at phone width.
 
-- **Connection** — the instance list comes from `GET /api/instances` (sent with `Authorization: Bearer <token>` when a token is entered) and shows each instance's name, ID, state badge (`running`, `stopped`, `starting`, `backoff`, `crashed`) and whether another viewer is using it. Use the refresh button to reload it; it also reloads when the token or control plane changes. The **Instance** field stays editable: an ID from the URL or typed by hand is kept even when the server does not list it. Empty means `default`. A missing or rejected token, or an unreachable server, is explained under the list. The access token field can be revealed with the eye button; it is never shown elsewhere in the UI. **Fullscreen on connect** (on by default) also requests landscape orientation where supported. Connecting to a listed instance that is `stopped` or `crashed` starts it first (`POST /api/instances/:id/start`).
-- **Manage instances** (sliders button next to refresh) — start, stop, restart or delete the selected instance, and create a new one (ID, optional name, a new or existing profile, isolation mode, start-with-server). Creating posts `/api/profiles` when a new profile is chosen, then `/api/instances`, then starts it. Uses the same token; errors from the API are shown inline. Deleting an instance keeps its profile data.
+- **Connection** — the instance list comes from `GET /api/instances` (authenticated with the remembered session) and shows each instance's name, ID, state badge (`running`, `stopped`, `starting`, `backoff`, `crashed`) and whether another viewer is using it. Use the refresh button to reload it; it also reloads when the control plane changes. The **Instance** field stays editable: an ID from the URL or typed by hand is kept even when the server does not list it. Empty means `default`. A rejected session or unreachable server is explained under the list. **Fullscreen on connect** (on by default) also requests landscape orientation where supported. Connecting to a listed instance that is `stopped` or `crashed` starts it first (`POST /api/instances/:id/start`).
+- **Manage instances** (sliders button next to refresh) — start, stop, restart or delete the selected instance, and create a new one (ID, optional name, a new or existing profile, isolation mode, start-with-server). Creating posts `/api/profiles` when a new profile is chosen, then `/api/instances`, then starts it. Uses the logged-in session; errors from the API are shown inline. Deleting an instance keeps its profile data.
 - **Display & network** — stats overlay, receive delay (lowest = 0 ms, custom milliseconds, or browser default), presenter (Standard / Clean / Canvas) and an alternative control plane.
 - **Diagnostics & measurement** (developer) — latency measurement (off, pixel marker, or a timed field run), scenario label, report/warm-up durations, marker row, synthetic input, field test panel, decoder info, relay clock trace and relay URL. These are for testing and are not needed for normal use.
 
-Sections open automatically when the URL or saved settings already use one of their options. Settings are saved in browser localStorage, including the access token; use a trusted browser profile. URL parameters override saved values. When a session ends with an error the screen shows the reason with **Retry**.
+Sections open automatically when the URL or saved settings already use one of their options. Non-secret settings are saved in localStorage. Session tokens live only in IndexedDB/in memory; passwords and server credentials are not saved. URL parameters override saved values. When a session ends with an error the screen shows the reason with **Retry**.
 
-Instances and profiles are created and started through the [control-plane API](control-plane.md#instances-and-profiles); the viewer only lists them.
+The viewer uses the [control-plane API](control-plane.md) for account, instance and profile management.
 
 ## Session
 
@@ -30,7 +36,7 @@ The form edits exactly these query parameters; unrecognised parameters are prese
 | Parameter | Values | Control |
 |---|---|---|
 | `instance` | instance ID, default `default` | Instance list / field |
-| `token` | access token | Access token |
+| `token` | session token for tools; consumed into IndexedDB and removed from the URL | - |
 | `cp` | `host:port` | Control plane |
 | `relay` | TURN URL, e.g. `turn:host:port` | Relay URL |
 | `connect` | `1` connects immediately, skipping the settings screen (used by tools); removed on disconnect | — |
@@ -51,4 +57,6 @@ Switches write `1` when on and remove the parameter when off. The receiver prefe
 
 ## Files
 
-`settings.js` runs the connect screen; `session-ui.js` the toolbar, status chip and stats toggle; `viewer.js` signalling, the peer connection and stats. `input.js` captures mouse, touch, pen, wheel and keyboard input with letterbox-aware coordinate mapping. `ime.js` bridges the remote soft keyboard and IME. `protocol.js` handles binary input; `presenter.js` contains opt-in presentation experiments. Receiver latency hints and codec selection are described in [protocol](protocol.md#5-receiver-latency-hints-chrome-89). Element IDs used by tools (`video`, `stage`, `status`, `overlay`, `kbd`, `ime`, `ime-password`, `settings-form`, `connect`, `disconnect`) are stable.
+`src/main.tsx` owns accounts/admin UI and wraps the preserved `src/session-shell.html`. `settings.js` runs the connect screen; `session-ui.js` the toolbar, status chip and stats toggle; `viewer.js` signalling, the peer connection and stats. `input.js` captures mouse, touch, pen, wheel and keyboard input with letterbox-aware coordinate mapping. `ime.js` bridges the remote soft keyboard and IME. `protocol.js` handles binary input; `presenter.js` contains opt-in presentation experiments. Receiver latency hints and codec selection are described in [protocol](protocol.md#5-receiver-latency-hints-chrome-89). Element IDs used by tools (`video`, `stage`, `status`, `overlay`, `kbd`, `ime`, `ime-password`, `settings-form`, `connect`, `disconnect`) are stable.
+
+The latency-sensitive classic scripts are copied unchanged into the Vite output (only signalling token lookup changes). React does not rerender the media/input DOM. `/tools/*`, `?connect=1`, `window.rk`, and `window.viewerFinish` remain available to existing harnesses.

@@ -44,10 +44,9 @@ OS handle once per writer token, afterwards only token/value/LUID. Without a fen
 
 ## 1. Signalling (WebSocket, JSON)
 
-### 1.1 Connection and auth placeholder
+### 1.1 Connection and authentication
 - viewer: `ws(s)://<cp>/signal?role=viewer&instance=<id>&token=<t>`; endpoint: `...?role=endpoint&instance=<id>&token=<t>`.
-- If the CP has `CP_TOKEN` set, the token must match, else close code `4401`. A real scheme (signed short-lived token bound to instance and
-  role) is future work. **The token appears once in the WS URL and is never logged.**
+- `token` is the session returned by CP login/registration; missing/invalid sessions close with `4401`, ownership failures with `4403`. Both viewer and external WS test endpoints require owner/admin access; admin may use external unlisted IDs. CP_TOKEN is only the user-registration credential. Native stdio registration is unchanged. Tokens are never logged.
 - Messages are JSON objects with type field `t`; **the first message per connection is `hello` with `v` (major version, 1)**. Mismatch ->
   `{t:"error",code:"version"}` and close (`4400`). Unknown `t` and unknown fields are ignored.
 
@@ -78,7 +77,7 @@ OS handle once per writer token, afterwards only token/value/LUID. Without a fen
 
 ### 1.4 stdio transport
 When the CP spawns `re.exe` (`ENDPOINT_PATH`, extra args `ENDPOINT_ARGS` / `ENDPOINT_ARGS_JSON`) the same messages travel on stdin/stdout as
-4-byte little-endian length + UTF-8 JSON (<= 4 MiB, `control-plane/framing.js`). `--instance=<id>` comes from the command line; stderr is the
+4-byte little-endian length + UTF-8 JSON (<= 4 MiB, `control-plane/src/framing.ts`). `--instance=<id>` comes from the command line; stderr is the
 log. Instance control messages (`instance.*`) are reserved for later.
 
 ## 2. DataChannels

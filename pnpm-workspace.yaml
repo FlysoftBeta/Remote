@@ -1,0 +1,5 @@
+packages:
+  - control-plane
+  - viewer
+onlyBuiltDependencies:
+  - esbuild

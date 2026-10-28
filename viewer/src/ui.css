@@ -1,0 +1,8 @@
+.account-actions, .admin-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; }
+.account-spacer { flex: 1; }
+#admin-page { position: fixed; inset: 0; z-index: 25; background: var(--bg); color: var(--text); overflow: auto; }
+#admin-page .shell { max-width: 900px; }
+.admin-controls { border: 0; padding: 0; min-width: 0; }
+.admin-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.admin-row .sub { display: block; color: var(--muted); }
+.admin-row .btn { text-transform: capitalize; }

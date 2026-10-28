@@ -1,16 +1,10 @@
 # control-plane
 
-A Node.js (22+) sample in `control-plane/`: static file server (viewer, `tools/`), WebSocket signalling relay, session manager and the
-stdio transport to `re`. It is **not** on the media or input path and exists for debugging and acceptance. Decision: [decisions](decisions.md) D13.
+A TypeScript / Node.js (22.12+) control plane serves the built React viewer, `/tools/*`, the management API and WebSocket signalling. It supervises native endpoints over the unchanged stdio protocol and stays off the media/input path. No database is used.
 
-- **Run**: `node control-plane [--port 8080]` (`npm --prefix control-plane ci` once). Environment: `CP_TOKEN` (auth placeholder, close
-  code 4401), `ENDPOINT_PATH` (spawn `re.exe` instead of waiting for a WS endpoint), `ENDPOINT_ARGS` (space separated) or
-  `ENDPOINT_ARGS_JSON` (array, for paths with spaces), `CP_DATA_DIR` / `--data-dir` (default `<repo>/.data`), `PORT`,
-  `FIELD_REPORT_DIR` / `FIELD_CONFIG_JSON` (field-test kit, see [tools](tools.md#field-test)).
-- **Files**: `index.js` (HTTP API + WS `/signal`, signalling table `instance -> {endpoint, viewer, sid}`, whitelist per direction),
-  `manager.js` (durable instance/profile configuration, lifecycle and per-instance restart backoff),
-  `endpoint.js` (`spawnEndpoint`: spawns `re.exe --instance=<id> ...`, stdin/stdout framing, stderr inherited as the log),
-  `framing.js` (4-byte LE length + JSON, <= 4 MiB; `test/framing.test.js`).
+- **Build/run**: at the repository root, `corepack pnpm install`, `corepack pnpm typecheck`, `corepack pnpm test`, `corepack pnpm build`; then `node control-plane [--port 8080]`. `corepack pnpm dev` runs the CP on 8080 and Vite on 5173. pnpm is pinned in the root `packageManager` and lockfile.
+- **Environment**: `CP_TOKEN` overrides the optional `serverCredential` in config.json (default empty). It gates registration only. `ENDPOINT_PATH`, `CHROME_PATH` (default chrome.exe beside re), `ENDPOINT_ARGS` / `ENDPOINT_ARGS_JSON`, `CP_DATA_DIR` / `--data-dir`, `HOST`, `PORT`, and existing field/TLS settings remain supported.
+- **Source/layout**: `control-plane/src/*.ts` compiles to `dist/*.js`; `dist/server.mjs` bundles production dependencies including ws. Compatibility JS entrypoints keep the tools working. `viewer/dist` holds Vite static output.
 - **Behaviour**: one controlling viewer per instance (a new one replaces the old with `bye reason:"replaced"`); a new endpoint replaces the
   old; `error:no-endpoint` while none is online; a dropped side makes the CP synthesise `bye`; ping 15 s / timeout 30 s; WS messages <= 64 KiB.
   The CP supervises one `re` per managed instance; `re` launches its own rb browser. Existing WS endpoint registration remains supported.
@@ -19,12 +13,20 @@ stdio transport to `re`. It is **not** on the media or input path and exists for
 ## Instances and profiles
 
 Clients select an instance with `?instance=<id>`; an omitted parameter still selects `default`.
-External WS endpoints and explicit instance URLs continue to work. Viewer/settings UI belongs to the separate viewer redesign task.
+External WS test endpoints and explicit instance URLs continue to work with an owner/admin session. Native stdio endpoints need no HTTP credential.
 
-Management routes use the same `CP_TOKEN` secret as signalling: supply `Authorization: Bearer <token>` or `?token=<token>`.
-With no configured token they are unauthenticated, as is signalling. Mutations reject a mismatched browser `Origin`.
-JSON request bodies are limited to 64 KiB. Successful reads/actions/PATCH return 200, creation 201, deletion 204;
-invalid input returns 400, missing resources 404, conflicting profile/configuration/state 409, and missing/wrong tokens 401.
+## Users and authentication
+
+Public routes: `GET /api/auth/config` reports `registrationCredentialRequired` and `firstUser`; `POST /api/auth/register` accepts `{username,password,serverCredential?}`; `POST /api/auth/login` accepts `{username,password}`. Registration returns 201, login 200, both with `{token,user,expiresAt}`. Usernames use the same lowercase ID syntax as instance IDs; passwords are 8..1024 characters. Only the first user becomes admin; public registration cannot request admin rights.
+
+Use `Authorization: Bearer <session-token>` for management, or `?token=<session-token>` for tools/WS. `GET /api/auth/me` returns the current user; `POST /api/auth/logout` revokes that session. Sessions are random 256-bit tokens, expire after 30 days, survive server restarts, and only their SHA-256 hashes are stored. Passwords use salted scrypt hashes. The viewer retains the session in IndexedDB, scoped to the server.
+
+Admin routes: `GET/POST /api/users` list/create users (POST accepts `username,password,role?`); `POST /api/users/:id/password` accepts `{password}` and revokes all that user's sessions; `DELETE /api/users/:id` requires deleting their instances/profiles first. The last admin cannot be deleted. Responses never expose password/session hashes. Revoked live WS connections are closed.
+
+Instances/profiles carry `owner` (user ID). Lists are filtered for normal users; all reads/actions and viewer connections require owner or admin. Admins see/manage all resources and may supply `owner` on creation. An instance and its profile must have the same owner; ownership cannot be changed with PATCH. Delete an instance before deleting its profile data.
+
+Mutations reject a mismatched browser Origin. JSON request bodies are limited to 64 KiB. Successful reads/actions/PATCH return 200, creation 201, deletion 204;
+invalid input returns 400, missing resources 404, conflicting profile/configuration/state 409, missing/wrong sessions 401, and ownership/admin failures 403.
 
 | Method | Route | Body / behavior |
 |---|---|---|
@@ -53,23 +55,12 @@ Instance fields:
 | `chromeArgs` | Array of Chrome switches, default `[]`; CP converts `--foo=value` to re's `--cr-foo=value`. Profile override forbidden |
 | `autostart` | Boolean, default false. Start on CP boot; creation/PATCH alone does not start or stop an instance |
 
-All instances use the runtime `ENDPOINT_PATH`; absent `--chrome` in `reArgs`, CP selects `chrome.exe` beside that endpoint.
+All instances use the runtime `ENDPOINT_PATH`; absent `--chrome` in `reArgs`, CP selects `CHROME_PATH` or `chrome.exe` beside the endpoint. The portable launcher sets `CHROME_PATH` to its bundled rb.
 `name` and `autostart` can change while running. PATCH replaces each supplied object/array, including the complete `jobLimits` object.
 Status adds `userDataDir`, `state` (`stopped`, `starting`, `running`, `crashed`, `backoff`), `pid`, `restarts`, `lastExit`
 (`code`, `signal`, `error`, `at`), `nextRestartAt`, and `viewerConnected`. Running means re has sent its valid protocol hello;
 viewer connected means a controlling signalling socket is present, not that media is decoding. Runtime status/counters reset with the CP.
 `crashed` denotes an instance that could not be started; a retryable process exit immediately moves through it into `backoff`.
-
-For a future settings-screen picker, `GET /api/instances` returns the same full objects as the single-instance GET route.
-Use `id` as the selection value and `name` as the display label; `state`, `viewerConnected`, `profile` and `isolation` are available
-for status/details. Preserve the current URL's other parameters (especially `token` and `cp`) when changing `instance`.
-The route lists managed configurations, including stopped instances; externally registered WS-only IDs are not added to this list.
-Keep an explicit current URL selection even if it is absent from the response. No viewer implementation is required by this API.
-For example, a list entry includes:
-
-```json
-{"id":"work","name":"Work browser","profile":"work","isolation":"job","autostart":true,"jobLimits":{"memoryMB":4096,"cpuRate":5000,"processCount":64},"jobUiLimits":"none","reArgs":[],"chromeArgs":[],"userDataDir":"C:\\remotekit-data\\profiles\\work","state":"running","pid":1234,"restarts":0,"lastExit":null,"nextRestartAt":null,"viewerConnected":false}
-```
 
 Each unexpected exit retries indefinitely with exponential delays 1, 2, 4, 8, 16, then 30 s (cap). A 60 s run resets the failure streak.
 `restarts` counts automatic retry attempts during the current CP lifetime; explicit restart actions do not increment it.
@@ -80,15 +71,15 @@ re's browser job keeps kill-on-close enabled even with resource limits, so endpo
 Data layout (set `CP_DATA_DIR` to e.g. `%LOCALAPPDATA%/remotekit` to move it outside the checkout):
 
 ```text
-<data-root>/instances.json       version:1, profiles:[], instances:[] (configuration only)
+<data-root>/config.json          version:1, serverCredential, users:[], profiles:[], instances:[]
 <data-root>/profiles/<id>/       Chrome user-data directory, retained after instance deletion
 ```
 
-Configuration changes write a unique sibling temporary JSON file, flush it, then atomically rename over `instances.json`.
+Configuration changes write a unique sibling temporary JSON file, flush it, then atomically rename over `config.json`.
 A malformed or unsupported file fails CP startup without overwriting it. Use one control-plane writer per data root; there is no
 cross-process lock or multi-host coordination. Profiles in a managed root must not be replaced with junctions/symlinks.
 
-On the first boot of a fresh data root, CP creates `default` and imports `ENDPOINT_ARGS[_JSON]`. It autostarts when `ENDPOINT_PATH` is set;
+If config.json is absent but instances.json exists, it is imported once without changing the old file. Unowned legacy entries are assigned atomically to the first admin on registration. On the first boot of a fresh data root, CP creates `default` and imports `ENDPOINT_ARGS[_JSON]`. It autostarts when `ENDPOINT_PATH` is set;
 legacy isolation defaults to `off`, and an explicit old `--user-data-dir` is preserved as an external, `managed:false` default profile.
 External profile deletion is refused (remove it manually). Later boots load saved configuration; change default arguments via PATCH,
 or select a fresh data root to import a different legacy command. `ENDPOINT_PATH` remains a runtime setting on every boot.
@@ -105,7 +96,7 @@ Example request bodies, using the routes above:
 ```
 
 Create the profile, create the instance, then POST `/api/instances/work/start`. To remove both, DELETE the instance before its profile.
-Run unit/API tests with `npm --prefix control-plane test`. The short real multi-instance harness is
+Run unit/API/IndexedDB tests with `corepack pnpm test`. Harnesses accept `RK_TEST_TOKEN`, or `RK_TEST_USER`/`RK_TEST_PASSWORD` plus optional `RK_SERVER_CREDENTIAL` (`--test-token`, `--test-user`, `--test-password`, `--server-credential` for CLI runners). Owned disposable launches create a random-password test account by default; existing servers need a supplied test login. The short real multi-instance harness is
 `node tools/multi/smoke.mjs --out C:/src/tmp/m8/multi/run` (Windows, built dev re/chrome and installed Edge required).
 It uses a test receiver under `tools/multi/`, independent of the product viewer UI; it does not take latency measurements.
 

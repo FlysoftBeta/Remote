@@ -8,7 +8,7 @@
   var els = form.elements;
   var TEXT = ['instance', 'token', 'cp', 'relay', 'scenario', 'report', 'warmup', 'my'];
   var FLAGS = ['stats', 'autoinput', 'field', 'hwinfo', 'trace'];
-  function initial(name) { return params.has(name) ? params.get(name) : (saved[name] == null ? '' : String(saved[name])); }
+  function initial(name) { if (name === 'token') return window.rkToken || params.get('token') || ''; return params.has(name) ? params.get(name) : (saved[name] == null ? '' : String(saved[name])); }
   function radio(name, value) {
     Array.prototype.forEach.call(form.querySelectorAll('input[name="' + name + '"]'), function (r) { r.checked = r.value === value; });
   }
@@ -155,9 +155,12 @@
     manage.querySelector('[data-act=restart]').disabled = !r;
     manage.querySelector('[data-act=delete]').disabled = !r;
   }
+  var profileRows = [];
+  function selectProfileOwner(id) { var p = profileRows.filter(function (p) { return p.id === id; })[0]; return p && p.owner; }
   function loadProfiles() {
     var select = $('n-profile'), keep = select.value;
     api('GET', 'profiles').then(function (list) {
+      profileRows = Array.isArray(list) ? list : [];
       while (select.options.length > 1) select.remove(1);
       (Array.isArray(list) ? list : []).forEach(function (p) {
         var o = document.createElement('option'); o.value = p.id;
@@ -187,7 +190,8 @@
     if (busy) return;
     var id = $('n-id').value.trim(), name = $('n-name').value.trim(), profile = $('n-profile').value;
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) { say('Enter an ID: 1–64 lowercase letters, digits, - or _, starting with a letter or digit.', true); $('n-id').focus(); return; }
-    var body = { id: id, profile: profile || id, isolation: $('n-isolation').value, autostart: $('n-autostart').checked };
+    var selectedProfile = selectProfileOwner(profile);
+    var body = { id: id, profile: profile || id, owner: selectedProfile || undefined, isolation: $('n-isolation').value, autostart: $('n-autostart').checked };
     if (name) body.name = name;
     setBusy(true); say('Creating…');
     (profile ? Promise.resolve() : api('POST', 'profiles', { id: id, name: name || id })).then(function () {
@@ -234,9 +238,9 @@
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var values = collect();
-    Object.keys(values).forEach(function (name) { if (values[name]) params.set(name, values[name]); else params.delete(name); });
+    Object.keys(values).forEach(function (name) { if (name === 'token') { params.delete(name); return; } if (values[name]) params.set(name, values[name]); else params.delete(name); });
     values.fullscreen = els.fullscreen.checked;
-    try { localStorage.setItem('remotekit.viewer.settings', JSON.stringify(values)); } catch (err) {}
+    try { var stored = Object.assign({}, values); delete stored.token; localStorage.setItem('remotekit.viewer.settings', JSON.stringify(stored)); } catch (err) {}
     history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash);
     if (values.fullscreen && document.documentElement.requestFullscreen) {
       try { var request = document.documentElement.requestFullscreen(); if (request && request.then) request.then(function () { if (window.screen.orientation && window.screen.orientation.lock) window.screen.orientation.lock('landscape').catch(function () {}); }).catch(function () {}); } catch (err) {}

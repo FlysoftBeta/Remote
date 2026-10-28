@@ -18,6 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pickHost } from '../netem/relay.mjs';
 import { collectPipeline, pipelineLines } from './pipeline.mjs';
+import { testSession } from '../auth.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => { const i = argv.indexOf('--' + k); return i < 0 ? d : (argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true); };
@@ -80,6 +81,7 @@ if (!alreadyUp) {
   kids.push(cp);
   for (let i = 0; i < 50 && !(await up()); i++) await new Promise(r => setTimeout(r, 100));
 }
+const tokenQuery = '&token=' + encodeURIComponent(await testSession(base));
 let relayProc = null;
 if (netemProfile) {
   const ra = ['--profile', String(netemProfile), '--host', netemHost, '--port', String(netemPort), '--http', String(netemHttp)];
@@ -90,10 +92,10 @@ if (netemProfile) {
 }
 const relayQuery = netemProfile ? '&relay=' + encodeURIComponent(`turn:${netemHost}:${netemPort}`) : '';
 const before = (await (await fetch(base + '/api/report')).json()).length;
-if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
+if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}${tokenQuery}`);
 if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?connect=1&measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?connect=1&measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${presenter ? '&presenter=' + presenter : ''}${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?connect=1&measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${presenter ? '&presenter=' + presenter : ''}${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}${tokenQuery}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;

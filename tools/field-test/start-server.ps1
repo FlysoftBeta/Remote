@@ -6,7 +6,10 @@ param(
     [ValidateSet('marker', 'S', 'V', 'G')][string]$Scenario = 'S',
     [ValidateRange(5, 3600)][int]$Seconds = 60,
     [string]$OutDir = 'C:\src\tmp\m4\field-kit\runs',
-    [string[]]$EndpointArgs = @()
+    [string[]]$EndpointArgs = @(),
+    [string]$TestUser = $env:RK_TEST_USER,
+    [string]$TestPassword = $env:RK_TEST_PASSWORD,
+    [string]$ServerCredential = $env:RK_SERVER_CREDENTIAL
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -15,8 +18,8 @@ $nodeVersion = & $nodeExe --version
 if ($LASTEXITCODE -ne 0 -or [int]($nodeVersion.TrimStart('v').Split('.')[0]) -lt 22) {
     throw 'Node.js 22+ is required (control-plane/package.json).'
 }
-if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'control-plane\node_modules\ws\package.json'))) {
-    throw "Install dependencies first: npm --prefix `"$repoRoot\control-plane`" ci"
+if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'control-plane\dist\index.js'))) {
+    throw 'Run corepack pnpm install and corepack pnpm build first.'
 }
 if (-not $BinDir) {
     foreach ($candidate in @('C:\src\chromium\src\out\rel', 'C:\src\chromium\src\out\dev')) {
@@ -100,13 +103,12 @@ $configJson = $config | ConvertTo-Json -Depth 8
 $configJson | Set-Content -LiteralPath (Join-Path $runDir 'run.json') -Encoding UTF8
 $urls = @($addresses | ForEach-Object {
     $viewerUrl = "http://$($_):$Port/?measure=$Seconds&scenario=$Scenario"
-    if ($env:CP_TOKEN) { $viewerUrl += '&token=' + [Uri]::EscapeDataString($env:CP_TOKEN) }
     $viewerUrl
 })
 $urls | Set-Content -LiteralPath (Join-Path $runDir 'viewer-urls.txt') -Encoding UTF8
 $childEnv = @{
     ENDPOINT_PATH = $endpointExe; ENDPOINT_ARGS_JSON = (ConvertTo-Json -InputObject $arguments -Compress);
-    FIELD_REPORT_DIR = $runDir; FIELD_CONFIG_JSON = $configJson; HOST = '0.0.0.0'
+    FIELD_REPORT_DIR = $runDir; FIELD_CONFIG_JSON = $configJson; HOST = '0.0.0.0'; CP_DATA_DIR = (Join-Path $runDir 'cp-data')
 }
 $previousEnv = @{}
 $child = $null
@@ -130,6 +132,14 @@ try {
         Start-Sleep -Milliseconds 200
     }
     if (-not $healthy) { throw "Control plane did not become healthy; see $runDir" }
+    if ($TestUser -and $TestPassword) {
+        if (!$ServerCredential) { $ServerCredential = $env:CP_TOKEN }
+        $body = @{ username = $TestUser; password = $TestPassword; serverCredential = $ServerCredential } | ConvertTo-Json
+        try { $session = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/auth/login" -Method Post -ContentType 'application/json' -Body $body }
+        catch { $session = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/auth/register" -Method Post -ContentType 'application/json' -Body $body }
+        $urls = @($urls | ForEach-Object { $_ + '&token=' + [Uri]::EscapeDataString($session.token) })
+        $urls | Set-Content -LiteralPath (Join-Path $runDir 'viewer-urls.txt') -Encoding UTF8
+    }
     Write-Host "Logs and reports: $runDir"
     Write-Host 'Open ONE of these URLs in Chrome 89+ on the viewer device, then tap Start:'
     $urls | ForEach-Object { Write-Host "  $_" }
