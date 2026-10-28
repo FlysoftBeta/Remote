@@ -91,9 +91,9 @@ if (netemProfile) {
 const relayQuery = netemProfile ? '&relay=' + encodeURIComponent(`turn:${netemHost}:${netemPort}`) : '';
 const before = (await (await fetch(base + '/api/report')).json()).length;
 if (!arg('no-mock')) browser(mockExe, 'mock', `${base}/mock?w=${w}&h=${h}&fps=${fps}&kbps=${kbps}${markerQuery(mockMy)}`);
-if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?measure=1`); await new Promise(() => {}); }
+if (arg('mock-only')) { console.log(`mock endpoint running; open ${base}/?connect=1&measure=1`); await new Promise(() => {}); }
 const inputQuery = arg('no-mock') ? 'autoinput=0&i2p=colour' : 'autoinput=1';
-browser(viewerExe, 'viewer', `${base}/?measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${presenter ? '&presenter=' + presenter : ''}${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
+browser(viewerExe, 'viewer', `${base}/?connect=1&measure=1&${inputQuery}&report=${secs}&delay=${delay}&hwinfo=1${presenter ? '&presenter=' + presenter : ''}${relayQuery}${markerQuery(my)}${arg('validate-frame') ? '&validateFrame=1' : ''}${arg('trace') ? '&trace=1' : ''}`, !!arg('old-headless'));
 console.log(`measuring ${secs}s (+warm-up) ${w}x${h}@${fps} ${kbps} kbps, viewer=${path.basename(path.dirname(path.dirname(viewerExe)))}/${path.basename(viewerExe)}`);
 
 const deadline = Date.now() + (secs + 60) * 1000;

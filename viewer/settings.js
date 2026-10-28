@@ -151,7 +151,9 @@
   function finish(message) {
     if (window.rk && window.rk.disconnect) window.rk.disconnect();
     try { if (message) sessionStorage.setItem('remotekit.viewer.error', message); } catch (e) {}
-    location.reload();
+    // Drop connect=1 so a disconnect or fatal error returns to the settings screen instead of looping.
+    if (params.has('connect')) { params.delete('connect'); location.replace(location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash); }
+    else location.reload();
   }
   window.viewerFinish = finish;
   button.addEventListener('click', function (e) { e.stopPropagation(); finish(''); });
@@ -178,4 +180,6 @@
     }
     next();
   });
+  // connect=1 (used by tools/smoke, tools/latency, tools/soak) skips the settings screen.
+  if (params.get('connect') === '1') { if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event('submit', { cancelable: true })); }
 })();

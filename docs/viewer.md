@@ -32,6 +32,7 @@ The form edits exactly these query parameters; unrecognised parameters are prese
 | `token` | access token | Access token |
 | `cp` | `host:port` | Control plane |
 | `relay` | TURN URL, e.g. `turn:host:port` | Relay URL |
+| `connect` | `1` connects immediately, skipping the settings screen (used by tools); removed on disconnect | — |
 | `stats` | `1` shows the overlay | Show stats overlay |
 | `delay` | milliseconds, or `off`; absent = 0 | Receive delay |
 | `presenter` | `clean` or `canvas`; absent = standard | Presenter |

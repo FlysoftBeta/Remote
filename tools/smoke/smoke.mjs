@@ -190,7 +190,7 @@ async function main() {
   let mock, viewer;
   try {
     mock = await browser(edge, 'mock', base + '/mock?w=1920&h=1080&fps=15', false, runDir);
-    viewer = await browser(options.viewerBrowser, 'viewer', base + '/?stats=1', options.oldHeadless, runDir);
+    viewer = await browser(options.viewerBrowser, 'viewer', base + '/?connect=1&stats=1', options.oldHeadless, runDir);
   } finally {
     if (oldTemp === undefined) delete process.env.TEMP; else process.env.TEMP = oldTemp;
     if (oldTmp === undefined) delete process.env.TMP; else process.env.TMP = oldTmp;
