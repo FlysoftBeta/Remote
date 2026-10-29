@@ -33,9 +33,15 @@ Unknown modes/options or container launch failures fail without retrying a weake
 `re/browser_isolation.*` creates/reuses `rb.<SHA1 of lowercase absolute profile path>` with CreateAppContainerProfile. Install and
 profile must be separate trees. Install grants are RX; profile grants are FullControl (Chromium needs WRITE_DAC/WRITE_OWNER) with
 low integrity. Profile DACL inheritance is disabled, so a shared parent's package RX cannot expose another tenant's data.
-Ancestor grants are package-specific, directory-only and non-inheritable. Updates use
-[SetFileSecurityW](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-setfilesecurityw) to suppress recursive propagation. Ancestor DACL reads request only READ_CONTROL;
-MAXIMUM_ALLOWED can request data/delete access and fail with a sharing violation on an in-use directory. A provisioning mutex prevents concurrent DACL lost updates;
+As of the 2026-10-29 experiment, `re` provisions only the dedicated install/profile trees; it does not read or modify ancestor DACLs.
+Chromium's no-execute file protections remain enforced by patch 21's targeted path-query fallback. Existing ancestor grants from
+earlier launches are not removed automatically; validate this experiment with a fresh profile/package SID.
+Removing ancestor grants alone failed at `IsPathSafeToSetAclOn` for `Default/LocalStorage`. Patch **21-rb-noexecute-handle-path**
+adds a fallback only for this check: when long-name expansion fails, compare normalized NT paths queried from metadata-only
+handles for both the target and allowed root. Keep containment and deny-execute ACL enforcement. A fresh user-Temp profile then
+passed first launch/restart; ancestor DACLs were unchanged and explicit execute access to LocalStorage was denied (error 5).
+This is startup/protection smoke, not a new full streaming/security qualification. See [the audit and experiment](research/windows-ancestor-path-access.md).
+A provisioning mutex prevents concurrent DACL lost updates;
 identical explicit ACEs are retained to avoid reordering and propagating the whole install tree on each tenant switch.
 
 LPAC uses **five capabilities**: internetClient, registryRead (DLL activation), lpacCom (COM STA), lpacCryptoServices (OSCrypt), and
@@ -65,16 +71,16 @@ do not substitute a global no-sandbox launch. Do not present Job alone as a tena
 
 ```powershell
 .\browser\cr.cmd build dev "chrome re"
-# Elevated deployment provisioning, once per volume/install (dev paths shown):
-.\tools\isolation\grant-traversal.ps1 -Directory C:\
+# Legacy shared binary provisioning helper, if required by the deployment:
 .\tools\isolation\grant-lpac-acl.ps1 -BuildDirectory C:\src\chromium\src\out\dev
 C:\src\chromium\src\out\dev\re.exe --chrome=C:/src/chromium/src/out/dev/chrome.exe --user-data-dir=C:/tenants/a --isolation=lpac --job-ui-limits=all
 ```
 
-The volume-root grant permits directory listing/traversal **without inheritance**, needed by GetLongPathName; it grants no descendant
-file access. `re` provisions the per-SID ancestors, install/profile and desktop. A shared ProfileParent passed to grant-lpac-acl now
-gets directory-only traversal, never inherited shared package RX. Root provisioning may need elevation; ordinary endpoint runs do not.
-Profile registrations and install/ancestor grants persist for reuse; removing a tenant must retire its registration and explicit SID ACEs.
+`re` provisions the install/profile and desktop, leaving ancestor/root ACLs unchanged. The optional `grant-traversal.ps1` helper
+still exists for explicit deployment provisioning and historical probes; it is not called by `re`. It grants directory-only RX
+without inheritance. A shared ProfileParent passed to grant-lpac-acl gets directory-only traversal, never inherited shared package RX.
+Profile registrations and install grants persist for reuse; removing a tenant must retire its registration and explicit SID ACEs,
+including any ancestor grants left by versions before this experiment.
 
 For tests only, local HTTP fixtures need `CheckNetIsolation LoopbackExempt -a -p=<tenant SID>` (elevated). The test exemptions are
 removed after validation; none is added by `re`. Do not enable this in deployment merely to make a test fixture work: it grants the

@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Flysoft <flysoftbeta@outlook.com>
+Date: Thu, 29 Oct 2026 00:00:00 +0800
+Subject: [PATCH] Resolve no-execute allowed paths by handle when long-name expansion fails
+
+Keep the existing long-name comparison and deny-execute ACL enforcement. When
+long-name expansion cannot enumerate lowbox ancestors, compare normalized NT
+paths obtained from minimum-rights handles for both the target and allowed root.
+Do not change MakeLongFilePath globally or accept an unverified input path.
+
+Patch-Name: 21-rb-noexecute-handle-path
+
+diff --git a/base/files/file_util_win.cc b/base/files/file_util_win.cc
+index 4b3b7ee07b..671e400cd9 100644
+--- a/base/files/file_util_win.cc
++++ b/base/files/file_util_win.cc
+@@ -482,6 +482,31 @@ FilePath RemoveWindowsExtendedPathPrefix(std::wstring_view prefixed_path) {
+   return FilePath();
+ }
+ 
++// Query the existing object without enumerating ancestors for 8.3 expansion.
++// NT volume names also avoid requiring DOS drive-name translation in a lowbox.
++FilePath GetFinalPathForNoExecuteCheck(const FilePath& path) {
++  win::ScopedHandle file(::CreateFileW(
++      path.value().c_str(), FILE_READ_ATTRIBUTES, kFileShareAll, nullptr,
++      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
++  if (!file.is_valid()) {
++    return FilePath();
++  }
++  std::wstring buffer(MAX_PATH, L'\0');
++  for (;;) {
++    const DWORD length = ::GetFinalPathNameByHandleW(
++        file.get(), buffer.data(), checked_cast<DWORD>(buffer.size()),
++        FILE_NAME_NORMALIZED | VOLUME_NAME_NT);
++    if (!length) {
++      return FilePath();
++    }
++    if (length < buffer.size()) {
++      buffer.resize(length);
++      return FilePath(std::move(buffer));
++    }
++    buffer.resize(static_cast<size_t>(length) + 1);
++  }
++}
++
+ // This function verifies that no code is attempting to set an ACL on a file
+ // that is outside of 'safe' paths. A 'safe' path is defined as one that is
+ // within the user data dir, or the temporary directory. This is explicitly to
+@@ -507,7 +532,6 @@ bool IsPathSafeToSetAclOn(const FilePath& path) {
+   // MakeLongFilePath is needed here because temp files can have an 8.3 path
+   // under certain conditions. See comments in base::MakeLongFilePath.
+   FilePath long_path = MakeLongFilePath(path);
+-  DCHECK(!long_path.empty()) << "Cannot get long path for " << path;
+ 
+   std::vector<FilePath> valid_paths;
+   for (const auto path_key : valid_path_keys) {
+@@ -531,10 +555,22 @@ bool IsPathSafeToSetAclOn(const FilePath& path) {
+     // Temp files can sometimes have an 8.3 path. See comments in
+     // `MakeLongFilePath`.
+     FilePath full_path = MakeLongFilePath(valid_path);
+-    DCHECK(!full_path.empty()) << "Cannot get long path for " << valid_path;
+-    if (full_path.IsParent(long_path)) {
++    if (!long_path.empty() && !full_path.empty() &&
++        full_path.IsParent(long_path)) {
+       return true;
+     }
++    // A lowbox can open a file in its profile without being able to enumerate
++    // its ancestors. If 8.3 expansion fails, resolve BOTH sides by handle so
++    // containment is still checked in one namespace. Never accept the raw path
++    // as a fallback, and retain the deny-execute ACL applied by the caller.
++    if (long_path.empty() || full_path.empty()) {
++      const FilePath final_path = GetFinalPathForNoExecuteCheck(path);
++      const FilePath final_root = GetFinalPathForNoExecuteCheck(valid_path);
++      if (!final_path.empty() && !final_root.empty() &&
++          final_root.IsParent(final_path)) {
++        return true;
++      }
++    }
+   }
+ 
+   return false;

@@ -57,53 +57,6 @@ bool EnsureGrant(base::win::SecurityDescriptor& sd,
                          inheritance);
 }
 
-bool GrantPathTraversal(base::FilePath path, const base::win::Sid& sid) {
-  // GetLongPathName checks read access on the ancestors, even when the package
-  // has full access to its profile. Never inherit these directory-only grants.
-  for (path = path.DirName(); path != path.DirName(); path = path.DirName()) {
-    // Request only security access. MAXIMUM_ALLOWED can include data/delete
-    // access and fail with ERROR_SHARING_VIOLATION on an in-use ancestor.
-    base::win::ScopedHandle directory(::CreateFileW(
-        path.value().c_str(), READ_CONTROL,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
-    if (!directory.is_valid()) {
-      PLOG(ERROR) << "Open AppContainer path traversal directory " << path;
-      return false;
-    }
-    auto sd = base::win::SecurityDescriptor::FromHandle(
-        directory.get(), base::win::SecurityObjectType::kFile,
-        DACL_SECURITY_INFORMATION);
-    if (!sd) {
-      PLOG(ERROR) << "Read AppContainer path traversal DACL " << path;
-      return false;
-    }
-    const auto original = sd->ToSddl(DACL_SECURITY_INFORMATION);
-    if (!original ||
-        !EnsureGrant(*sd, sid, FILE_GENERIC_READ | FILE_GENERIC_EXECUTE, 0)) {
-      PLOG(ERROR) << "Grant AppContainer path traversal " << path;
-      return false;
-    }
-    const auto updated = sd->ToSddl(DACL_SECURITY_INFORMATION);
-    if (!updated) {
-      PLOG(ERROR) << "Serialize AppContainer path traversal DACL " << path;
-      return false;
-    }
-    if (updated != original) {
-      // Deliberately use the low-level file API: SetSecurityInfo recursively
-      // propagates existing inheritable ACEs even for a directory-only update.
-      // SetFileSecurity changes only this directory, without MAXIMUM_ALLOWED.
-      auto absolute_sd = sd->ToAbsolute();
-      if (!::SetFileSecurityW(path.value().c_str(), DACL_SECURITY_INFORMATION,
-                              &absolute_sd)) {
-        PLOG(ERROR) << "Write AppContainer path traversal DACL " << path;
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 bool GrantDirectory(const base::FilePath& path,
                     const base::win::Sid& sid,
                     bool writable) {
@@ -239,9 +192,9 @@ std::optional<base::win::Sid> PrepareContainer(
   }
   base::ScopedClosureRunner unlock(base::BindOnce(
       [](HANDLE mutex) { ::ReleaseMutex(mutex); }, provisioning.get()));
+  // Provision only the dedicated trees. Ancestors may be system-owned (for
+  // example C:\Users); leave their DACLs and Chromium's path handling intact.
   if (!sid || !base::CreateDirectory(profile) ||
-      !GrantPathTraversal(profile, *sid) ||
-      !GrantPathTraversal(install, *sid) ||
       !GrantDirectory(profile, *sid, true) ||
       !GrantDirectory(install, *sid, false)) {
     return std::nullopt;
