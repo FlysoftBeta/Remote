@@ -185,7 +185,23 @@ int main(int argc, char** argv) {
           },
           fps, encoder_state, encoder);
       bool ready = peer.Initialize();
+      auto announce = base::BindOnce([](re::Signaling* signaling,
+                                        std::string instance, int fps) {
+        base::ListValue codecs;
+        codecs.Append("H264");
+        codecs.Append("VP8");
+        signaling->Send(base::DictValue()
+                           .Set("t", "hello")
+                           .Set("v", 1)
+                           .Set("role", "endpoint")
+                           .Set("instance", instance)
+                           .Set("name", "rb-endpoint")
+                           .Set("caps", base::DictValue()
+                                            .Set("codecs", std::move(codecs))
+                                            .Set("maxFps", fps)));
+      }, base::Unretained(&signaling), instance, fps);
       if (ready && browser) {
+        browser->SetReadyCallback(std::move(announce));
         browser->SetPeerCallbacks(
             base::BindRepeating(&re::Peer::SendControl,
                                 base::Unretained(&peer)),
@@ -224,18 +240,8 @@ int main(int argc, char** argv) {
         ready = browser->Launch(std::move(chrome));
       }
       if (ready) {
-        base::ListValue codecs;
-        codecs.Append("H264");
-        codecs.Append("VP8");
-        signaling.Send(base::DictValue()
-                           .Set("t", "hello")
-                           .Set("v", 1)
-                           .Set("role", "endpoint")
-                           .Set("instance", instance)
-                           .Set("name", "rb-endpoint")
-                           .Set("caps", base::DictValue()
-                                            .Set("codecs", std::move(codecs))
-                                            .Set("maxFps", fps)));
+        if (!browser)
+          std::move(announce).Run();
         base::RunLoop run;
         signaling.Start([&peer](base::DictValue message) {
           peer.Handle(std::move(message));

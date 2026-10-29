@@ -29,6 +29,7 @@ class BrowserSession final : public re::EndpointLink::Delegate,
                  base::OnceClosure failure);
   ~BrowserSession() override;
   void SetPeerCallbacks(ControlSender send, base::RepeatingClosure keyframe);
+  void SetReadyCallback(base::OnceClosure ready) { ready_ = std::move(ready); }
   bool Launch(base::CommandLine command);
   void Shutdown();
   void Hello(rb::mojom::HelloInfoPtr info) override;
@@ -56,6 +57,7 @@ class BrowserSession final : public re::EndpointLink::Delegate,
   std::shared_ptr<D3DFrameSource> source_;
   int fps_;
   base::OnceClosure failure_;
+  base::OnceClosure ready_;
   ControlSender send_;
   base::RepeatingClosure keyframe_;
   scoped_refptr<base::SingleThreadTaskRunner> main_runner_;

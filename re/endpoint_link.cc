@@ -75,6 +75,22 @@ bool EndpointLink::Launch(base::CommandLine command_line) {
                                  supported ? "fence" : "mutex");
   command_line.AppendSwitch("rb-remote");
   command_line.AppendSwitchASCII("headless", "new");
+  // Chromium's elevation handoff creates a replacement without our inherited
+  // Mojo handle, then exits 0. This browser must remain owned by the endpoint.
+  command_line.AppendSwitch("do-not-de-elevate-on-launch");
+  command_line.AppendSwitchASCII("enable-logging", "stderr");
+  // Forward stderr only: stdout is the endpoint's framed signaling protocol.
+  base::win::ScopedHandle browser_stderr;
+  HANDLE stderr_handle = ::GetStdHandle(STD_ERROR_HANDLE);
+  HANDLE inherited_stderr = nullptr;
+  if (stderr_handle && stderr_handle != INVALID_HANDLE_VALUE &&
+      ::DuplicateHandle(::GetCurrentProcess(), stderr_handle,
+                        ::GetCurrentProcess(), &inherited_stderr, 0, TRUE,
+                        DUPLICATE_SAME_ACCESS)) {
+    browser_stderr.Set(inherited_stderr);
+    options.stderr_handle = inherited_stderr;
+    options.handles_to_inherit.push_back(inherited_stderr);
+  }
   job_.Set(::CreateJobObject(nullptr, nullptr));
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;

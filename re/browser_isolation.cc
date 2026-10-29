@@ -446,6 +446,10 @@ base::Process LaunchIsolatedBrowser(const base::CommandLine& requested_command,
     return base::Process();
   }
   PROCESS_INFORMATION process = {};
+  if (options.stderr_handle) {
+    startup.startup_info()->dwFlags |= STARTF_USESTDHANDLES;
+    startup.startup_info()->hStdError = options.stderr_handle;
+  }
   std::wstring desktop_name;
   if (sandbox_desktop.is_valid()) {
     // A different desktop is required even with HANDLES: FindWindow can reveal

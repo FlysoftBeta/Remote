@@ -86,6 +86,11 @@ void BrowserSession::Hello(rb::mojom::HelloInfoPtr info) {
     return;
   }
   hello_ = true;
+  LOG(INFO) << "PRTS browser Hello pid=" << link_.browser_process().Pid()
+            << " elapsed_ms="
+            << (base::TimeTicks::Now() - launched_at_).InMilliseconds();
+  if (ready_)
+    std::move(ready_).Run();
   luid_ = info->gpu_luid;
   if (!windows_.empty()) {
     Select(active_ ? active_ : windows_.begin()->first);
@@ -251,9 +256,9 @@ void BrowserSession::OnDisconnect() {
                << (base::TimeTicks::Now() - launched_at_).InMilliseconds()
                << " user_data_dir=" << profile_;
     if (!hello_ && exit_code == 0) {
-      LOG(ERROR) << "PRTS profile-in-use handoff suspected: browser exited with "
-                    "code 0 before Hello. Close any existing browser using "
-                 << profile_ << " and retry; also check browser arguments.";
+      LOG(ERROR) << "PRTS browser exited 0 before Hello: inspect browser stderr "
+                    "for a relaunch, profile handoff or startup-only argument. "
+                    "Check profile ownership and arguments for " << profile_;
     }
   } else {
     LOG(ERROR) << "Browser Mojo disconnected, incompatible, or Hello timed out; "
@@ -376,8 +381,10 @@ void BrowserSession::OnControl(base::DictValue m) {
       StartCapture();
     }
     LOG(INFO) << "PRTS viewer capture fps=" << fps_;
-  } else if (*type == "keyframe") {
+  } else if (*type == "keyframe" || *type == "video.refresh") {
     // Peer already asks the encoder for an IDR on this ctl message and hello.
+    // Idle video.refresh only re-captures: delta frames progressively repair
+    // the static image without repeatedly spending the budget on an IDR.
     if (active_) {
       browser->RequestRefreshFrame(active_);
     }
