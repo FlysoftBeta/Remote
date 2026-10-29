@@ -13,6 +13,7 @@
 #include "third_party/webrtc/api/video_codecs/video_encoder_factory.h"
 
 namespace re {
+class FrameRefresh;
 
 // --encoder=auto|vpl|nvenc|openh264. Auto picks by adapter vendor: Intel ->
 // oneVPL, NVIDIA -> NVENC, then OpenH264.
@@ -29,7 +30,8 @@ void SetPlayoutDelay(webrtc::EncodedImage& output);
 // output decoration when the viewer cannot receive H.264.
 class EncoderFactory final : public webrtc::VideoEncoderFactory {
  public:
-  EncoderFactory(std::shared_ptr<VplEncoderState> state, EncoderChoice choice);
+  EncoderFactory(std::shared_ptr<VplEncoderState> state, EncoderChoice choice,
+                 std::shared_ptr<FrameRefresh> refresh);
   ~EncoderFactory() override;
   std::vector<webrtc::SdpVideoFormat> GetSupportedFormats() const override;
   std::unique_ptr<webrtc::VideoEncoder> Create(
@@ -40,6 +42,7 @@ class EncoderFactory final : public webrtc::VideoEncoderFactory {
   std::unique_ptr<VideoEncoderBackend> hardware_;  // null: H.264 uses OpenH264
   std::unique_ptr<VideoEncoderBackend> software_;
   EncoderParams base_;
+  std::shared_ptr<FrameRefresh> refresh_;
 };
 
 }  // namespace re

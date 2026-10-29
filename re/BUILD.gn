@@ -17,6 +17,7 @@ executable("re") {
     "encoder_params.h",
     "experiment_options.cc",
     "experiment_options.h",
+    "frame_refresh.h",
     "frame_source.h",
     "input_parser.cc",
     "input_parser.h",

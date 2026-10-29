@@ -114,6 +114,15 @@ int main(int argc, char** argv) {
       LOG(INFO) << "PRTS webrtc field trials: " << trials;
     }
   }
+  // Idle screen content is application-limited. Let GCC probe for recovered
+  // capacity even after refinement frames have become tiny; otherwise a low
+  // estimate can strand a static page at the old quality indefinitely.
+  // Explicit trial groups (including --webrtc-field-trials=none) take priority.
+  if (command.GetSwitchValueASCII("webrtc-field-trials") != "none" &&
+      base::FieldTrialList::FindFullName("WebRTC-VideoRateControl").empty()) {
+    CHECK(base::FieldTrialList::CreateTrialsFromString(
+        "WebRTC-VideoRateControl/alr_probing:true/"));
+  }
   if (experiments.fec == "flexfec") {
     // RB: advertise the codec AND generate the repair SSRC/FEC-FR group.
     // Reject conflicting --webrtc-field-trials rather than silently disabling

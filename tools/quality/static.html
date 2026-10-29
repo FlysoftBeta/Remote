@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Static quality recovery fixture</title>
+<style>html,body{margin:0;overflow:hidden;background:#fff}canvas{display:block}</style>
+<canvas width="800" height="600"></canvas>
+<script>
+// One paint only: no animation, timers, caret or network activity.
+const c = document.querySelector('canvas').getContext('2d');
+c.fillStyle = '#fff'; c.fillRect(0, 0, 800, 600);
+c.fillStyle = '#222'; c.font = '16px Arial';
+for (let y = 24; y < 300; y += 22)
+  c.fillText('Static text should become readable: 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ', 12, y);
+for (let y = 312; y < 600; y += 4) for (let x = 0; x < 800; x += 4) {
+  c.fillStyle = ((x + y) / 4) % 2 ? '#222' : '#ddd';
+  c.fillRect(x, y, 4, 4);
+}
+</script>

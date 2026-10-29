@@ -13,6 +13,7 @@
 
 namespace re {
 class VplEncoderState;
+class FrameRefresh;
 enum class EncoderChoice;
 // All session state lives on signaling_thread_. Main/reader call Handle/Close;
 // neither is a WebRTC callback. Inject a fresh source for each session.
@@ -39,6 +40,7 @@ class Peer {
   const int fps_;
   std::shared_ptr<VplEncoderState> encoder_state_;
   const EncoderChoice encoder_;
+  std::shared_ptr<FrameRefresh> refresh_;
   std::unique_ptr<webrtc::Thread> network_thread_;
   std::unique_ptr<webrtc::Thread> signaling_thread_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;

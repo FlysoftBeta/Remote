@@ -19,6 +19,7 @@
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "re/experiment_options.h"
+#include "re/frame_refresh.h"
 #include "re/latency_stats.h"
 #include "re/vpl_encoder.h"
 #include "third_party/webrtc/api/units/time_delta.h"
@@ -42,8 +43,10 @@ webrtc::SdpVideoFormat H264Format() {
 class LowDelayOutput final : public webrtc::VideoEncoder,
                              public webrtc::EncodedImageCallback {
  public:
-  explicit LowDelayOutput(std::unique_ptr<webrtc::VideoEncoder> encoder)
-      : encoder_(std::move(encoder)) {}
+  LowDelayOutput(std::unique_ptr<webrtc::VideoEncoder> encoder,
+                 std::shared_ptr<FrameRefresh> refresh,
+                 bool h264)
+      : encoder_(std::move(encoder)), refresh_(std::move(refresh)), h264_(h264) {}
   int InitEncode(const webrtc::VideoCodec* codec,
                  const Settings& settings) override {
     if (!codec)
@@ -76,6 +79,7 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
   int32_t Encode(const webrtc::VideoFrame& frame,
                  const std::vector<webrtc::VideoFrameType>* types) override {
     const auto now = base::TimeTicks::Now();
+    refresh_->Encode((now - base::TimeTicks()).InMicroseconds());
     const auto capture =
         base::TimeTicks() + base::Microseconds(frame.timestamp_us());
     LatencyStats::Get().Add("capture_to_encode", capture, now);
@@ -94,10 +98,18 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
             }));
       }
     }
-    return encoder_->Encode(frame, types);
+    const int32_t result = encoder_->Encode(frame, types);
+    refresh_->EncodeFinished(
+        (now - base::TimeTicks()).InMicroseconds(),
+        (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds());
+    if (result != WEBRTC_VIDEO_CODEC_OK)
+      refresh_->Dropped(
+          (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds());
+    return result;
   }
   void SetRates(const RateControlParameters& p) override {
     encoder_->SetRates(p);
+    refresh_->Rates(p.bitrate.get_sum_bps());
   }
   void SetFecControllerOverride(webrtc::FecControllerOverride* f) override {
     encoder_->SetFecControllerOverride(f);
@@ -115,6 +127,7 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
   Result OnEncodedImage(const webrtc::EncodedImage& image,
                         const webrtc::CodecSpecificInfo* info) override {
     const auto encoded = base::TimeTicks::Now();
+    int64_t encode_cost = 0;
     if (TraceEnabled()) {  // m3-trace
       LOG(INFO) << "PRTS TR X rtp=" << image.RtpTimestamp()
                 << " t1=" << TraceUs(encoded) << " bytes=" << image.size()
@@ -124,12 +137,22 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
       base::AutoLock lock(timing_lock_);
       auto it = timing_.find(image.RtpTimestamp());
       if (it != timing_.end()) {
+        encode_cost = (encoded - it->second.second).InMicroseconds();
         LatencyStats::Get().Add("encode", it->second.second, encoded);
         LatencyStats::Get().Add("capture_to_encoded", it->second.first,
                                 encoded);
         timing_.erase(it);
       }
     }
+    const bool trusted = encoder_->GetEncoderInfo().is_qp_trusted.value_or(true);
+    // VP8's quantizer range is 0..127; normalize its convergence threshold 32
+    // to the H264 threshold 24. Never trust a hardware slice-header QP.
+    const int qp = image.qp_ < 0 || h264_ ? image.qp_ : (image.qp_ * 3 + 3) / 4;
+    refresh_->Encoded((encoded - base::TimeTicks()).InMicroseconds(),
+                      encode_cost, image.size(),
+                      size_t{image._encodedWidth} * image._encodedHeight,
+                      image.FrameType() == webrtc::VideoFrameType::kVideoFrameKey,
+                      qp, trusted);
     auto output = image;  // Encoded buffer is refcounted, no payload copy.
     SetPlayoutDelay(output);
     output.content_type_ = webrtc::VideoContentType::SCREENSHARE;
@@ -140,6 +163,8 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
     return result;
   }
   void OnFrameDropped(uint32_t ts, int spatial, bool end) override {
+    refresh_->Dropped(
+        (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds());
     {
       base::AutoLock lock(timing_lock_);
       timing_.erase(ts);
@@ -149,6 +174,8 @@ class LowDelayOutput final : public webrtc::VideoEncoder,
 
  private:
   std::unique_ptr<webrtc::VideoEncoder> encoder_;
+  std::shared_ptr<FrameRefresh> refresh_;
+  const bool h264_;
   webrtc::EncodedImageCallback* callback_ = nullptr;  // Unregistered by owner.
   base::Lock timing_lock_;
   std::map<uint32_t, std::pair<base::TimeTicks, base::TimeTicks>> timing_;
@@ -243,9 +270,11 @@ std::unique_ptr<VideoEncoderBackend> CreateOpenH264Backend() {
 }
 
 EncoderFactory::EncoderFactory(std::shared_ptr<VplEncoderState> state,
-                               EncoderChoice choice)
+                               EncoderChoice choice,
+                               std::shared_ptr<FrameRefresh> refresh)
     : software_(CreateOpenH264Backend()),
-      base_(EncoderParams::FromOptions(GetExperimentOptions())) {
+      base_(EncoderParams::FromOptions(GetExperimentOptions())),
+      refresh_(std::move(refresh)) {
   std::vector<std::unique_ptr<VideoEncoderBackend>> candidates;
   if (choice == EncoderChoice::kVpl) {
     candidates.push_back(CreateVplBackend(state));
@@ -293,7 +322,7 @@ std::unique_ptr<webrtc::VideoEncoder> EncoderFactory::Create(
     if (!encoder)
       return nullptr;
     LOG(INFO) << "PRTS codec selected=VP8 encoder=libvpx";
-    return std::make_unique<LowDelayOutput>(std::move(encoder));
+    return std::make_unique<LowDelayOutput>(std::move(encoder), refresh_, false);
   }
   if (format.name != "H264" || format.parameters != H264Format().parameters)
     return nullptr;
@@ -303,10 +332,10 @@ std::unique_ptr<webrtc::VideoEncoder> EncoderFactory::Create(
   LOG(INFO) << "PRTS codec selected=H264 encoder="
             << (hardware_ ? hardware_->name() : "openh264");
   if (!hardware_)
-    return std::make_unique<LowDelayOutput>(std::move(software));
+    return std::make_unique<LowDelayOutput>(std::move(software), refresh_, true);
   auto encoder = webrtc::CreateVideoEncoderSoftwareFallbackWrapper(
       env, std::move(software), hardware_->Create(env, format, base_), false);
-  return std::make_unique<LowDelayOutput>(std::move(encoder));
+  return std::make_unique<LowDelayOutput>(std::move(encoder), refresh_, true);
 }
 
 }  // namespace re

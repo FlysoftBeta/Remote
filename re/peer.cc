@@ -6,6 +6,7 @@
 #include "re/peer.h"
 
 #include "re/encoder_factory.h"
+#include "re/frame_refresh.h"
 #include "re/vpl_encoder.h"
 #include <algorithm>
 #include <atomic>
@@ -78,14 +79,22 @@ webrtc::SdpVideoFormat H264Format() {
 
 class TrackSource : public webrtc::AdaptedVideoTrackSource {
  public:
+  explicit TrackSource(std::shared_ptr<FrameRefresh> refresh)
+      : refresh_(std::move(refresh)) {}
   SourceState state() const override { return kLive; }
   bool remote() const override { return false; }
   bool is_screencast() const override { return true; }
   std::optional<bool> needs_denoising() const override { return false; }
-  void Push(const webrtc::VideoFrame& frame) { ++frames_; OnFrame(frame); }
+  void Push(const webrtc::VideoFrame& frame) {
+    refresh_->Source(
+        (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds());
+    ++frames_;
+    OnFrame(frame);
+  }
   uint64_t frames() const { return frames_.load(); }
  private:
   std::atomic<uint64_t> frames_{0};
+  std::shared_ptr<FrameRefresh> refresh_;
 };
 class OfferObserver : public webrtc::CreateSessionDescriptionObserver {
  public:
@@ -203,7 +212,8 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     }
     pc_ = result.MoveValue();
     PollStats();
-    track_source_ = webrtc::make_ref_counted<TrackSource>();
+    owner_.refresh_->Start(target_fps_);
+    track_source_ = webrtc::make_ref_counted<TrackSource>(owner_.refresh_);
     auto track = owner_.factory_->CreateVideoTrack(track_source_, "screen");
     // Fluid reduced latency in repeated 1080p30 trials. Keep the encoder in
     // screen mode and preserve resolution for browser text.
@@ -318,12 +328,14 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     source_->Start([track_source = track_source_](const webrtc::VideoFrame& f) {
       track_source->Push(f);
     });
+    RefreshIdleFrame();
     MakeOffer(false);
   }
   void Close() {
     if (closed_)
       return;
     closed_ = true;
+    owner_.refresh_->Stop();
     source_->Stop();
     parser_.Reset();
     for (auto& ch : channels_)
@@ -586,6 +598,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         return;
       }
       target_fps_ = fps;
+      owner_.refresh_->SetFps(fps);
       owner_.encoder_state_->target_fps.store(fps);
       owner_.input_.Control(base::DictValue().Set("t", "video.rate")
                                .Set("fps", fps));
@@ -685,6 +698,19 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
             }, webrtc::TimeDelta::Seconds(10));
     });
   }
+  void RefreshIdleFrame() {
+    // Source/encoder/transport feedback decides whether a refinement fits.
+    // This requests capture only; WebRTC controls encoding drops and RTP QoS.
+    if (handshaken_ && remote_ready_ && owner_.refresh_->Request(
+            (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds()))
+      owner_.input_.Control(base::DictValue().Set("t", "video.refresh"));
+    owner_.signaling_thread_->PostDelayedTask(
+        [weak = weak_from_this()] {
+          if (auto s = weak.lock(); s && !s->closed_)
+            s->RefreshIdleFrame();
+        },
+        webrtc::TimeDelta::Millis(10));
+  }
   void PollStats() {
     pc_->GetStats(webrtc::make_ref_counted<SenderStats>(
         [weak = weak_from_this()](base::DictValue stats) {
@@ -710,6 +736,16 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     const double encoded = stats.FindDouble("totalEncodeTime").value_or(0);
     const double bytes = stats.FindDouble("bytesSent").value_or(0);
     const double source_frames = track_source_ ? track_source_->frames() : 0;
+    const auto send_delay = stats.FindDouble("totalPacketSendDelay");
+    const auto packets = stats.FindDouble("packetsSent");
+    if (send_delay && packets && sender_packets_ > 0 &&
+        *packets > sender_packets_ && *send_delay >= sender_send_delay_) {
+      owner_.refresh_->SendDelay(static_cast<int64_t>(
+          (*send_delay - sender_send_delay_) * 1000000 /
+          (*packets - sender_packets_)));
+    }
+    sender_packets_ = packets.value_or(0);
+    sender_send_delay_ = send_delay.value_or(0);
     const double dt = now - sender_stats_time_;
     const double df = frames - sender_frames_;
     if (sender_stats_time_ > 0 && dt > 0 && df >= 0 && bytes >= sender_bytes_ &&
@@ -747,6 +783,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
   std::vector<base::DictValue> outgoing_ice_;
   uint64_t invalid_inputs_ = 0;
   int target_fps_ = 60;
+  double sender_packets_ = 0, sender_send_delay_ = 0;
   double sender_stats_time_ = 0, sender_frames_ = 0;
   double sender_encode_time_ = 0, sender_bytes_ = 0;
   double sender_source_frames_ = 0;
@@ -765,7 +802,8 @@ Peer::Peer(Signaling& signaling, InputSink& input, const Clock& clock,
            std::shared_ptr<VplEncoderState> encoder_state, EncoderChoice encoder)
     : signaling_(signaling), input_(input), clock_(clock),
       source_factory_(std::move(source_factory)), fps_(fps),
-      encoder_state_(std::move(encoder_state)), encoder_(encoder) {}
+      encoder_state_(std::move(encoder_state)), encoder_(encoder),
+      refresh_(std::make_shared<FrameRefresh>()) {}
 Peer::~Peer() {
   if (signaling_thread_) {
     signaling_thread_->BlockingCall([this] {
@@ -800,7 +838,8 @@ bool Peer::Initialize() {
         webrtc::CreateAudioEncoderFactory<webrtc::AudioEncoderOpus>();
     deps.audio_decoder_factory =
         webrtc::CreateAudioDecoderFactory<webrtc::AudioDecoderOpus>();
-    auto encoder = std::make_unique<EncoderFactory>(encoder_state_, encoder_);
+    auto encoder =
+        std::make_unique<EncoderFactory>(encoder_state_, encoder_, refresh_);
     if (encoder->GetSupportedFormats().empty()) {
       LOG(ERROR) << "No supported video encoder (H264 or VP8) available";
       return false;

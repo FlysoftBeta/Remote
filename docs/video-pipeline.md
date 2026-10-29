@@ -18,6 +18,22 @@ One source per browser window (popups stay in the root, D4b); with several windo
 ## Capture (browser / viz side)
 - Configuration: [browser](browser.md#details-worth-keeping). A static page produces no frames: new viewers and keyframes call
   `RequestRefreshFrame()` (revives the old frame without a new GPU copy). Patch 04 (`CompleteCapture`) is required.
+  While a viewer is connected, a 10 ms policy check requests refinements when
+  capture has been idle for two target frame periods (at least 20 ms). Ordinary
+  delta frames progressively repair text; no periodic IDRs are requested.
+  `FrameRefresh` budgets the previous output size against GCC's allocated rate
+  with 25% headroom, and accounts for encode cost and the interval average of
+  `totalPacketSendDelay / packetsSent` (pacer residence, not RTT). One requested
+  capture/encode at a time, drop backoff and a stalled-work retry bound pressure.
+  Five low-QP outputs (H264 <=24, VP8 <=32) reduce refinement to at most 1 fps.
+  Hardware QP is untrusted: only nearly empty delta outputs count as convergence.
+  New damage and a >20% allocation increase reopen refinement. A periodic retry
+  remains even after convergence; peer teardown cancels the loop.
+  GCC's periodic ALR bandwidth probes are enabled by default, so low-traffic
+  static pages can discover recovered bandwidth. An explicit
+  `WebRTC-VideoRateControl` trial group or `--webrtc-field-trials=none` takes
+  precedence. WebRTC owns all frame dropping, congestion control and RTP pacing;
+  refinement does not raise the bitrate floor or create a separate packet queue.
 - Resize: frames whose `coded_size/visible_rect/content_rect` do not match the root are dropped; the encoder is reconfigured with an IDR.
 - Per-frame metadata: `frame_seq`, buffer id (`DXGIHandleToken`), sizes/rects, `capture_begin/end_time`, `reference_time`.
 - **Shared fence hand-off (default, patch 19)**: viz submits the copy, signals a shared D3D11 fence and delivers `{handle, token, value, LUID}`
