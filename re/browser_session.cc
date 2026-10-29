@@ -149,6 +149,14 @@ void BrowserSession::Select(uint32_t id) {
     browser->StopCapture(active_);
   }
   active_ = id;
+  StartCapture();
+}
+void BrowserSession::StartCapture() {
+  auto* browser = link_.browser();
+  const auto it = windows_.find(active_);
+  if (!browser || it == windows_.end())
+    return;
+  const auto& w = *it->second;
   FrameGeometry g{w.size_px.width(), w.size_px.height(), w.device_scale_factor};
   auto params = rb::mojom::CaptureParams::New();
   params->max_fps = fps_;
@@ -156,7 +164,7 @@ void BrowserSession::Select(uint32_t id) {
   // RB: A Viz pool reset must also refresh the encoder after a GPU restart.
   // Weak ownership makes late reset notifications harmless during shutdown.
   browser->StartCapture(
-      id, std::move(params),
+      active_, std::move(params),
       source_->BindCapture(
           luid_, g,
           base::BindPostTask(
@@ -358,6 +366,16 @@ void BrowserSession::OnControl(base::DictValue m) {
     }
     const bool touch_only = caps && caps->FindBool("touchOnly").value_or(false);
     browser->SetTouchCapabilities(static_cast<uint8_t>(points), touch_only);
+  } else if (*type == "video.rate") {
+    const auto fps = m.FindInt("fps");
+    if (!fps || *fps < 1 || *fps > 120 || *fps == fps_)
+      return;
+    fps_ = *fps;
+    if (active_) {
+      browser->StopCapture(active_);
+      StartCapture();
+    }
+    LOG(INFO) << "PRTS viewer capture fps=" << fps_;
   } else if (*type == "keyframe") {
     // Peer already asks the encoder for an IDR on this ctl message and hello.
     if (active_) {

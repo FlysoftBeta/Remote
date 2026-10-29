@@ -7,6 +7,7 @@
 //        [--presenter clean|canvas: opt-in viewer presentation experiment; canvas display timing remains source-video metadata]
 //        [--netem <profile|none>: start tools/netem/relay.mjs with that profile (profiles.json), relay-only on viewer+endpoint; recorded in the report]
 //        [--netem-queue-ms N] [--netem-port 3478] [--remote-cdp <port>: remote chrome started with --cr-remote-debugging-port=<port> (GPU info)]
+//        [--netem-rate kbps: override the selected link profile's bandwidth]
 //        [--endpoint-log <file>: log of the chain (encoder/capture lines), default C:/src/tmp/m1/cp1.log]
 //        [--preset m3-combined: launch real ENDPOINT_PATH/ENDPOINT_ARGS with VPL, 60 fps, precise 60 Hz vsync,
 //         hires timer and factor-2.5 pacing; requires a stopped control-plane; --scenario S|V|G selects load]
@@ -86,6 +87,7 @@ let relayProc = null;
 if (netemProfile) {
   const ra = ['--profile', String(netemProfile), '--host', netemHost, '--port', String(netemPort), '--http', String(netemHttp)];
   if (arg('netem-queue-ms')) ra.push('--queue-ms', String(arg('netem-queue-ms')));
+  if (arg('netem-rate')) ra.push('--rate', String(arg('netem-rate')));
   relayProc = spawn(process.execPath, [path.join(repo, 'tools/netem/relay.mjs'), ...ra], { stdio: ['ignore', 'inherit', 'inherit'] });
   kids.push(relayProc);
   for (let i = 0; i < 50; i++) { try { if ((await fetch(`http://${netemHost}:${netemHttp}/stats`)).ok) break; } catch {} await new Promise(r => setTimeout(r, 100)); }

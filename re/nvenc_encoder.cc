@@ -503,7 +503,10 @@ class NvencEncoder final : public webrtc::VideoEncoder {
     const bool adopt = native_device && native_device == capture &&
                        native_device != device_ &&
                        IsNvidia(native_device.Get());
-    if (frame.width() != width_ || frame.height() != height_ || adopt) {
+    const int target_fps = state_->target_fps.load();
+    if (frame.width() != width_ || frame.height() != height_ || adopt ||
+        target_fps != fps_) {
+      fps_ = target_fps;
       if (!Start(frame.width(), frame.height(),
                  adopt ? native_device.Get() : nullptr)) {
         return Fail(nullptr);

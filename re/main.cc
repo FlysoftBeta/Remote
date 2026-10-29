@@ -9,6 +9,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <thread>
@@ -53,9 +54,9 @@ int main(int argc, char** argv) {
   const auto& experiments = re::GetExperimentOptions();
   if (!experiments.valid)
     return 1;
-  // Retain 30 fps: VPL can fall back during 60 fps startup or rate changes on
-  // the current driver. --fps=60 plus --cr-fake-vsync-rate=60 is opt-in.
-  int fps = 30;
+  // Supported ceiling; each viewer selects its target within this budget.
+  // --fps remains an optional administrator override.
+  int fps = 60;
   if (command.HasSwitch("fps") &&
       (!base::StringToInt(command.GetSwitchValueASCII("fps"), &fps) ||
        fps < 1 || fps > 120)) {
@@ -198,6 +199,11 @@ int main(int argc, char** argv) {
         chrome.AppendSwitch("disable-legacy-window");
         chrome.AppendSwitchPath("user-data-dir", profile);
         chrome.AppendSwitchASCII("window-size", "1920,1080");
+        // The headless window has no DXGI output. Use the precise remote
+        // clock instead of the ordinary Sleep-based fallback. Capture follows
+        // the viewer independently; keep enough ticks for the supported rate.
+        chrome.AppendSwitchASCII("fake-vsync-rate",
+                                 base::NumberToString(std::max(60, fps)));
         // Forward --cr-<switch>[=value] to chrome as --<switch>[=value].
         for (const auto& [name, value] : command.GetSwitches()) {
           if (name.starts_with("cr-") && name.size() > 3) {

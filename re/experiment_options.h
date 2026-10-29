@@ -21,7 +21,7 @@ struct ExperimentOptions {
   int intra_refresh = 0;
   int slices = 1;
   int nvenc_preset = 1;  // NVENC P1..P3
-  int min_kbps = 2000;
+  int min_kbps = 300;
   int start_kbps = 8000;
   int max_kbps = 8000;
   bool playout_extension = true;

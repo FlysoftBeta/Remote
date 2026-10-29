@@ -33,8 +33,10 @@ class VplEncoderState {  // Shared by the oneVPL and NVENC encoders.
   void ClearEncoderDevice(ID3D11Device* device);
   bool NativeActive(ID3D11Device* capture_device) const;
   std::atomic<int> native_pool_limit{8};
-  std::atomic<int> min_bitrate_bps{2000000};
+  std::atomic<int> min_bitrate_bps{300000};
   std::atomic<int> max_bitrate_bps{12000000};
+  // Viewer target, distinct from GCC's estimate of recent source frame rate.
+  std::atomic<int> target_fps{60};
 
  private:
   mutable std::mutex mutex_;

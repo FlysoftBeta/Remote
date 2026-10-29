@@ -83,7 +83,7 @@ ExperimentOptions ParseOptions() {
   integer("max-kbps", 1, 50000, out.max_kbps);
   if (out.min_kbps > out.start_kbps || out.start_kbps > out.max_kbps)
     invalid("Require min-kbps <= start-kbps <= max-kbps");
-  int fps = 30;
+  int fps = 60;
   integer("fps", 1, 120, fps);
   if (out.valid) {
     const int64_t numerator =

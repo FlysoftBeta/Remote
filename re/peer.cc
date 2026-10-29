@@ -8,6 +8,7 @@
 #include "re/encoder_factory.h"
 #include "re/vpl_encoder.h"
 #include <algorithm>
+#include <atomic>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,14 +49,22 @@ namespace re {
 namespace {
 class SenderStats : public webrtc::RTCStatsCollectorCallback {
  public:
+  explicit SenderStats(std::function<void(base::DictValue)> deliver)
+      : deliver_(std::move(deliver)) {}
   void OnStatsDelivered(
       const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report)
       override {
     for (const auto& stats : *report) {
-      if (std::string_view(stats.type()) == "outbound-rtp")
-        LOG(INFO) << "PRTS sender stats [" << stats.ToJson() << "]";
+      if (std::string_view(stats.type()) == "outbound-rtp") {
+        auto value = base::JSONReader::ReadDict(stats.ToJson(),
+                                               base::JSON_PARSE_RFC);
+        if (value)
+          deliver_(std::move(*value));
+      }
     }
   }
+ private:
+  std::function<void(base::DictValue)> deliver_;
 };
 std::string String(const base::DictValue& m, const char* key) {
   const auto* s = m.FindString(key);
@@ -73,7 +82,10 @@ class TrackSource : public webrtc::AdaptedVideoTrackSource {
   bool remote() const override { return false; }
   bool is_screencast() const override { return true; }
   std::optional<bool> needs_denoising() const override { return false; }
-  void Push(const webrtc::VideoFrame& frame) { OnFrame(frame); }
+  void Push(const webrtc::VideoFrame& frame) { ++frames_; OnFrame(frame); }
+  uint64_t frames() const { return frames_.load(); }
+ private:
+  std::atomic<uint64_t> frames_{0};
 };
 class OfferObserver : public webrtc::CreateSessionDescriptionObserver {
  public:
@@ -138,6 +150,11 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         });
   }
   void Start(const base::DictValue& message) {
+    const auto* viewer = message.FindDict("viewer");
+    const auto* caps = viewer ? viewer->FindDict("caps") : nullptr;
+    target_fps_ = std::min(owner_.fps_,
+        std::clamp(caps ? caps->FindInt("refreshFps").value_or(60) : 60,
+                   1, 120));
     const auto& experiments = GetExperimentOptions();
     webrtc::PeerConnectionInterface::RTCConfiguration config;
     config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
@@ -259,7 +276,7 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
         *parameters.encodings[0].min_bitrate_bps);
     owner_.encoder_state_->max_bitrate_bps.store(
         *parameters.encodings[0].max_bitrate_bps);
-    parameters.encodings[0].max_framerate = owner_.fps_;
+    parameters.encodings[0].max_framerate = target_fps_;
     parameters.degradation_preference =
         base::CommandLine::ForCurrentProcess()->HasSwitch(
             "latency-maintain-framerate")
@@ -270,6 +287,9 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       Fail(error.message());
       return;
     }
+    owner_.encoder_state_->target_fps.store(target_fps_);
+    owner_.input_.Control(base::DictValue().Set("t", "video.rate")
+                             .Set("fps", target_fps_));
     webrtc::BitrateSettings bitrate;
     bitrate.min_bitrate_bps = experiments.min_kbps * 1000;
     bitrate.start_bitrate_bps = experiments.start_kbps * 1000;
@@ -551,6 +571,30 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     }
     incoming_ice_.clear();
   }
+  void SetViewerRate(int requested) {
+    if (requested < 1 || requested > 120)
+      return;
+    const int fps = std::min(owner_.fps_, requested);
+    if (fps != target_fps_) {
+      auto parameters = transceiver_->sender()->GetParameters();
+      if (parameters.encodings.empty())
+        return;
+      parameters.encodings[0].max_framerate = fps;
+      const auto error = transceiver_->sender()->SetParameters(parameters);
+      if (!error.ok()) {
+        LOG(WARNING) << "PRTS viewer rate rejected: " << error.message();
+        return;
+      }
+      target_fps_ = fps;
+      owner_.encoder_state_->target_fps.store(fps);
+      owner_.input_.Control(base::DictValue().Set("t", "video.rate")
+                               .Set("fps", fps));
+      LOG(INFO) << "PRTS viewer target fps=" << fps
+                << " requested=" << requested;
+    }
+    channels_[1]->Send(base::DictValue().Set("t", "video.rate")
+                          .Set("fps", fps).Set("maxFps", owner_.fps_));
+  }
   void OnData(int id, const webrtc::DataBuffer& data, double received) {
     if (id == 0) {
       if (!handshaken_ || !data.binary)
@@ -593,10 +637,16 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
       channels_[1]->Send(base::DictValue().Set("t", "hello").Set("v", 1)
           .Set("input", 1).Set("frame", base::DictValue()
               .Set("w", g.width).Set("h", g.height))
-          .Set("dsf", g.dsf).Set("name", "rb-endpoint"));
+          .Set("dsf", g.dsf).Set("name", "rb-endpoint")
+          .Set("maxFps", owner_.fps_).Set("targetFps", target_fps_));
+      const auto* caps = message->FindDict("caps");
+      SetViewerRate(caps ? caps->FindInt("refreshFps").value_or(60) : 60);
       RequestKeyFrame();
       owner_.input_.Control(*message);
       owner_.input_.Control(base::DictValue().Set("t", "keyframe"));
+    } else if (id == 1 && handshaken_ && t == "video.rate") {
+      if (auto fps = message->FindInt("fps"))
+        SetViewerRate(*fps);
     } else if (id == 1 && handshaken_ &&
                (t.starts_with("ime.") || t == "focus" ||
                 t == "keyframe" || t == "resize")) {
@@ -636,13 +686,53 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
     });
   }
   void PollStats() {
-    pc_->GetStats(webrtc::make_ref_counted<SenderStats>().get());
+    pc_->GetStats(webrtc::make_ref_counted<SenderStats>(
+        [weak = weak_from_this()](base::DictValue stats) {
+          if (auto s = weak.lock()) {
+            s->Post([stats = std::move(stats)](Session& s) {
+              s.ReportSenderStats(stats);
+            });
+          }
+        }).get());
     owner_.signaling_thread_->PostDelayedTask(
         [weak = weak_from_this()] {
           if (auto s = weak.lock(); s && !s->closed_)
             s->PollStats();
         },
-        webrtc::TimeDelta::Seconds(5));
+        webrtc::TimeDelta::Seconds(1));
+  }
+  void ReportSenderStats(const base::DictValue& stats) {
+    if (String(stats, "kind") != "video")
+      return;
+    // RTCStats::ToJson uses microseconds (unlike browser getStats' ms).
+    const double now = stats.FindDouble("timestamp").value_or(0) / 1000000;
+    const double frames = stats.FindDouble("framesEncoded").value_or(0);
+    const double encoded = stats.FindDouble("totalEncodeTime").value_or(0);
+    const double bytes = stats.FindDouble("bytesSent").value_or(0);
+    const double source_frames = track_source_ ? track_source_->frames() : 0;
+    const double dt = now - sender_stats_time_;
+    const double df = frames - sender_frames_;
+    if (sender_stats_time_ > 0 && dt > 0 && df >= 0 && bytes >= sender_bytes_ &&
+        handshaken_) {
+      auto message = base::DictValue().Set("t", "stats")
+          .Set("fps", df / dt)
+          .Set("sourceFps", (source_frames - sender_source_frames_) / dt)
+          .Set("kbps", (bytes - sender_bytes_) * 8 / dt / 1000)
+          .Set("targetFps", target_fps_)
+          .Set("backend", String(stats, "encoderImplementation"))
+          .Set("limit", String(stats, "qualityLimitationReason"));
+      if (df > 0 && encoded >= sender_encode_time_)
+        message.Set("encMs", base::DictValue().Set(
+            "mean", (encoded - sender_encode_time_) * 1000 / df));
+      channels_[1]->Send(std::move(message));
+      LOG(INFO) << "PRTS sender fps=" << df / dt
+                << " target=" << target_fps_;
+    }
+    sender_stats_time_ = now;
+    sender_frames_ = frames;
+    sender_encode_time_ = encoded;
+    sender_bytes_ = bytes;
+    sender_source_frames_ = source_frames;
   }
   Peer& owner_;
   const std::string sid_;
@@ -656,6 +746,10 @@ class Peer::Session : public webrtc::PeerConnectionObserver,
   std::vector<base::Value> incoming_ice_;
   std::vector<base::DictValue> outgoing_ice_;
   uint64_t invalid_inputs_ = 0;
+  int target_fps_ = 60;
+  double sender_stats_time_ = 0, sender_frames_ = 0;
+  double sender_encode_time_ = 0, sender_bytes_ = 0;
+  double sender_source_frames_ = 0;
   uint64_t failure_epoch_ = 0;
   bool closed_ = false;
   bool handshaken_ = false;

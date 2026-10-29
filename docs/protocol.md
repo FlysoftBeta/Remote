@@ -175,8 +175,10 @@ Pointer moves keep only the latest coordinates per `pid`; sent immediately when 
 ### 3.1 Handshake and viewport
 | Direction | `t` | Fields |
 |---|---|---|
-| viewer->re | `hello` | `v:1, input:1, caps:{touch, osk, dpr}, view:{w, h, dpr}` |
-| re->viewer | `hello` | `v:1, input:1, frame:{w, h}, dsf, name` |
+| viewer->re | `hello` | `v:1, input:1, caps:{touch, osk, dpr, refreshFps}, view:{w, h, dpr}`; `refreshFps` also accompanies the signaling hello |
+| re->viewer | `hello` | `v:1, input:1, frame:{w, h}, dsf, name, maxFps, targetFps` |
+| viewer->re | `video.rate` | `fps`: integer 1..120; requested target, bounded by the sender's advertised ceiling |
+| re->viewer | `video.rate` | `fps, maxFps`: accepted target and sender ceiling; capture, WebRTC sender and hardware encoder follow the same target |
 | viewer->re | `resize` | `w, h, dpr`: available area (CSS px) and DPR; re **may** resize the remote window (DIP = w x h, DSF = dpr or policy) or ignore it (fixed 1080p) |
 | re->viewer | `frame` | `w, h, dsf`: remote root size changed (video resolution follows; normalised coordinates unaffected) |
 | viewer->re | `focus` | `focused:bool`: page focus/visibility; false -> release input and `Deactivate` the active root (D8); true -> `Activate` |
@@ -233,7 +235,7 @@ display time of the first frame with `inputSeq >= s` minus send time of `s`.
 ### 4.3 Stats messages (`ctl`, 1 Hz)
 | Direction | `t` | Fields |
 |---|---|---|
-| re->viewer | `stats` | `fps, kbps, encMs:{p50,p99}, qp, idr, backend, queue, bweKbps` |
+| re->viewer | `stats` | `fps, sourceFps, kbps, encMs:{mean}, backend, limit, targetFps`; raw-source and encoded counts distinguish source inactivity from sender drops; absent encode samples omitted |
 | viewer->re | `vstats` | `fps, kbps, jbMs, decMs, rtt, lost, nack, pli, freeze, lat:{p50,p80,p99}` |
 
 `jbMs` = delta `jitterBufferDelay` / delta `jitterBufferEmittedCount`; `decMs` = delta `totalDecodeTime` / delta `framesDecoded`; `rtt` from

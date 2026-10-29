@@ -48,12 +48,13 @@ class BrowserSession final : public re::EndpointLink::Delegate,
 
  private:
   void Select(uint32_t id);
+  void StartCapture();
   void Refresh();
   void Send(base::DictValue message);
   void Post(base::OnceCallback<void(BrowserSession&)> task);
   void OnControl(base::DictValue message);
   std::shared_ptr<D3DFrameSource> source_;
-  const int fps_;
+  int fps_;
   base::OnceClosure failure_;
   ControlSender send_;
   base::RepeatingClosure keyframe_;

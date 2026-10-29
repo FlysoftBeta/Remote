@@ -279,6 +279,13 @@ bool Compatible(const Parameters& requested,
                 bool allow_vbv_minimum = false) {
   const auto& a = actual.p.mfx;
   const auto& r = requested.p.mfx;
+  // The legacy runtime needs about two maximum-rate frames of VBV. A fixed
+  // 64 KB rounding allowance only covered >=20 fps at 8 Mbps; lower viewer
+  // targets need the same bounded allowance expressed in frame bytes.
+  const int64_t frame_denominator =
+      8 * std::max<mfxU32>(1, r.FrameInfo.FrameRateExtN);
+  const int64_t frame_kb =
+      (EffectiveBrc(r, r.MaxKbps) + frame_denominator - 1) / frame_denominator;
   return actual.p.AsyncDepth == 1 &&
          actual.p.IOPattern == MFX_IOPATTERN_IN_VIDEO_MEMORY &&
          a.CodecId == MFX_CODEC_AVC && a.CodecProfile == r.CodecProfile &&
@@ -289,14 +296,16 @@ bool Compatible(const Parameters& requested,
                       EffectiveBrc(a, a.TargetKbps), 16) &&
          RoundedField("MaxKbps", EffectiveBrc(r, r.MaxKbps),
                       EffectiveBrc(a, a.MaxKbps), 16) &&
-         // UHD630 M3 readback was 101/50 KB for a 50/25 KB request. Preserve
-         // that existing driver minimum, with explicit requested/actual logs.
+         // Preserve the measured driver minimum, with explicit readback logs.
          RoundedField("BufferSizeInKB", EffectiveBrc(r, r.BufferSizeInKB),
                       EffectiveBrc(a, a.BufferSizeInKB),
-                      allow_vbv_minimum ? 64 : 2) &&
+                      allow_vbv_minimum ? std::max<int64_t>(64, frame_kb + 2)
+                                        : 2) &&
          RoundedField("InitialDelayInKB", EffectiveBrc(r, r.InitialDelayInKB),
                       EffectiveBrc(a, a.InitialDelayInKB),
-                      allow_vbv_minimum ? 32 : 2) &&
+                      allow_vbv_minimum
+                          ? std::max<int64_t>(32, (frame_kb + 1) / 2 + 2)
+                          : 2) &&
          a.GopRefDist == 1 && a.NumRefFrame == 1 && a.NumSlice == r.NumSlice &&
          a.FrameInfo.FourCC == MFX_FOURCC_NV12 &&
          a.FrameInfo.Width == r.FrameInfo.Width &&
@@ -627,6 +636,7 @@ class VplEncoder::Impl {
     height_ = height;
     kbps_ = kbps;
     fps_ = fps;
+    driver_min_kbps_ = 0;
     frames_ = 0;
     consecutive_errors_ = 0;
     last_reset_ = base::TimeTicks::Now();
@@ -786,7 +796,23 @@ class VplEncoder::Impl {
     if (status < 0)
       return false;
     ++resets_;
-    if (readback != MFX_ERR_NONE || !Compatible(expected, actual)) {
+    Parameters accepted(expected);
+    const auto actual_target =
+        EffectiveBrc(actual.p.mfx, actual.p.mfx.TargetKbps);
+    if (status == MFX_WRN_INCOMPATIBLE_VIDEO_PARAM &&
+        actual_target >= std::max(1, min_kbps_) &&
+        actual_target <= max_kbps_) {
+      // The runtime can quantize a low target much more than 10%. Treat its
+      // positive warning + readback as the supported rate, not a fatal device
+      // failure. Every other field (VBV, SPS, references, frame cap, etc.) must
+      // still match; actual traffic remains visible to GCC and viewer stats.
+      accepted.p.mfx.TargetKbps = actual.p.mfx.TargetKbps;
+      if (actual_target > kbps + std::max(16, kbps / 10))
+        driver_min_kbps_ = static_cast<int>(actual_target);
+      LOG(INFO) << "PRTS VPL supported target requested_kbps=" << kbps
+                << " actual_kbps=" << actual_target;
+    }
+    if (readback != MFX_ERR_NONE || !Compatible(accepted, actual)) {
       // A successful but incompatible reset cannot safely keep streaming.
       Fail("reset readback mismatch", readback);
       return false;
@@ -794,13 +820,16 @@ class VplEncoder::Impl {
     parameters_ = actual;
     kbps_ =
         static_cast<int>(EffectiveBrc(actual.p.mfx, actual.p.mfx.TargetKbps));
-    last_rate_request_kbps_ = kbps;
+    last_rate_request_kbps_ = std::max(kbps, driver_min_kbps_);
     check_reset_idr_ = true;
     return true;
   }
 
   void ResetRate(int kbps) {
     pending_kbps_ = kbps;
+    // A queried lower bound is a capability of this encoder configuration.
+    // Do not reset on every GCC update below a rate the driver cannot apply.
+    kbps = std::max(kbps, driver_min_kbps_);
     if (pending_sync_)
       return;
     if (hold_max_)
@@ -924,10 +953,12 @@ class VplEncoder::Impl {
     const bool adopt_native = native_device && capture_device &&
                              native_device.Get() == capture_device.Get() &&
                              native_device.Get() != device_.Get();
-    if (frame.width() != width_ || frame.height() != height_ || adopt_native) {
+    const int target_fps = state_ ? state_->target_fps.load() : fps_;
+    if (frame.width() != width_ || frame.height() != height_ || adopt_native ||
+        target_fps != fps_) {
       // WebRTC normally calls InitEncode on resize. Also handle a direct
       // resize/device generation transition, and force new SPS/PPS + IDR.
-      if (!Start(frame.width(), frame.height(), kbps_, fps_,
+      if (!Start(frame.width(), frame.height(), max_kbps_, target_fps,
                  adopt_native ? native_device : device_))
         return Fail("resize/device reinit");
     }
@@ -1153,7 +1184,8 @@ class VplEncoder::Impl {
   int consecutive_errors_ = 0;
   int fps_ = 0;
   int max_kbps_ = 12000;
-  int min_kbps_ = 2000;
+  int min_kbps_ = 300;
+  int driver_min_kbps_ = 0;
   uint64_t frames_ = 0, resets_ = 0, reset_attempts_ = 0, idrs_ = 0;
   uint64_t rate_ignored_ = 0, encoded_bytes_ = 0;
   bool hold_max_ = false, check_reset_idr_ = false;

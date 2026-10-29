@@ -25,6 +25,17 @@
     if (measure) measure.noteInput(seq);
   }
   function sendCtl(m) { if (ch && ch.ctl.readyState === 'open') ch.ctl.send(JSON.stringify(m)); }
+  var rateControl = RKFrameRate.controller(function (fps, reason) {
+    sendCtl({ t: 'video.rate', fps: fps, reason: reason });
+    console.log('[viewer] target ' + fps + ' fps (' + reason + ')');
+  });
+  // Headless viewers have no physical display; their software clock drifts.
+  // Use the backward-compatible 60 Hz capability for automated receivers.
+  var refreshRate = /HeadlessChrome\//.test(navigator.userAgent) ? { get: function () { return 60; } } : RKFrameRate.monitor(function (fps) {
+    window.rk.displayFps = fps;
+    rateControl.capabilities(fps);
+  });
+  window.rk.displayFps = refreshRate.get();
   input.backedUp = function () { return ch && ch.input.bufferedAmount > 4096; };
 
   // ---- signalling ----
@@ -40,7 +51,7 @@
     ws.onopen = function () {
       if (ws !== socket) return;
       sendSig({ t: 'hello', v: RK.V, role: 'viewer', ua: navigator.userAgent, relay: relayUrl() || undefined,
-        caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, dpr: devicePixelRatio, osk: isTouch, codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
+        caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, dpr: devicePixelRatio, osk: isTouch, refreshFps: refreshRate.get(), codecs: h264Caps().map(function (c) { return c.sdpFmtpLine || ''; }) } });
       status('waiting for endpoint', 'waiting');
     };
     ws.onmessage = function (e) { if (ws === socket) { try { onSignal(JSON.parse(e.data)); } catch (err) { console.warn('signalling', err); } } };
@@ -133,8 +144,9 @@
     var channels = ch;
     ch.ctl.onopen = function () {
       if (!current(s, p)) return;
-      sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, osk: isTouch, dpr: devicePixelRatio },
+      sendCtl({ t: 'hello', v: RK.V, input: RK.INPUT_V, caps: { touch: navigator.maxTouchPoints || 0, touchOnly: touchOnly, osk: isTouch, dpr: devicePixelRatio, refreshFps: refreshRate.get() },
         view: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio } });
+      rateControl.reset();
       sendViewport();
       sendCtl({ t: 'focus', focused: document.hasFocus() && !document.hidden });
     };
@@ -199,10 +211,13 @@
     if (m.t === 'hello') {
       if (m.v !== 1 || m.input !== 1) { sendSig({ t: 'bye', sid: sid, reason: 'version' }); window.viewerFinish('Protocol version mismatch.'); return; }
       epHello = m; input.enabled = ch.input.readyState === 'open'; ime.refresh();
+      window.rk.targetFps = m.targetFps;
+      rateControl.capabilities(refreshRate.get(), m.maxFps);
     }
     else if (!epHello) return;
     else if (ime.onCtl(m)) return;
     else if (m.t === 'stats') epStats = m;
+    else if (m.t === 'video.rate') { window.rk.targetFps = m.fps; window.rk.maxFps = m.maxFps; }
     else if (m.t === 'cursor') {
       // Only named cursors or the browser's bounded inline PNG format; no URLs.
       var css = typeof m.css === 'string' && m.css.length <= 61000 &&
@@ -293,7 +308,17 @@
         v.decMs = df > 0 && inb.totalDecodeTime != null ? ((inb.totalDecodeTime - prev.td) / df) * 1000 : null;
         v.processingMs = df > 0 && inb.totalProcessingDelay != null ? ((inb.totalProcessingDelay - prev.tp) / df) * 1000 : null;
         v.framesDropped = inb.framesDropped == null ? null : inb.framesDropped - prev.dropped;
-        statsSamples.push({ at: now, jbMs: v.jbMs, decMs: v.decMs, processingMs: v.processingMs, framesDropped: v.framesDropped, fps: v.fps });
+        var lostDelta = Math.max(0, (inb.packetsLost || 0) - prev.lost);
+        var receivedDelta = Math.max(0, (inb.packetsReceived || 0) - prev.received);
+        // Background tabs cannot measure their display cadence or receive rate
+        // reliably. Missing decode samples never count as decoder overload.
+        if (dt >= 0.5 && dt <= 2.5) rateControl.sample({ hidden: document.hidden,
+          decoded: df, decMs: v.decMs, dropped: v.framesDropped, jbMs: v.jbMs,
+          lost: lostDelta, lossRatio: lostDelta / Math.max(1, receivedDelta + lostDelta),
+          senderFps: epStats && epStats.fps, sourceFps: epStats && epStats.sourceFps,
+          encMs: epStats && epStats.encMs && epStats.encMs.mean }, now);
+        statsSamples.push({ at: now, jbMs: v.jbMs, decMs: v.decMs, processingMs: v.processingMs, framesDropped: v.framesDropped, fps: v.fps,
+          targetFps: window.rk.targetFps, rateReason: rateControl.get().reason });
         if (statsSamples.length > 3600) statsSamples.shift();
         if (statsSamples.length % 5 === 0) {
           var rolling = {};
@@ -303,9 +328,10 @@
           console.log('[viewer] latency5s interval-p50/p95 ' + JSON.stringify(rolling));
         }
       }
-      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0, tp: inb.totalProcessingDelay || 0, dropped: inb.framesDropped || 0 };
+      prev = { now: now, fd: inb.framesDecoded, b: inb.bytesReceived, je: jbSrc.jitterBufferEmittedCount || 0, jb: jbSrc.jitterBufferDelay || 0, td: inb.totalDecodeTime || 0, tp: inb.totalProcessingDelay || 0, dropped: inb.framesDropped || 0, lost: inb.packetsLost || 0, received: inb.packetsReceived || 0 };
       var c = codec[inb.codecId] || {}, lat = measure ? measure.summary() : null;
       var rows = [
+        ['target', (window.rk.targetFps || '-') + ' fps · display ' + refreshRate.get() + ' Hz · ' + rateControl.get().reason],
         ['rate', fmt(v.kbps / 1000, 2) + ' Mbps'],
         ['codec', (String(c.mimeType || '?').replace(/^video\//, '')) + (inb.decoderImplementation ? ' · ' + inb.decoderImplementation : '')],
         ['rtt', fmt(v.rtt) + ' ms'],
@@ -320,7 +346,7 @@
         ['i2p', fmt(lat.i2p.p50) + ' / ' + fmt(lat.i2p.p80) + ' / ' + fmt(lat.i2p.p99) + ' ms n=' + lat.i2p.n],
         ['marker', 'ok ' + lat.decoded + '/' + lat.frames + ' · fid ' + measure.lastFrameId]);
       if (epStats) rows.push(['sender', fmt(epStats.fps) + ' fps · ' + fmt(epStats.kbps / 1000, 2) + ' Mbps'],
-        ['encode', fmt(epStats.encMs && epStats.encMs.p50, 2) + ' ms · qp ' + fmt(epStats.qp) + ' ' + (epStats.backend || '') + (epStats.limit && epStats.limit !== 'none' ? ' · limit ' + epStats.limit : '')]);
+        ['encode', fmt(epStats.encMs && epStats.encMs.mean, 2) + ' ms mean · ' + (epStats.backend || '') + (epStats.limit && epStats.limit !== 'none' ? ' · limit ' + epStats.limit : '')]);
       if (showStats) renderStats({ fps: fmt(v.fps, 0), res: (inb.frameWidth || video.videoWidth) + '×' + (inb.frameHeight || video.videoHeight) }, rows);
       sendCtl({ t: 'vstats', fps: v.fps, kbps: v.kbps, jbMs: v.jbMs, decMs: v.decMs, rtt: v.rtt, lost: inb.packetsLost, nack: inb.nackCount, pli: inb.pliCount,
         freeze: inb.freezeCount, lat: lat ? { p50: lat.lat.p50, p80: lat.lat.p80, p99: lat.lat.p99 } : null });
@@ -381,6 +407,7 @@
               totalDecodeTime: window.rk.last.inbound.totalDecodeTime, totalProcessingDelay: window.rk.last.inbound.totalProcessingDelay,
               framesDropped: window.rk.last.inbound.framesDropped,
               frameWidth: window.rk.last.inbound.frameWidth, frameHeight: window.rk.last.inbound.frameHeight } : null,
+            frameRate: Object.assign(rateControl.get(), { acceptedFps: window.rk.targetFps }),
             sender: epStats, csv: snapshot ? snapshot.csv : measure.csv() };
           if (field) { field.submit(body); return; }
           var x = new XMLHttpRequest(); x.open('POST', '/api/report'); x.setRequestHeader('content-type', 'application/json'); x.send(JSON.stringify(body));

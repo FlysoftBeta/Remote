@@ -256,7 +256,7 @@
     screen.hidden = true; loading++;
     if (window.viewerUi) window.viewerUi.start(values.instance);
     document.getElementById('stage').focus({ preventScroll: true });
-    var scripts = ['presenter.js', 'protocol.js', '/tools/latency/marker.js', '/tools/latency/clock.js', '/tools/latency/measure.js', 'input.js', 'ime.js', '/tools/field-test/viewer-field.js', 'viewer.js'];
+    var scripts = ['presenter.js', 'protocol.js', 'frame-rate.js', '/tools/latency/marker.js', '/tools/latency/clock.js', '/tools/latency/measure.js', 'input.js', 'ime.js', '/tools/field-test/viewer-field.js', 'viewer.js'];
     function next() {
       if (!scripts.length) return;
       var script = document.createElement('script'); script.src = scripts.shift(); script.onload = next;

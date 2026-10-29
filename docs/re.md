@@ -42,7 +42,7 @@ reorder).
 | `EncoderParams` | Meaning |
 |---|---|
 | width, height, fps | stream geometry |
-| min / target / max kbps | rate range (`--min-kbps/--start-kbps/--max-kbps`, defaults 2000/8000/8000) |
+| min / target / max kbps | rate range (`--min-kbps/--start-kbps/--max-kbps`, defaults 300/8000/8000); a higher minimum can prevent GCC adapting to a slow link |
 | `RateControl` | cbr or vbr (`--vpl-rc`) |
 | gop_frames | 0 = infinite, IDR on demand |
 | intra_refresh_cycle, slices | `--vpl-intra-refresh`, `--vpl-slices` |

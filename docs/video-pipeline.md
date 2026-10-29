@@ -80,6 +80,25 @@ Browser root uses the ordinary clock (DComp root: `ExternalBeginFrameSourceWin`/
 precise 60 Hz fake vsync because the cloaked window has no DXGI output. Capturer min period caps fps; `re` encodes only the latest frame
 (cost: average half-vsync phase wait plus an occasional queued frame). External/demand BeginFrame was rejected (D15).
 
+The precise fake-vsync clock is now enabled by default. The supported endpoint ceiling defaults to 60 fps (the current VPL contract);
+`--fps` is an optional administrator ceiling. The viewer advertises its measured animation-clock rate, receives `maxFps`, and requests
+the intersection via `video.rate`. Older viewers and headless test receivers use a 60 Hz capability fallback. Hidden tabs do not contribute
+throttled samples. Refresh estimates require two stable windows. Capturer and WebRTC limits change together; hardware frame-rate changes
+reinitialize the encoder with fresh SPS/PPS and an IDR, independently of GCC's ordinary bitrate resets.
+
+GCC/TWCC continues to own bitrate. Once per second the viewer considers decode/encode cost, receiver drops, interval packet loss and
+jitter-buffer delay, plus raw-source versus encoded throughput (to detect sender drops under CPU/GCC limits). Three consecutive bad
+samples reduce the frame-rate budget; decreases have a five-second cooldown. Ten healthy
+active samples allow an upward probe, with a ten-second cooldown. Static or low-fps content alone never reduces the budget, and missing
+metrics do not count as overload. Reasons and accepted/display targets appear in the stats overlay and measurement report. Thresholds
+are conservative heuristics, not a guarantee of available bandwidth or decoder throughput.
+The default bitrate floor is 300 kbps so GCC can operate below the previous 2 Mbps floor. Resolution is preserved, so constrained links
+can lose visual quality. An explicit `--min-kbps` still takes precedence. VPL startup readback allows the measured two-frame VBV minimum
+in frame bytes, including low frame rates, instead of using only a fixed 64 KB allowance.
+When a successful VPL reset explicitly warns that it adjusted the target bitrate, bounded target readback is accepted while all other
+parameter checks remain strict. A discovered runtime bitrate floor is remembered for that encoder configuration, avoiding a reset storm
+when GCC requests smaller rates. Actual encoded throughput remains the feedback signal; a requested rate is not proof the driver applied it.
+
 ## Measurement
 - **Acceptance (M4)**: input->decoded and capture->decoded, ending at the viewer's decoded frame (rVFC `presentationTime`: receive + jitter
   buffer + decode), excluding presentation; P80 < 100 ms, P99 < 200 ms under d25j5. `expectedDisplayTime` is reported as a "glass estimate".
